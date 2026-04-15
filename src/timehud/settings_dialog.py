@@ -140,13 +140,14 @@ class SettingsDialog(QDialog):
 
         # Checkboxes
         self.show_tray_icon_cb = QCheckBox("Show system tray icon")
-        self.show_controls_cb = QCheckBox("Show timer controls [▶] [↺]")
         self.show_clock_cb = QCheckBox("Show system clock  (HH:MM:SS)")
         self.show_timer_cb = QCheckBox("Show timer  (stopwatch / countdown)")
+        self.show_controls_cb = QCheckBox("Show timer controls (start/stop/reset)")
+
         form.addRow(self.show_tray_icon_cb)
-        form.addRow(self.show_controls_cb)
         form.addRow(self.show_clock_cb)
         form.addRow(self.show_timer_cb)
+        form.addRow(self.show_controls_cb)
 
         return tab
 

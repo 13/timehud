@@ -453,6 +453,9 @@ class OverlayWindow(QWidget):
         old_preset = self.config.position
         dlg = SettingsDialog(self.config, parent=None)  # None → no parent widget
         if dlg.exec():
+            if self.config.position != old_preset:
+                self.config.custom_x = -1
+                self.config.custom_y = -1
             # Rebuild the whole UI so font/size changes take effect
             old_pos = self.pos()
             # Tear down existing layout
@@ -469,13 +472,18 @@ class OverlayWindow(QWidget):
             clear_layout(self.layout())
             self._apply_window_flags()
             self._build_ui()
+            self.resize(0, 0)
             self.adjustSize()
             self.setWindowOpacity(self.config.opacity)
-            # Reattach correctly based on width/height change
-            if self.config.custom_x >= 0:
-                self.move(old_pos)
-            else:
+            if self.config.position != old_preset:
+                self.config.custom_x = -1
+                self.config.custom_y = -1
                 self._position_window()
+            else:
+                # User expressly requested: "put it to the last position before apply" entirely rigidly.
+                self.config.custom_x = old_pos.x()
+                self.config.custom_y = old_pos.y()
+                self.move(old_pos)
             self.show()
             self.config.save()
     def toggle_visibility(self) -> None:
