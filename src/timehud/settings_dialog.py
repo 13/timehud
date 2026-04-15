@@ -1,0 +1,283 @@
+"""
+settings_dialog.py – Modal settings window for TimeHUD.
+Opens from the right-click context menu on the overlay.
+"""
+
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
+    QLabel, QComboBox, QSpinBox, QCheckBox,
+    QLineEdit, QPushButton, QFileDialog,
+    QTabWidget, QWidget, QSlider, QDialogButtonBox,
+)
+from PyQt6.QtCore import Qt
+
+from timehud.config import Config
+
+
+_DARK_STYLE = """
+QDialog, QWidget, QTabWidget::pane {
+    background: #1C1C1E;
+    color: #E5E5EA;
+}
+QTabBar::tab {
+    background: #2C2C2E;
+    color: #8E8E93;
+    padding: 6px 18px;
+    border: none;
+}
+QTabBar::tab:selected {
+    background: #3A3A3C;
+    color: #FFFFFF;
+    border-bottom: 2px solid #00FF88;
+}
+QLabel { color: #E5E5EA; }
+QComboBox, QSpinBox, QLineEdit {
+    background: #2C2C2E;
+    color: #E5E5EA;
+    border: 1px solid #3A3A3C;
+    border-radius: 4px;
+    padding: 4px 8px;
+    min-height: 22px;
+}
+QComboBox::drop-down  { border: none; }
+QComboBox QAbstractItemView { background: #2C2C2E; color: #E5E5EA; selection-background-color: #3A3A3C; }
+QCheckBox { color: #E5E5EA; spacing: 8px; }
+QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #555; border-radius: 3px; background: #2C2C2E; }
+QCheckBox::indicator:checked { background: #00FF88; border-color: #00FF88; }
+QSlider::groove:horizontal { height: 4px; background: #3A3A3C; border-radius: 2px; }
+QSlider::handle:horizontal { background: #00FF88; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }
+QSlider::sub-page:horizontal { background: #00CC66; border-radius: 2px; }
+QPushButton {
+    background: #3A3A3C;
+    color: #E5E5EA;
+    border: none;
+    border-radius: 5px;
+    padding: 6px 18px;
+    min-height: 26px;
+}
+QPushButton:hover  { background: #48484A; }
+QPushButton:pressed { background: #555; }
+QPushButton#ok_btn { background: #00AA55; color: #FFFFFF; }
+QPushButton#ok_btn:hover { background: #00CC66; }
+"""
+
+
+class SettingsDialog(QDialog):
+    def __init__(self, config: Config, parent=None) -> None:
+        super().__init__(parent)
+        self.config = config
+        self.setWindowTitle("TimeHUD – Settings")
+        self.setModal(True)
+        self.setMinimumWidth(400)
+        self.setStyleSheet(_DARK_STYLE)
+        self._build_ui()
+        self._load_values()
+
+    # ── UI construction ────────────────────────────────────────────────────
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setSpacing(12)
+
+        tabs = QTabWidget()
+        tabs.addTab(self._display_tab(),  "🖥  Display")
+        tabs.addTab(self._timer_tab(),    "⏱  Timer")
+        tabs.addTab(self._sound_tab(),    "🔔  Sound")
+        root.addWidget(tabs)
+
+        # ── Dialog buttons ─────────────────────────────────────────────────
+        btn_box = QHBoxLayout()
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+
+        apply = QPushButton("Apply")
+        apply.setObjectName("ok_btn")
+        apply.clicked.connect(self._apply)
+
+        btn_box.addStretch()
+        btn_box.addWidget(cancel)
+        btn_box.addWidget(apply)
+        root.addLayout(btn_box)
+
+    def _display_tab(self) -> QWidget:
+        tab = QWidget()
+        form = QFormLayout(tab)
+        form.setSpacing(10)
+        form.setContentsMargins(16, 16, 16, 16)
+
+        # Position preset
+        self.position_combo = QComboBox()
+        self.position_combo.addItems([
+            "top-left", "top-right",
+            "bottom-left", "bottom-right",
+            "top-center", "bottom-center",
+        ])
+        form.addRow("Position:", self.position_combo)
+
+        # Font size
+        self.font_size_spin = QSpinBox()
+        self.font_size_spin.setRange(12, 80)
+        self.font_size_spin.setSuffix(" px")
+        form.addRow("Font size:", self.font_size_spin)
+
+        # Font family
+        self.font_family_edit = QLineEdit()
+        self.font_family_edit.setPlaceholderText("e.g. Monospace, JetBrains Mono")
+        form.addRow("Font family:", self.font_family_edit)
+
+        # Opacity
+        opacity_row = QHBoxLayout()
+        self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.opacity_slider.setRange(20, 100)
+        self.opacity_pct_label = QLabel("85%")
+        self.opacity_pct_label.setMinimumWidth(38)
+        self.opacity_slider.valueChanged.connect(
+            lambda v: self.opacity_pct_label.setText(f"{v}%")
+        )
+        opacity_row.addWidget(self.opacity_slider)
+        opacity_row.addWidget(self.opacity_pct_label)
+        form.addRow("Opacity:", opacity_row)
+
+        # Checkboxes
+        self.show_tray_icon_cb = QCheckBox("Show system tray icon")
+        self.show_controls_cb = QCheckBox("Show timer controls [▶] [↺]")
+        self.show_clock_cb = QCheckBox("Show system clock  (HH:MM:SS)")
+        self.show_timer_cb = QCheckBox("Show timer  (stopwatch / countdown)")
+        form.addRow(self.show_tray_icon_cb)
+        form.addRow(self.show_controls_cb)
+        form.addRow(self.show_clock_cb)
+        form.addRow(self.show_timer_cb)
+
+        return tab
+
+    def _timer_tab(self) -> QWidget:
+        tab = QWidget()
+        form = QFormLayout(tab)
+        form.setSpacing(10)
+        form.setContentsMargins(16, 16, 16, 16)
+
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["stopwatch", "countdown"])
+        form.addRow("Default mode:", self.mode_combo)
+
+        self.countdown_spin = QSpinBox()
+        self.countdown_spin.setRange(5, 86400)
+        self.countdown_spin.setSuffix(" s")
+        self.countdown_spin.setToolTip("Countdown duration in seconds (e.g. 300 = 5 min)")
+        form.addRow("Countdown duration:", self.countdown_spin)
+
+        # Helper to show minutes
+        self._cd_note = QLabel()
+        self._cd_note.setStyleSheet("color:#8E8E93; font-size:11px;")
+        self.countdown_spin.valueChanged.connect(self._update_cd_note)
+        form.addRow("", self._cd_note)
+
+        self.auto_restart_countdown_cb = QCheckBox("Restart countdown automatically")
+        form.addRow(self.auto_restart_countdown_cb)
+
+        return tab
+
+    def _sound_tab(self) -> QWidget:
+        tab = QWidget()
+        form = QFormLayout(tab)
+        form.setSpacing(10)
+        form.setContentsMargins(16, 16, 16, 16)
+
+        self.sound_enabled_cb = QCheckBox("Enable periodic sound alerts")
+        form.addRow(self.sound_enabled_cb)
+
+        self.alert_last_5_seconds_cb = QCheckBox("Alert last 5 seconds with short beeps (countdown)")
+        form.addRow(self.alert_last_5_seconds_cb)
+
+        self.sound_interval_spin = QSpinBox()
+        self.sound_interval_spin.setRange(5, 3600)
+        self.sound_interval_spin.setSuffix(" s")
+        self.sound_interval_spin.setToolTip("Play a beep every N seconds of active timer")
+        form.addRow("Alert every:", self.sound_interval_spin)
+
+        file_row = QHBoxLayout()
+        self.sound_file_edit = QLineEdit()
+        self.sound_file_edit.setPlaceholderText("Leave empty to use built-in beep")
+        browse = QPushButton("…")
+        browse.setFixedWidth(32)
+        browse.clicked.connect(self._browse_sound)
+        file_row.addWidget(self.sound_file_edit)
+        file_row.addWidget(browse)
+        form.addRow("Sound file:", file_row)
+
+        note = QLabel("Supported players: paplay, aplay, ffplay, mpv")
+        note.setStyleSheet("color:#8E8E93; font-size:11px;")
+        form.addRow("", note)
+
+        return tab
+
+    # ── Load / apply ───────────────────────────────────────────────────────
+
+    def _load_values(self) -> None:
+        c = self.config
+
+        idx = self.position_combo.findText(c.position)
+        self.position_combo.setCurrentIndex(max(0, idx))
+
+        self.font_size_spin.setValue(c.font_size)
+        self.font_family_edit.setText(c.font_family)
+        self.opacity_slider.setValue(int(c.opacity * 100))
+        self.show_tray_icon_cb.setChecked(c.show_tray_icon)
+        self.show_controls_cb.setChecked(c.show_controls)
+        self.show_clock_cb.setChecked(c.show_clock)
+        self.show_timer_cb.setChecked(c.show_timer)
+
+        idx = self.mode_combo.findText(c.timer_mode)
+        self.mode_combo.setCurrentIndex(max(0, idx))
+        self.countdown_spin.setValue(c.countdown_duration)
+        self._update_cd_note(c.countdown_duration)
+        self.auto_restart_countdown_cb.setChecked(c.auto_restart_countdown)
+
+        self.sound_enabled_cb.setChecked(c.sound_enabled)
+        self.alert_last_5_seconds_cb.setChecked(c.alert_last_5_seconds)
+        self.sound_interval_spin.setValue(c.sound_interval)
+        self.sound_file_edit.setText(c.sound_file)
+
+    def _apply(self) -> None:
+        c = self.config
+        c.position    = self.position_combo.currentText()
+        c.font_size   = self.font_size_spin.value()
+        c.font_family = self.font_family_edit.text() or "Monospace"
+        c.opacity     = self.opacity_slider.value() / 100.0
+        c.show_tray_icon = self.show_tray_icon_cb.isChecked()
+        c.show_controls  = self.show_controls_cb.isChecked()
+        c.show_clock  = self.show_clock_cb.isChecked()
+        c.show_timer  = self.show_timer_cb.isChecked()
+
+        c.timer_mode          = self.mode_combo.currentText()
+        c.countdown_duration  = self.countdown_spin.value()
+        c.auto_restart_countdown = self.auto_restart_countdown_cb.isChecked()
+
+        c.sound_enabled  = self.sound_enabled_cb.isChecked()
+        c.alert_last_5_seconds = self.alert_last_5_seconds_cb.isChecked()
+        c.sound_interval = self.sound_interval_spin.value()
+        c.sound_file     = self.sound_file_edit.text().strip()
+
+        self.accept()
+
+    # ── Helpers ────────────────────────────────────────────────────────────
+
+    def _update_cd_note(self, secs: int) -> None:
+        m, s = divmod(secs, 60)
+        h, m = divmod(m, 60)
+        if h:
+            txt = f"{h}h {m:02d}m {s:02d}s"
+        elif m:
+            txt = f"{m}m {s:02d}s"
+        else:
+            txt = f"{s}s"
+        self._cd_note.setText(f"→ {txt}")
+
+    def _browse_sound(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select alert sound",
+            os.path.expanduser("~"),
+            "Audio Files (*.wav *.mp3 *.ogg *.flac);;All Files (*)",
+        )
+        if path:
+            self.sound_file_edit.setText(path)
