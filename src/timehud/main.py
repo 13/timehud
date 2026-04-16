@@ -124,86 +124,12 @@ def main() -> None:
     app.setQuitOnLastWindowClosed(False)
 
     # ── System Tray ────────────────────────────────────────────────────────
-    # ── System Tray ────────────────────────────────────────────────────────
-    def polar(cx, cy, angle_deg, radius):
-        import math
-        rad = math.radians(angle_deg)
-        from PyQt6.QtCore import QPointF
-        return QPointF(
-            cx + radius * math.sin(rad),
-            cy - radius * math.cos(rad)
-        )
-
-    pm = QPixmap(64, 64)
-    pm.fill(Qt.GlobalColor.transparent)
-
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-    # ── Constants ─────────────────────────────────────────
-    cx, cy = 32, 32
-    radius = 20
-
-    green = QColor("#00FF88")
-    dark = QColor("#0F1115")
-
-    # ── Main body ─────────────────────────────────────────
-    p.setBrush(dark)
-    p.setPen(QPen(green, 2))
-    p.drawEllipse(cx - radius, cy - radius, radius * 2, radius * 2)
-
-    # ── HUD outer ring ────────────────────────────────────
-    p.setPen(QPen(green, 1, Qt.PenStyle.DashLine))
-    p.setOpacity(0.5)
-    p.drawEllipse(cx - radius - 3, cy - radius - 3,
-                  (radius + 3) * 2, (radius + 3) * 2)
-    p.setOpacity(1.0)
-
-    # ── Tick marks ────────────────────────────────────────
-    p.setPen(QPen(green, 1))
-    for angle in range(0, 360, 30):
-        inner = polar(cx, cy, angle, radius - 4)
-        outer = polar(cx, cy, angle, radius)
-        p.drawLine(inner, outer)
-
-    # ── Top stem ──────────────────────────────────────────
-    p.setBrush(green)
-    p.setPen(Qt.PenStyle.NoPen)
-    #p.drawRect(cx - 6, cy - radius - 10, 12, 6)
-    #p.drawRect(cx - 4, cy - radius - 4, 8, 6)
-
-    # ── Side buttons (2 and 10 o’clock) ───────────────────
-    for angle in (65, -65):
-        pos = polar(cx, cy, angle, radius + 2)
-
-        p.save()
-        p.translate(pos)
-        p.rotate(angle)
-        p.drawRect(-4, -2, 8, 4)
-        p.restore()
-
-    # ── Hands ─────────────────────────────────────────────
-    p.setPen(QPen(QColor("#FFFFFF"), 2))
-    p.drawLine(polar(cx, cy, 0, 0), polar(cx, cy, 0, radius - 6))   # up
-    p.drawLine(polar(cx, cy, 0, 0), polar(cx, cy, 90, radius - 10)) # right
-
-    # ── Center pivot ──────────────────────────────────────
-    p.setBrush(QColor("#FFFFFF"))
-    p.setPen(Qt.PenStyle.NoPen)
-    p.drawEllipse(cx - 2, cy - 2, 4, 4)
-
-    # ── HUD crosshair ─────────────────────────────────────
-    p.setPen(QPen(green, 1))
-    p.setOpacity(0.4)
-    p.drawLine(cx - 6, cy, cx + 6, cy)
-    p.drawLine(cx, cy - 6, cx, cy + 6)
-
-    p.end()
-
     tray_icon = None
     if cfg.show_tray_icon:
         tray_icon = QSystemTrayIcon(app)
-        tray_icon.setIcon(QIcon(pm))
+
+        icon_path = os.path.join(os.path.dirname(__file__), "timehud.svg")
+        tray_icon.setIcon(QIcon(icon_path))
         tray_icon.setToolTip("TimeHUD")
 
         tray_menu = QMenu()

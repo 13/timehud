@@ -10,7 +10,8 @@ from PyQt6.QtWidgets import (
     QTabWidget, QWidget, QSlider, QDialogButtonBox, QColorDialog
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QPixmap
+import os
 
 from timehud.config import Config
 
@@ -87,6 +88,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._display_tab(),  "🖥  Display")
         tabs.addTab(self._timer_tab(),    "⏱  Timer")
         tabs.addTab(self._sound_tab(),    "🔔  Sound")
+        tabs.addTab(self._about_tab(),    "ℹ  About")
         root.addWidget(tabs)
 
         # ── Dialog buttons ─────────────────────────────────────────────────
@@ -233,6 +235,59 @@ class SettingsDialog(QDialog):
         note.setStyleSheet("color:#8E8E93; font-size:11px;")
         form.addRow("", note)
 
+        return tab
+
+    def _about_tab(self) -> QWidget:
+        from timehud import __version__
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setSpacing(10)
+
+        logo_lbl = QLabel()
+
+        # Searching for the logo in standard places
+        base_dir = os.path.dirname(__file__)
+        possible_paths = [
+            os.path.join(base_dir, "assets", "timehud.svg"),
+            os.path.join(base_dir, "timehud.svg"),
+            os.path.join(base_dir, "..", "..", "timehud.svg"),
+        ]
+
+        logo_found = False
+        for path in possible_paths:
+            if os.path.exists(path):
+                pm = QPixmap(path)
+                if not pm.isNull():
+                    pm = pm.scaled(80, 80, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    logo_lbl.setPixmap(pm)
+                    logo_found = True
+                    break
+
+        if not logo_found:
+            logo_lbl.setText("⏱")
+            logo_lbl.setStyleSheet("font-size: 64px;")
+
+        logo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(logo_lbl)
+
+        title_lbl = QLabel(f"<b>TimeHUD <span style='color:#00FF88;'>v{__version__}</span></b>")
+        title_lbl.setStyleSheet("font-size: 18px;")
+        title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_lbl)
+
+        desc_lbl = QLabel(
+            "A lightweight, always-on-top system overlay.<br>"
+            "Clock, Stopwatch & Countdown.<br><br>"
+            "<a href='https://github.com/ben/timehud' style='color:#00FF88; text-decoration:none;'>"
+            "https://github.com/ben/timehud</a>"
+        )
+        desc_lbl.setOpenExternalLinks(True)
+        desc_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        desc_lbl.setStyleSheet("color: #8E8E93;")
+        layout.addWidget(desc_lbl)
+
+        layout.addStretch()
         return tab
 
     # ── Load / apply ───────────────────────────────────────────────────────
