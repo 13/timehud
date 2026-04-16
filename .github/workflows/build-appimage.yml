@@ -6,6 +6,9 @@ on:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -26,8 +29,11 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
       - name: Build AppImage
+        env:
+          PYTHONPATH: src
         run: |
-          python-appimage build app .
+          python-appimage build app -n timehud app
+          ls -lh *.AppImage
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -40,4 +46,3 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: "*.AppImage"
-

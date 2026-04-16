@@ -1,0 +1,7 @@
+# Bundle runtime dependencies inside the AppImage.
+PyQt6>=6.4.0
+pynput>=1.7.6
+
+# Bundle the local application package from src/timehud via PYTHONPATH.
+local+timehud
+

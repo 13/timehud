@@ -130,10 +130,45 @@ Pass `--wayland` to use the native Wayland backend (overlay may not appear above
 
 ## Packaging
 
-### AppImage (via python-appimage)
+### AppImage - manual build
 
 ```bash
+cd /home/ben/repo/timehud
+python3 -m venv .venv-appimage
+source .venv-appimage/bin/activate
+python -m pip install --upgrade pip
 pip install python-appimage
-python-appimage build app .
+pip install -r requirements.txt
+
+# Required so python-appimage can bundle local+timehud from src/timehud
+export PYTHONPATH="src:$PYTHONPATH"
+python-appimage build app app
+ls -lh *.AppImage
 ```
 
+Run the built image:
+
+```bash
+chmod +x ./*.AppImage
+./*.AppImage
+```
+
+### AppImage - GitHub Actions
+
+The workflow file is `.github/workflows/build-appimage.yml` and supports:
+
+- tag push (`v*`) -> builds AppImage, uploads artifact, and creates a GitHub Release asset
+- manual run (`workflow_dispatch`) -> builds AppImage and uploads artifact
+
+Trigger a release build from your machine:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Trigger a manual build in GitHub:
+
+1. Open **Actions** -> **Build AppImage**
+2. Click **Run workflow**
+3. Download `TimeHUD-AppImage` from the run artifacts

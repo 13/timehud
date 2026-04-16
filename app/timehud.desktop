@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=timehud
+Comment=Transparent clock and timer overlay for Linux
+Exec=timehud
+Icon=python
+Terminal=false
+Categories=Utility;
+
