@@ -531,6 +531,9 @@ class OverlayWindow(QWidget):
 
         def update_ui():
             cfg = self.config
+            if not cfg.show_timer:
+                self.reset_timer()
+
             fs = cfg.font_size
             ff = cfg.font_family or "Monospace"
             def make_font(size: int, bold: bool = True) -> QFont:

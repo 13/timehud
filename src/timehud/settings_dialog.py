@@ -254,6 +254,11 @@ class SettingsDialog(QDialog):
             self._apply_to_config()
             self.config_changed.emit()
 
+        def _on_show_timer_toggled(checked):
+            if not checked:
+                self.show_controls_cb.setChecked(False)
+            _emit_if_valid()
+
         self.position_combo.currentIndexChanged.connect(_emit_if_valid)
         self.font_size_spin.valueChanged.connect(_emit_if_valid)
         self.font_family_edit.textChanged.connect(_emit_if_valid)
@@ -261,7 +266,7 @@ class SettingsDialog(QDialog):
         self.show_tray_icon_cb.toggled.connect(_emit_if_valid)
         self.show_controls_cb.toggled.connect(_emit_if_valid)
         self.show_clock_cb.toggled.connect(_emit_if_valid)
-        self.show_timer_cb.toggled.connect(_emit_if_valid)
+        self.show_timer_cb.toggled.connect(_on_show_timer_toggled)
         self.mode_combo.currentIndexChanged.connect(_emit_if_valid)
         self.countdown_spin.valueChanged.connect(_emit_if_valid)
 
