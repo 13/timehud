@@ -153,6 +153,8 @@ class OverlayWindow(QWidget):
         self.lbl_mode.setStyleSheet(
             "color:#666; background:transparent; letter-spacing:2px;"
         )
+        self.lbl_mode.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.lbl_mode.installEventFilter(self)
 
         # ── Control buttons ───────────────────────────────────────────────
         self.btn_start = QPushButton("▶", self)   # ▶ / ⏸
@@ -401,17 +403,63 @@ class OverlayWindow(QWidget):
         p.drawPath(path)
     # ══ Mouse events ═════════════════════════════════════════════════════════
     def eventFilter(self, obj, event):
-        if obj == self.lbl_timer:
+        if obj in (self.lbl_timer, self.lbl_mode):
             if event.type() == QEvent.Type.MouseButtonPress:
                 if event.button() == Qt.MouseButton.LeftButton:
-                    self.toggle_timer()
+                    if obj == self.lbl_timer:
+                        self.toggle_timer()
+                elif event.button() == Qt.MouseButton.MiddleButton:
+                    self._toggle_mode()
                 return True
             elif event.type() == QEvent.Type.MouseButtonDblClick:
                 if event.button() == Qt.MouseButton.LeftButton:
-                    self.reset_timer()
+                    if obj == self.lbl_timer:
+                        self.reset_timer()
                 return True
             elif event.type() == QEvent.Type.Wheel:
-                self._toggle_mode()
+                if obj == self.lbl_mode:
+                    delta = event.angleDelta().y()
+                    pos_x = event.position().x()
+                    width = obj.width()
+
+                    if self.config.timer_mode == "countdown" and pos_x > width * 0.55:
+                        step = 1 if pos_x > width * 0.8 else 60
+                        if delta > 0:
+                            self.config.countdown_duration += step
+                            if self._running:
+                                self._cd_remaining += step
+                        elif delta < 0:
+                            change = min(step, self.config.countdown_duration - 1)
+                            if change > 0:
+                                self.config.countdown_duration -= change
+                                if self._running:
+                                    self._cd_remaining -= change
+
+                        if not self._running:
+                            self._cd_remaining = float(self.config.countdown_duration)
+
+                        self.config.save()
+                        self._refresh_mode_label()
+                        self._update()
+                    else:
+                        modes = ["stopwatch", "countdown"]
+                        curr = modes.index(self.config.timer_mode) if self.config.timer_mode in modes else 0
+                        new_mode = modes[(curr + (-1 if delta > 0 else 1)) % len(modes)]
+                        if self.config.timer_mode != new_mode:
+                            self.reset_timer()
+                            self.config.timer_mode = new_mode
+                            self._refresh_mode_label()
+                            self.config.save()
+                elif obj == self.lbl_timer:
+                    delta = event.angleDelta().y()
+                    modes = ["stopwatch", "countdown"]
+                    curr = modes.index(self.config.timer_mode) if self.config.timer_mode in modes else 0
+                    new_mode = modes[(curr + (-1 if delta > 0 else 1)) % len(modes)]
+                    if self.config.timer_mode != new_mode:
+                        self.reset_timer()
+                        self.config.timer_mode = new_mode
+                        self._refresh_mode_label()
+                        self.config.save()
                 return True
         return super().eventFilter(obj, event)
     def mousePressEvent(self, event) -> None:  # noqa: N802
