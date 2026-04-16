@@ -255,11 +255,12 @@ class SettingsDialog(QDialog):
         ]
 
         logo_found = False
+        from PyQt6.QtGui import QIcon
         for path in possible_paths:
             if os.path.exists(path):
-                pm = QPixmap(path)
-                if not pm.isNull():
-                    pm = pm.scaled(80, 80, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                icon = QIcon(path)
+                if not icon.isNull():
+                    pm = icon.pixmap(80, 80)
                     logo_lbl.setPixmap(pm)
                     logo_found = True
                     break

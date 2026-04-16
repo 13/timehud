@@ -1,17 +1,12 @@
-# TimeHUD
+# <img src="src/timehud/timehud.svg" width="30" height="30" /> TimeHUD
+
 
 A lightweight, transparent HUD overlay for Linux — shows a system clock and
 stopwatch / countdown timer above fullscreen apps (YouTube, Netflix, etc.).
 
-```
-┌────────────────────┐
-│  14:32:07          │  ← system clock (green)
-│ ─────────────────  │
-│  00:12:45          │  ← stopwatch / countdown (white)
-│  STOPWATCH         │
-│  [▶] [↺] [SW]     │  ← controls
-└────────────────────┘
-```
+<p align="center">
+  <img src="assets/screenshot.png" />
+</p>
 
 ---
 
