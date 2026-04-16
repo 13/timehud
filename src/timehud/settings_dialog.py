@@ -7,9 +7,10 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QComboBox, QSpinBox, QCheckBox,
     QLineEdit, QPushButton, QFileDialog,
-    QTabWidget, QWidget, QSlider, QDialogButtonBox,
+    QTabWidget, QWidget, QSlider, QDialogButtonBox, QColorDialog
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QColor
 
 from timehud.config import Config
 
@@ -63,6 +64,8 @@ QPushButton#ok_btn:hover { background: #00CC66; }
 
 
 class SettingsDialog(QDialog):
+    config_changed = pyqtSignal()
+
     def __init__(self, config: Config, parent=None) -> None:
         super().__init__(parent)
         self.config = config
@@ -72,6 +75,7 @@ class SettingsDialog(QDialog):
         self.setStyleSheet(_DARK_STYLE)
         self._build_ui()
         self._load_values()
+        self._connect_live_updates()
 
     # ── UI construction ────────────────────────────────────────────────────
 
@@ -137,6 +141,25 @@ class SettingsDialog(QDialog):
         opacity_row.addWidget(self.opacity_slider)
         opacity_row.addWidget(self.opacity_pct_label)
         form.addRow("Opacity:", opacity_row)
+
+        # Colors
+        self.btn_color_bg = QPushButton("Background")
+        self.btn_color_clock = QPushButton("Clock")
+        self.btn_color_timer_run = QPushButton("Timer Running")
+        self.btn_color_timer_pause = QPushButton("Timer Paused")
+        colors_row1 = QHBoxLayout()
+        colors_row1.addWidget(self.btn_color_bg)
+        colors_row1.addWidget(self.btn_color_clock)
+        colors_row2 = QHBoxLayout()
+        colors_row2.addWidget(self.btn_color_timer_run)
+        colors_row2.addWidget(self.btn_color_timer_pause)
+        form.addRow("Colors:", colors_row1)
+        form.addRow("", colors_row2)
+
+        self.btn_color_bg.clicked.connect(lambda: self._pick_color("color_bg", self.btn_color_bg))
+        self.btn_color_clock.clicked.connect(lambda: self._pick_color("color_clock", self.btn_color_clock))
+        self.btn_color_timer_run.clicked.connect(lambda: self._pick_color("color_timer_run", self.btn_color_timer_run))
+        self.btn_color_timer_pause.clicked.connect(lambda: self._pick_color("color_timer_pause", self.btn_color_timer_pause))
 
         # Checkboxes
         self.show_tray_icon_cb = QCheckBox("Show system tray icon")
@@ -214,6 +237,52 @@ class SettingsDialog(QDialog):
 
     # ── Load / apply ───────────────────────────────────────────────────────
 
+    def _update_color_btn(self, btn: QPushButton, hex_color: str):
+        btn.setStyleSheet(f"background-color: {hex_color}; color: {'#000' if hex_color.upper() == '#FFFFFF' else '#FFF'} ; border: 1px solid #555;")
+
+    def _pick_color(self, config_key: str, btn: QPushButton):
+        initial = getattr(self.config, config_key)
+        initial_color = QColor(initial) if initial else Qt.GlobalColor.white
+        color = QColorDialog.getColor(initial_color, self, "Select Color")
+        if color.isValid():
+            setattr(self.config, config_key, color.name())
+            self._update_color_btn(btn, color.name())
+            self.config_changed.emit()
+
+    def _connect_live_updates(self):
+        def _emit_if_valid():
+            self._apply_to_config()
+            self.config_changed.emit()
+
+        self.position_combo.currentIndexChanged.connect(_emit_if_valid)
+        self.font_size_spin.valueChanged.connect(_emit_if_valid)
+        self.font_family_edit.textChanged.connect(_emit_if_valid)
+        self.opacity_slider.valueChanged.connect(_emit_if_valid)
+        self.show_tray_icon_cb.toggled.connect(_emit_if_valid)
+        self.show_controls_cb.toggled.connect(_emit_if_valid)
+        self.show_clock_cb.toggled.connect(_emit_if_valid)
+        self.show_timer_cb.toggled.connect(_emit_if_valid)
+        self.mode_combo.currentIndexChanged.connect(_emit_if_valid)
+        self.countdown_spin.valueChanged.connect(_emit_if_valid)
+
+    def _apply_to_config(self):
+        c = self.config
+        c.position    = self.position_combo.currentText()
+        c.font_size   = self.font_size_spin.value()
+        c.font_family = self.font_family_edit.text() or "Monospace"
+        c.opacity     = self.opacity_slider.value() / 100.0
+        c.show_tray_icon = self.show_tray_icon_cb.isChecked()
+        c.show_controls  = self.show_controls_cb.isChecked()
+        c.show_clock  = self.show_clock_cb.isChecked()
+        c.show_timer  = self.show_timer_cb.isChecked()
+        c.timer_mode          = self.mode_combo.currentText()
+        c.countdown_duration  = self.countdown_spin.value()
+        c.auto_restart_countdown = self.auto_restart_countdown_cb.isChecked()
+        c.sound_enabled  = self.sound_enabled_cb.isChecked()
+        c.alert_last_5_seconds = self.alert_last_5_seconds_cb.isChecked()
+        c.sound_interval = self.sound_interval_spin.value()
+        c.sound_file     = self.sound_file_edit.text().strip()
+
     def _load_values(self) -> None:
         c = self.config
 
@@ -239,26 +308,13 @@ class SettingsDialog(QDialog):
         self.sound_interval_spin.setValue(c.sound_interval)
         self.sound_file_edit.setText(c.sound_file)
 
+        self._update_color_btn(self.btn_color_bg, c.color_bg)
+        self._update_color_btn(self.btn_color_clock, c.color_clock)
+        self._update_color_btn(self.btn_color_timer_run, c.color_timer_run)
+        self._update_color_btn(self.btn_color_timer_pause, c.color_timer_pause)
+
     def _apply(self) -> None:
-        c = self.config
-        c.position    = self.position_combo.currentText()
-        c.font_size   = self.font_size_spin.value()
-        c.font_family = self.font_family_edit.text() or "Monospace"
-        c.opacity     = self.opacity_slider.value() / 100.0
-        c.show_tray_icon = self.show_tray_icon_cb.isChecked()
-        c.show_controls  = self.show_controls_cb.isChecked()
-        c.show_clock  = self.show_clock_cb.isChecked()
-        c.show_timer  = self.show_timer_cb.isChecked()
-
-        c.timer_mode          = self.mode_combo.currentText()
-        c.countdown_duration  = self.countdown_spin.value()
-        c.auto_restart_countdown = self.auto_restart_countdown_cb.isChecked()
-
-        c.sound_enabled  = self.sound_enabled_cb.isChecked()
-        c.alert_last_5_seconds = self.alert_last_5_seconds_cb.isChecked()
-        c.sound_interval = self.sound_interval_spin.value()
-        c.sound_file     = self.sound_file_edit.text().strip()
-
+        self._apply_to_config()
         self.accept()
 
     # ── Helpers ────────────────────────────────────────────────────────────

@@ -23,7 +23,7 @@ import datetime
 import time
 import math
 from PyQt6.QtCore import (
-    Qt, QPoint, QTimer, QEvent,
+    Qt, QPoint, QTimer, QEvent, QPropertyAnimation, pyqtProperty
 )
 from PyQt6.QtGui import (
     QColor, QFont, QPainter, QPainterPath, QPen, QCursor, QGuiApplication,
@@ -96,6 +96,9 @@ class OverlayWindow(QWidget):
         self._fade_timer = QTimer(self)
         self._fade_timer.timeout.connect(self._fade_step)
         self._fade_timer.start(20)   # ~50 fps for smooth fade
+
+        self._old_size = None
+
     # ══ Window setup ════════════════════════════════════════════════════════
     def _apply_window_flags(self) -> None:
         """Set Qt flags for frameless transparent always-on-top overlay."""
@@ -179,14 +182,21 @@ class OverlayWindow(QWidget):
         ctrl.addWidget(self.btn_mode)
         ctrl.addStretch()
         # ── Assemble ──────────────────────────────────────────────────────
-        if cfg.show_clock:
-            root.addWidget(self.lbl_clock)
-        if cfg.show_timer:
-            root.addWidget(sep)
-            root.addWidget(self.lbl_timer)
-            root.addWidget(self.lbl_mode)
-            if cfg.show_controls:
-                root.addLayout(ctrl)
+        self.lbl_clock.setVisible(cfg.show_clock)
+        root.addWidget(self.lbl_clock)
+        sep.setVisible(cfg.show_timer)
+        root.addWidget(sep)
+        self.lbl_timer.setVisible(cfg.show_timer)
+        root.addWidget(self.lbl_timer)
+        self.lbl_mode.setVisible(cfg.show_timer)
+        root.addWidget(self.lbl_mode)
+
+        self.ctrl_widget = QWidget()
+        self.ctrl_widget.setLayout(ctrl)
+        self.ctrl_widget.setVisible(cfg.show_timer and cfg.show_controls)
+        root.addWidget(self.ctrl_widget)
+
+        self.sep = sep
 
         self._refresh_mode_label()
 
@@ -212,7 +222,52 @@ class OverlayWindow(QWidget):
             "bottom-center": ((scr.width() - w) // 2, scr.height() - h - m),
         }
         x, y = presets.get(self.config.position, (scr.width() - w - m, m))
-        self.move(scr.x() + x, scr.y() + y)
+
+        new_pos = QPoint(scr.x() + x, scr.y() + y)
+        if self.isVisible():
+            self.move(new_pos)
+        else:
+            self.move(new_pos)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        
+        if not self.isVisible():
+            return
+            
+        old_sz = event.oldSize()
+        new_sz = event.size()
+        
+        if not old_sz.isValid() or old_sz == new_sz:
+            return
+            
+        dw = new_sz.width() - old_sz.width()
+        dh = new_sz.height() - old_sz.height()
+
+        # If using presets, _position_window handles it correctly on its own
+        # but calling it constantly might not be ideal. We can manually offset
+        # based on screen quadrants to preserve real "anchor" feeling anywhere.
+        screen = QGuiApplication.screenAt(self.geometry().center())
+        if not screen:
+            screen = QApplication.primaryScreen()
+            
+        scr = screen.availableGeometry()
+        cx = self.geometry().center().x()
+        cy = self.geometry().center().y()
+        
+        dx, dy = 0, 0
+        
+        # If in the right half of the screen, anchor to the right
+        if cx > scr.center().x():
+            dx = -dw
+            
+        # If in the bottom half of the screen, anchor to the bottom
+        if cy > scr.center().y():
+            dy = -dh
+            
+        if dx != 0 or dy != 0:
+            self.move(self.pos() + QPoint(dx, dy))
+
     # ══ Update loop ══════════════════════════════════════════════════════════
     def _update(self) -> None:
         """Called every 100 ms to refresh the display."""
@@ -226,7 +281,7 @@ class OverlayWindow(QWidget):
         if self.config.timer_mode == "stopwatch":
             elapsed = self._get_elapsed()
             self.lbl_timer.setText(_fmt(elapsed))
-            color = _TMR_RUN if self._running else _TMR_PAUSE
+            color = self.config.color_timer_run if self._running else self.config.color_timer_pause
             self.lbl_timer.setStyleSheet(
                 f"color:{color}; background:transparent;"
             )
@@ -261,7 +316,7 @@ class OverlayWindow(QWidget):
                     else:
                         self.sound.play_alert(short=True)   # Short on 5, 4, 3, 2
             else:
-                color = _TMR_RUN if self._running else _TMR_PAUSE
+                color = self.config.color_timer_run if self._running else self.config.color_timer_pause
 
             self.lbl_timer.setStyleSheet(
                 f"color:{color}; background:transparent;"
@@ -336,7 +391,10 @@ class OverlayWindow(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         path = QPainterPath()
         path.addRoundedRect(0, 0, self.width(), self.height(), 13, 13)
-        p.fillPath(path, _BG)
+        # Use dynamic bg color
+        bg = QColor(self.config.color_bg)
+        bg.setAlpha(185)
+        p.fillPath(path, bg)
         pen = QPen(_BORDER)
         pen.setWidthF(1.0)
         p.setPen(pen)
@@ -368,6 +426,25 @@ class OverlayWindow(QWidget):
             and self._drag_offset is not None
         ):
             new_pos = event.globalPosition().toPoint() - self._drag_offset
+
+            # Magnetic snapping
+            screen = QGuiApplication.screenAt(event.globalPosition().toPoint())
+            if not screen:
+                screen = QApplication.primaryScreen()
+            scr = screen.availableGeometry()
+            snap = 20
+            w, h = self.width(), self.height()
+
+            if abs(new_pos.x() - scr.left()) < snap:
+                new_pos.setX(scr.left() + self.config.margin)
+            elif abs(new_pos.x() + w - scr.right()) < snap:
+                new_pos.setX(scr.right() - w - self.config.margin)
+
+            if abs(new_pos.y() - scr.top()) < snap:
+                new_pos.setY(scr.top() + self.config.margin)
+            elif abs(new_pos.y() + h - scr.bottom()) < snap:
+                new_pos.setY(scr.bottom() - h - self.config.margin)
+
             self.move(new_pos)
             event.accept()
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
@@ -450,42 +527,50 @@ class OverlayWindow(QWidget):
     def _open_settings(self) -> None:
         # Import here to avoid circular deps / speed up startup
         from timehud.settings_dialog import SettingsDialog
-        old_preset = self.config.position
-        dlg = SettingsDialog(self.config, parent=None)  # None → no parent widget
-        if dlg.exec():
-            if self.config.position != old_preset:
-                self.config.custom_x = -1
-                self.config.custom_y = -1
-            # Rebuild the whole UI so font/size changes take effect
-            old_pos = self.pos()
-            # Tear down existing layout
-            def clear_layout(lay):
-                if lay is not None:
-                    while lay.count():
-                        child = lay.takeAt(0)
-                        if child.widget():
-                            child.widget().hide()
-                            child.widget().deleteLater()
-                        elif child.layout():
-                            clear_layout(child.layout())
-                            child.layout().deleteLater()
-            clear_layout(self.layout())
-            self._apply_window_flags()
-            self._build_ui()
-            self.resize(0, 0)
+        dlg = SettingsDialog(self.config, parent=None)
+
+        def update_ui():
+            cfg = self.config
+            fs = cfg.font_size
+            ff = cfg.font_family or "Monospace"
+            def make_font(size: int, bold: bool = True) -> QFont:
+                f = QFont(ff, -1)
+                f.setPixelSize(size)
+                f.setBold(bold)
+                return f
+
+            self.lbl_clock.setFont(make_font(fs))
+            self.lbl_clock.setStyleSheet(f"color:{cfg.color_clock}; background:transparent;")
+
+            self.lbl_timer.setFont(make_font(int(fs * 1.25)))
+            self.lbl_mode.setFont(make_font(max(10, fs // 3), bold=False))
+
+            self.lbl_clock.setVisible(cfg.show_clock)
+            self.sep.setVisible(cfg.show_timer)
+            self.lbl_timer.setVisible(cfg.show_timer)
+            self.lbl_mode.setVisible(cfg.show_timer)
+            self.ctrl_widget.setVisible(cfg.show_timer and cfg.show_controls)
+
+            for btn in (self.btn_start, self.btn_reset, self.btn_mode):
+                btn_h = max(24, fs - 4)
+                btn.setFixedHeight(btn_h)
+            self.btn_start.setFixedWidth(max(24, fs - 4) + 6)
+            self.btn_reset.setFixedWidth(max(24, fs - 4) + 6)
+            self.btn_mode.setFixedWidth(max(24, fs - 4) + 14)
+
+            self.setWindowOpacity(cfg.opacity)
             self.adjustSize()
-            self.setWindowOpacity(self.config.opacity)
-            if self.config.position != old_preset:
-                self.config.custom_x = -1
-                self.config.custom_y = -1
+            if cfg.custom_x < 0:
                 self._position_window()
-            else:
-                # User expressly requested: "put it to the last position before apply" entirely rigidly.
-                self.config.custom_x = old_pos.x()
-                self.config.custom_y = old_pos.y()
-                self.move(old_pos)
-            self.show()
+            self._refresh_mode_label()
+            self.update()
+
+        dlg.config_changed.connect(update_ui)
+
+        if dlg.exec():
+            update_ui()
             self.config.save()
+
     def toggle_visibility(self) -> None:
         """Show or hide the overlay (used by global hotkeys)."""
         if self.isVisible():

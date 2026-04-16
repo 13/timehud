@@ -24,6 +24,10 @@ class Config:
     opacity: float = 0.88
     font_size: int = 30        # px, applied to clock/timer labels
     font_family: str = "Monospace"
+    color_bg: str = "#000000"
+    color_clock: str = "#00FF88"
+    color_timer_run: str = "#FFFFFF"
+    color_timer_pause: str = "#888888"
     show_clock: bool = True    # system time widget
     show_timer: bool = True    # stopwatch / countdown widget
 
