@@ -88,7 +88,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._display_tab(),  "🖥️  Display")
         tabs.addTab(self._timer_tab(),    "⏱  Timer")
         tabs.addTab(self._sound_tab(),    "🔔  Sound")
-        tabs.addTab(self._about_tab(),    "ⓘ  About")
+        tabs.addTab(self._about_tab(),    "ℹ️  About")
         root.addWidget(tabs)
 
         # ── Dialog buttons ─────────────────────────────────────────────────
@@ -221,6 +221,12 @@ class SettingsDialog(QDialog):
         self.sound_interval_spin.setToolTip("Play a beep every N seconds of active timer")
         form.addRow("Alert every:", self.sound_interval_spin)
 
+        self.sound_alert_before_spin = QSpinBox()
+        self.sound_alert_before_spin.setRange(0, 3600)
+        self.sound_alert_before_spin.setSuffix(" s (0 to disable)")
+        self.sound_alert_before_spin.setToolTip("Play a double short beep N seconds before the main alert")
+        form.addRow("Double beep before alert:", self.sound_alert_before_spin)
+
         file_row = QHBoxLayout()
         self.sound_file_edit = QLineEdit()
         self.sound_file_edit.setPlaceholderText("Leave empty to use built-in beep")
@@ -325,6 +331,7 @@ class SettingsDialog(QDialog):
         self.show_timer_cb.toggled.connect(_on_show_timer_toggled)
         self.mode_combo.currentIndexChanged.connect(_emit_if_valid)
         self.countdown_spin.valueChanged.connect(_emit_if_valid)
+        self.sound_alert_before_spin.valueChanged.connect(_emit_if_valid)
 
     def _apply_to_config(self):
         c = self.config
@@ -342,6 +349,7 @@ class SettingsDialog(QDialog):
         c.sound_enabled  = self.sound_enabled_cb.isChecked()
         c.alert_last_5_seconds = self.alert_last_5_seconds_cb.isChecked()
         c.sound_interval = self.sound_interval_spin.value()
+        c.sound_alert_before = self.sound_alert_before_spin.value()
         c.sound_file     = self.sound_file_edit.text().strip()
 
     def _load_values(self) -> None:
@@ -367,6 +375,7 @@ class SettingsDialog(QDialog):
         self.sound_enabled_cb.setChecked(c.sound_enabled)
         self.alert_last_5_seconds_cb.setChecked(c.alert_last_5_seconds)
         self.sound_interval_spin.setValue(c.sound_interval)
+        self.sound_alert_before_spin.setValue(c.sound_alert_before)
         self.sound_file_edit.setText(c.sound_file)
 
         self._update_color_btn(self.btn_color_bg, c.color_bg)

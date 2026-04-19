@@ -22,14 +22,16 @@ class SoundManager:
 
     # ── Public API ─────────────────────────────────────────────────────────
 
-    def play_alert(self, short: bool = False) -> None:
+    def play_alert(self, short: bool = False, double_beep: bool = False) -> None:
         """Play the configured (or default) alert in a background thread."""
         if not self.config.sound_enabled:
             return
 
         sound_file = self.config.sound_file
         if not sound_file or not os.path.exists(sound_file):
-            if short:
+            if double_beep:
+                sound_file = self._get_double_beep(880, 0.1)
+            elif short:
                 sound_file = self._get_beep(880, 0.1)
             else:
                 sound_file = self._get_beep(880, 0.5)
@@ -73,6 +75,42 @@ class SoundManager:
                 env = attack * release
                 sample = int(20000 * env * math.sin(2 * math.pi * frequency * t))
                 wf.writeframes(struct.pack("<h", sample))
+
+        return path
+
+    def _get_double_beep(self, frequency=880, duration=0.1) -> str:
+        """Generate a double beep WAV and return its path."""
+        key = (frequency, duration, "double")
+        if key in self._beeps and os.path.exists(self._beeps[key]):
+            return self._beeps[key]
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        tmp.close()
+        path = tmp.name
+        self._beeps[key] = path
+
+        sample_rate = 44100
+        n_samples = int(sample_rate * duration)
+        silence_samples = int(sample_rate * 0.1)
+
+        with wave.open(path, "w") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)           # 16-bit PCM
+            wf.setframerate(sample_rate)
+
+            def write_beep():
+                for i in range(n_samples):
+                    t   = i / sample_rate
+                    attack  = min(1.0, t / 0.008)
+                    release = min(1.0, (duration - t) / 0.025)
+                    env = attack * release
+                    sample = int(20000 * env * math.sin(2 * math.pi * frequency * t))
+                    wf.writeframes(struct.pack("<h", sample))
+
+            write_beep()
+            for _ in range(silence_samples):
+                wf.writeframes(struct.pack("<h", 0))
+            write_beep()
 
         return path
 

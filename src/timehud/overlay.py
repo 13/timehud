@@ -79,6 +79,7 @@ class OverlayWindow(QWidget):
         self._cd_remaining = float(config.countdown_duration)
         # Sound beat counter: fires every sound_interval seconds
         self._sound_beats  = 0
+        self._sound_alert_before_beats = 0
         self._last_short_beep_sec = -1
         # ── Drag state ────────────────────────────────────────────────────
         self._drag_offset: QPoint | None = None
@@ -279,11 +280,22 @@ class OverlayWindow(QWidget):
             self.lbl_clock.setText(now.strftime("%H:%M:%S"))
         if not self.config.show_timer:
             return
+
+        color_override = None
+        if self._running and self.config.sound_enabled and self.config.sound_alert_before > 0:
+            ref = self._get_elapsed()
+            next_main_beep_target = (int(ref / self.config.sound_interval) + 1) * self.config.sound_interval
+            alert_before_target = next_main_beep_target - self.config.sound_alert_before
+            if ref >= alert_before_target and ref < next_main_beep_target:
+                color_override = _TMR_WARN
+
         # ── Timer ─────────────────────────────────────────────────────────
         if self.config.timer_mode == "stopwatch":
             elapsed = self._get_elapsed()
             self.lbl_timer.setText(_fmt(elapsed))
             color = self.config.color_timer_run if self._running else self.config.color_timer_pause
+            if self._running and color_override is not None:
+                color = color_override
             self.lbl_timer.setStyleSheet(
                 f"color:{color}; background:transparent;"
             )
@@ -320,12 +332,22 @@ class OverlayWindow(QWidget):
             else:
                 color = self.config.color_timer_run if self._running else self.config.color_timer_pause
 
+            if self._running and color_override is not None and remaining > 6.0:
+                color = color_override
+
             self.lbl_timer.setStyleSheet(
                 f"color:{color}; background:transparent;"
             )
         # ── Periodic sound alerts ─────────────────────────────────────────
         if self._running and self.config.sound_enabled:
             ref     = self._get_elapsed()   # seconds since "start" of this run
+
+            if self.config.sound_alert_before > 0:
+                next_early_beep_target = (self._sound_alert_before_beats + 1) * self.config.sound_interval - self.config.sound_alert_before
+                if next_early_beep_target > 0 and ref >= next_early_beep_target:
+                    self._sound_alert_before_beats += 1
+                    self.sound.play_alert(double_beep=True)
+
             beats   = int(ref / self.config.sound_interval)
             if beats > self._sound_beats:
                 self._sound_beats = beats
@@ -359,6 +381,7 @@ class OverlayWindow(QWidget):
             self._start_mono  = time.monotonic()
             self._running     = True
             self._sound_beats = int(self._get_elapsed() / self.config.sound_interval)
+            self._sound_alert_before_beats = int((self._get_elapsed() + self.config.sound_alert_before) / self.config.sound_interval)
             self.btn_start.setText("⏸")
     def reset_timer(self) -> None:
         """Stop and zero the timer."""
@@ -366,6 +389,7 @@ class OverlayWindow(QWidget):
         self._elapsed      = 0.0
         self._cd_remaining = float(self.config.countdown_duration)
         self._sound_beats  = 0
+        self._sound_alert_before_beats = 0
         self._last_short_beep_sec = -1
         self.btn_start.setText("▶")
         self._update()
