@@ -85,10 +85,10 @@ class SettingsDialog(QDialog):
         root.setSpacing(12)
 
         tabs = QTabWidget()
-        tabs.addTab(self._display_tab(),  "🖥  Display")
+        tabs.addTab(self._display_tab(),  "🖥️  Display")
         tabs.addTab(self._timer_tab(),    "⏱  Timer")
         tabs.addTab(self._sound_tab(),    "🔔  Sound")
-        tabs.addTab(self._about_tab(),    "ℹ  About")
+        tabs.addTab(self._about_tab(),    "ⓘ  About")
         root.addWidget(tabs)
 
         # ── Dialog buttons ─────────────────────────────────────────────────
