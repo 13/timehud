@@ -39,6 +39,7 @@ class Config:
     # ── Sound ──────────────────────────────────────────────────────────────
     sound_enabled: bool = True
     sound_interval: int = 60   # play alert every N seconds of running time
+    sound_alert_before: int = 0  # play short beep N seconds before main alert, 0 to disable
     sound_file: str = ""       # empty = built-in generated beep
 
     # ── Behaviour ──────────────────────────────────────────────────────────
