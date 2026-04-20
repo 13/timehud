@@ -22,6 +22,20 @@ exec "$DIR/.venv/bin/python" -m timehud.main "$@"
 EOF
 chmod +x "$LAUNCHER"
 
+# Install application icon
+ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
+mkdir -p "$ICON_DIR"
+cp "$SCRIPT_DIR/src/timehud/timehud.svg" "$ICON_DIR/timehud.svg"
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache "$HOME/.local/share/icons/hicolor" -t || true
+fi
+
+# Install desktop entry
+APP_DIR="$HOME/.local/share/applications"
+mkdir -p "$APP_DIR"
+# Substitute the absolute path to the launcher in the Exec line
+sed "s|Exec=timehud|Exec=$LAUNCHER|g" "$SCRIPT_DIR/app/timehud.desktop" > "$APP_DIR/timehud.desktop"
+
 echo ""
 echo "✅  Done!  Run the overlay with:"
 echo "   $LAUNCHER"

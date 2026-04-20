@@ -3,7 +3,7 @@ Type=Application
 Name=timehud
 Comment=Transparent clock and timer overlay for Linux
 Exec=timehud
-Icon=python
+Icon=timehud
 Terminal=false
 Categories=Utility;
 
