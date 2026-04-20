@@ -2,8 +2,8 @@
 # Install with: pip install -r requirements.txt
 
 # Required
-PyQt6>=6.4.0
+PyQt6>=6.11.0
 
 # Optional – enables global hotkeys (Ctrl+Shift+Space etc.)
 # Comment out if you don't need them or have install issues.
-pynput>=1.7.6
+pynput>=1.8.1

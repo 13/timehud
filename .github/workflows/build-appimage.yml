@@ -3,7 +3,7 @@ name: Build AppImage
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -11,40 +11,125 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+
+    env:
+      APP_NAME: timehud
+      PYTHON_VERSION: "3.14"
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "VERSION=${GITHUB_REF_NAME}" >> $GITHUB_ENV
+          else
+            echo "VERSION=dev-$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+          fi
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            librsvg2-bin \
+            file
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install python-appimage
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
+      # -----------------------------
+      # Prepare AppDir (CRITICAL STEP)
+      # -----------------------------
+      - name: Prepare AppDir
+        run: |
+          set -eux
+
+          APPDIR=app
+
+          # Ensure required dirs
+          mkdir -p $APPDIR/usr/share/icons/hicolor/256x256/apps
+          mkdir -p $APPDIR/usr/share/applications
+          mkdir -p $APPDIR/usr/bin
+
+          # ---- AppRun ----
+          mv $APPDIR/entrypoint.sh $APPDIR/AppRun
+          chmod +x $APPDIR/AppRun
+
+          # ---- Desktop file ----
+          cp $APPDIR/timehud.desktop $APPDIR/usr/share/applications/
+
+          # Ensure correct Exec + Icon
+          sed -i 's/^Exec=.*/Exec=AppRun/' $APPDIR/timehud.desktop
+          sed -i 's/^Icon=.*/Icon=timehud/' $APPDIR/timehud.desktop
+
+          # ---- Icons ----
+          cp $APPDIR/timehud.svg $APPDIR/usr/share/icons/hicolor/256x256/apps/timehud.svg
+
+          # Generate PNG fallback (important for some DEs)
+          rsvg-convert -w 256 -h 256 \
+            $APPDIR/timehud.svg \
+            -o $APPDIR/usr/share/icons/hicolor/256x256/apps/timehud.png
+
+          # Root-level icon (fallback)
+          cp $APPDIR/timehud.svg $APPDIR/
+
+          # DirIcon (used by AppImage launchers)
+          ln -sf timehud.svg $APPDIR/.DirIcon
+
+          # ---- Binary entry ----
+          ln -sf ../AppRun $APPDIR/usr/bin/timehud
+
+          # Optional: AppStream metadata
+          if [ -f appdata.xml ]; then
+            mkdir -p $APPDIR/usr/share/metainfo
+            cp appdata.xml $APPDIR/usr/share/metainfo/${APP_NAME}.appdata.xml
+          fi
+
+      # -----------------------------
+      # Build AppImage
+      # -----------------------------
       - name: Build AppImage
         env:
           PYTHONPATH: src
         run: |
-          python-appimage build app -n timehud app
-          ls -lh *.AppImage
+          set -eux
+          python-appimage build app -n $APP_NAME --comp zstd app
 
-      - name: Upload Artifact
+      - name: Rename artifact
+        run: |
+          set -eux
+          ARCH=$(uname -m)
+          OUTPUT="${APP_NAME}-${VERSION}-${ARCH}.AppImage"
+          mv *.AppImage "$OUTPUT"
+          echo "APPIMAGE=$OUTPUT" >> $GITHUB_ENV
+
+      - name: Verify AppImage
+        run: |
+          file "$APPIMAGE"
+          chmod +x "$APPIMAGE"
+          ./"$APPIMAGE" --appimage-version || true
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TimeHUD-AppImage
-          path: "*.AppImage"
+          name: ${{ env.APP_NAME }}-AppImage
+          path: ${{ env.APPIMAGE }}
 
-      - name: Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          tag_name: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
-          files: "*.AppImage"
+          name: Release ${{ env.VERSION }}
+          tag_name: ${{ env.VERSION }}
+          files: ${{ env.APPIMAGE }}

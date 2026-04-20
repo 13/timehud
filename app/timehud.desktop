@@ -2,8 +2,9 @@
 Type=Application
 Name=timehud
 Comment=Transparent clock and timer overlay for Linux
-Exec=timehud
+Exec=AppRun
 Icon=timehud
+StartupWMClass=timehud
 Terminal=false
 Categories=Utility;
 

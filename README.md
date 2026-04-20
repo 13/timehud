@@ -133,17 +133,7 @@ Pass `--wayland` to use the native Wayland backend (overlay may not appear above
 ### AppImage - manual build
 
 ```bash
-cd /home/ben/repo/timehud
-python3 -m venv .venv-appimage
-source .venv-appimage/bin/activate
-python -m pip install --upgrade pip
-pip install python-appimage
-pip install -r requirements.txt
-
-# Required so python-appimage can bundle local+timehud from src/timehud
-export PYTHONPATH="src:$PYTHONPATH"
-python-appimage build app app
-ls -lh *.AppImage
+./build.sh
 ```
 
 Run the built image:
