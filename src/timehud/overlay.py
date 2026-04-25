@@ -22,6 +22,7 @@ Controls:
 import datetime
 import time
 import math
+from collections.abc import Callable
 from PyQt6.QtCore import (
     Qt, QPoint, QTimer, QEvent, QPropertyAnimation, pyqtProperty
 )
@@ -68,10 +69,16 @@ QMenu::separator     { height: 1px; background: #333; margin: 3px 6px; }
 class OverlayWindow(QWidget):
     """Transparent HUD overlay: clock + stopwatch / countdown."""
 
-    def __init__(self, config: Config) -> None:
+    def __init__(
+        self,
+        config: Config,
+        on_tray_icon_toggle: Callable[[bool], None] | None = None,
+    ) -> None:
         super().__init__()
         self.config = config
         self.sound  = SoundManager(config)
+        self._on_tray_icon_toggle = on_tray_icon_toggle
+        self._last_show_tray_icon = config.show_tray_icon
         # ── Timer state ───────────────────────────────────────────────────
         self._running      = False
         self._start_mono   = 0.0   # time.monotonic() when last started
@@ -638,6 +645,12 @@ class OverlayWindow(QWidget):
             if cfg.custom_x < 0:
                 self._position_window()
             self._refresh_mode_label()
+
+            if cfg.show_tray_icon != self._last_show_tray_icon:
+                self._last_show_tray_icon = cfg.show_tray_icon
+                if self._on_tray_icon_toggle is not None:
+                    self._on_tray_icon_toggle(cfg.show_tray_icon)
+
             self.update()
 
         dlg.config_changed.connect(update_ui)

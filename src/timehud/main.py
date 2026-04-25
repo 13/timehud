@@ -32,9 +32,8 @@ if "--wayland" not in sys.argv:
     os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
 from PyQt6.QtWidgets import QApplication  # noqa: E402 (after env var)
-from PyQt6.QtWidgets import QSystemTrayIcon, QMenu, QStyle
-from PyQt6.QtGui import QIcon, QPixmap, QColor, QPainter, QPen
-from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QSystemTrayIcon
+from PyQt6.QtGui import QIcon
 
 from timehud.config import Config           # noqa: E402
 from timehud.overlay import OverlayWindow   # noqa: E402
@@ -123,38 +122,40 @@ def main() -> None:
     # Keep running even when the settings dialog is the only open window
     app.setQuitOnLastWindowClosed(False)
 
-    # ── System Tray ────────────────────────────────────────────────────────
-    tray_icon = None
-    if cfg.show_tray_icon:
-        tray_icon = QSystemTrayIcon(app)
-
-        icon_path = os.path.join(os.path.dirname(__file__), "timehud.svg")
-        tray_icon.setIcon(QIcon(icon_path))
-        tray_icon.setToolTip("TimeHUD")
-
-        tray_menu = QMenu()
-        act_toggle = tray_menu.addAction("Show/Hide Overlay")
-        tray_menu.addSeparator()
-        act_quit = tray_menu.addAction("Quit")
-        tray_icon.setContextMenu(tray_menu)
-        tray_icon.show()
-
     # Allow Ctrl+C in the terminal to terminate cleanly
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     # ── Create & show overlay ──────────────────────────────────────────────
-    window = OverlayWindow(cfg)
+    tray_icon: QSystemTrayIcon | None = None
+
+    def _set_tray_visibility(enabled: bool) -> None:
+        nonlocal tray_icon
+
+        # --no-tray is a runtime override for this process.
+        if args.no_tray:
+            enabled = False
+
+        if enabled:
+            if tray_icon is None:
+                tray_icon = QSystemTrayIcon(app)
+                icon_path = os.path.join(os.path.dirname(__file__), "timehud.svg")
+                tray_icon.setIcon(QIcon(icon_path))
+                tray_icon.setToolTip("TimeHUD")
+                tray_icon.activated.connect(_on_tray_activated)
+
+            tray_icon.setContextMenu(window.create_context_menu())
+            tray_icon.show()
+        elif tray_icon is not None:
+            tray_icon.hide()
+
+    window = OverlayWindow(cfg, on_tray_icon_toggle=_set_tray_visibility)
     window.show()
 
-    # Sync tray menu to use the identical dynamically built menu from the app
-    if tray_icon is not None:
-        tray_menu = window.create_context_menu()
-        tray_icon.setContextMenu(tray_menu)
+    def _on_tray_activated(reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            window.toggle_visibility()
 
-        def _on_tray_activated(reason):
-            if reason == QSystemTrayIcon.ActivationReason.Trigger:
-                window.toggle_visibility()
-        tray_icon.activated.connect(_on_tray_activated)
+    _set_tray_visibility(cfg.show_tray_icon)
 
     # ── Optional global hotkeys ────────────────────────────────────────────
     hotkey_handler = _setup_hotkeys(window)
