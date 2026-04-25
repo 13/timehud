@@ -12,6 +12,12 @@ stopwatch / countdown timer above fullscreen apps (YouTube, Netflix, etc.).
 
 ## Quick start
 
+### Pre-built binaries
+
+```bash
+curl -sSL https://raw.githubusercontent.com/13/timehud/main/install-appimage.sh | sh
+```
+
 ```bash
 # 1. Install dependencies (creates .venv automatically)
 bash install.sh
