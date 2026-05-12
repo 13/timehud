@@ -81,9 +81,6 @@ jobs:
             $APPDIR/timehud.svg \
             -o $APPDIR/usr/share/icons/hicolor/256x256/apps/timehud.png
 
-          # Root-level icon (fallback)
-          cp $APPDIR/timehud.svg $APPDIR/
-
           # DirIcon (used by AppImage launchers)
           ln -sf timehud.svg $APPDIR/.DirIcon
 
