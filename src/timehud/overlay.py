@@ -27,7 +27,8 @@ from PyQt6.QtCore import (
     Qt, QPoint, QTimer, QEvent, QPropertyAnimation, pyqtProperty
 )
 from PyQt6.QtGui import (
-    QColor, QFont, QPainter, QPainterPath, QPen, QCursor, QGuiApplication,
+    QAction, QActionGroup, QColor, QFont, QPainter, QPainterPath, QPen,
+    QCursor, QGuiApplication,
 )
 from PyQt6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QMenu,
@@ -534,33 +535,63 @@ class OverlayWindow(QWidget):
             self.config.custom_x = pos.x()
             self.config.custom_y = pos.y()
             self.config.save()
-    def create_context_menu(self) -> QMenu:
+    def create_context_menu(self, include_window_actions: bool | None = None) -> QMenu:
         """Build and return the context menu (used by both overlay and tray)."""
+        if include_window_actions is None:
+            include_window_actions = self.config.show_tray_icon
+
         menu = QMenu(self)
         menu.setStyleSheet(_MENU_STYLE)
         act_settings = menu.addAction("⚙  Settings…")
         act_settings.triggered.connect(self._open_settings)
         menu.addSeparator()
-        ct_label = "🖱  Click-Through: ON" if self.config.click_through else "🖱  Click-Through: OFF"
-        act_ct = menu.addAction(ct_label)
-        act_ct.triggered.connect(self._toggle_click_through)
+
+        if include_window_actions:
+            ct_label = "🖱  Click-Through: ON" if self.config.click_through else "🖱  Click-Through: OFF"
+            act_ct = menu.addAction(ct_label)
+            act_ct.triggered.connect(self._toggle_click_through)
+
         # Opacity sub-menu
         op_menu = menu.addMenu("💧  Opacity")
+        op_group = QActionGroup(op_menu)
+        op_group.setExclusive(True)
+        current_pct = max(0, min(100, round(self.config.opacity * 100)))
+        matched_opacity = False
         for pct in (30, 50, 70, 85, 95, 100):
-            a = op_menu.addAction(f"{pct}%")
+            a: QAction = op_menu.addAction(f"{pct}%")
+            a.setCheckable(True)
+            op_group.addAction(a)
+            if current_pct == pct:
+                a.setChecked(True)
+                matched_opacity = True
             a.triggered.connect(lambda checked, v=pct/100: self._set_opacity(v))
+        if not matched_opacity:
+            current_action = op_menu.addAction(f"Current: {current_pct}%")
+            current_action.setCheckable(True)
+            current_action.setChecked(True)
+            op_group.addAction(current_action)
+            current_action.triggered.connect(
+                lambda checked, v=current_pct / 100: self._set_opacity(v)
+            )
         # Position sub-menu
         pos_menu = menu.addMenu("📍  Position")
+        pos_group = QActionGroup(pos_menu)
+        pos_group.setExclusive(True)
         for preset in (
             "top-left", "top-right",
             "bottom-left", "bottom-right",
             "top-center", "bottom-center",
         ):
-            a = pos_menu.addAction(preset.replace("-", " ").title())
+            a: QAction = pos_menu.addAction(preset.replace("-", " ").title())
+            a.setCheckable(True)
+            a.setChecked(preset == self.config.position)
+            pos_group.addAction(a)
             a.triggered.connect(lambda checked, p=preset: self._set_preset_position(p))
-        menu.addSeparator()
-        act_toggle = menu.addAction("👁  Show/Hide Overlay")
-        act_toggle.triggered.connect(self.toggle_visibility)
+
+        if include_window_actions:
+            menu.addSeparator()
+            act_toggle = menu.addAction("👁  Show/Hide Overlay")
+            act_toggle.triggered.connect(self.toggle_visibility)
         act_quit = menu.addAction("✕  Quit")
         act_quit.triggered.connect(self._quit_app)
         return menu
