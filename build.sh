@@ -21,36 +21,7 @@ fi
 
 echo "==> Preparing AppDir"
 
-mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
-mkdir -p "$APPDIR/usr/share/applications"
-mkdir -p "$APPDIR/usr/bin"
-
-if [ -f "$APPDIR/entrypoint.sh" ]; then
-  chmod +x "$APPDIR/entrypoint.sh"
-elif [ -f "$APPDIR/AppRun" ]; then
-  # python-appimage consumes entrypoint.* to generate AppDir/AppRun.
-  cp "$APPDIR/AppRun" "$APPDIR/entrypoint.sh"
-  chmod +x "$APPDIR/entrypoint.sh"
-else
-  echo "ERROR: missing $APPDIR/entrypoint.sh (or $APPDIR/AppRun)" >&2
-  exit 1
-fi
-chmod +x "$APPDIR/AppRun" 2>/dev/null || true
-
-sed -i 's/^Exec=.*/Exec=AppRun/' "$APPDIR/timehud.desktop"
-sed -i 's/^Icon=.*/Icon=timehud/' "$APPDIR/timehud.desktop"
-
-cp "$APPDIR/timehud.svg" "$APPDIR/usr/share/icons/hicolor/256x256/apps/timehud.svg"
-
-if command -v rsvg-convert >/dev/null 2>&1; then
-  rsvg-convert -w 256 -h 256 \
-    "$APPDIR/timehud.svg" \
-    -o "$APPDIR/usr/share/icons/hicolor/256x256/apps/timehud.png"
-fi
-
-# Keep icon at AppDir root so .DirIcon can point to it.
-ln -sf timehud.svg "$APPDIR/.DirIcon"
-ln -sf ../AppRun "$APPDIR/usr/bin/timehud"
+APPDIR="$APPDIR" APP_NAME="$APP_NAME" bash ./scripts/prepare_appdir.sh "$APPDIR"
 
 echo "==> Building AppImage"
 
