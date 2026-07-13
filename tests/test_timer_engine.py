@@ -112,3 +112,88 @@ class TestModeSwitch:
         assert engine.config.timer_mode == "countdown"
         assert engine.running is False
         assert engine.remaining() == pytest.approx(engine.config.countdown_duration)
+
+
+def collect_beeps(engine, clock, seconds, step=0.1):
+    """Advance in `step` increments, ticking like the 100 ms UI loop."""
+    out = []
+    n = int(seconds / step)
+    for _ in range(n):
+        clock.advance(step)
+        out.extend(engine.tick().beeps)
+    return out
+
+
+class TestIntervalBeeps:
+    @pytest.fixture
+    def engine(self, config, clock):
+        config.timer_mode = "stopwatch"
+        config.sound_enabled = True
+        config.sound_interval = 60
+        config.sound_alert_before = 0
+        return TimerEngine(config, clock=clock)
+
+    def test_main_beep_every_interval(self, engine, clock):
+        engine.toggle()
+        beeps = collect_beeps(engine, clock, 125)
+        mains = [b for b in beeps if not b.short and not b.double]
+        assert len(mains) == 2          # at 60 s and 120 s
+
+    def test_no_beeps_when_sound_disabled(self, engine, clock):
+        engine.config.sound_enabled = False
+        engine.toggle()
+        assert collect_beeps(engine, clock, 125) == []
+
+    def test_no_beeps_while_paused(self, engine, clock):
+        assert collect_beeps(engine, clock, 125) == []
+
+    def test_alert_before_double_beep(self, engine, clock):
+        engine.config.sound_alert_before = 5
+        engine.reset()
+        engine.toggle()
+        beeps = collect_beeps(engine, clock, 59)
+        doubles = [b for b in beeps if b.double]
+        assert len(doubles) == 1        # at 55 s (60 − 5)
+        beeps = collect_beeps(engine, clock, 3)  # through 62 s
+        mains = [b for b in beeps if not b.short and not b.double]
+        assert len(mains) == 1          # main beep still at 60 s
+
+    def test_pause_resume_does_not_replay_past_beeps(self, engine, clock):
+        engine.toggle()
+        collect_beeps(engine, clock, 70)   # beep at 60 consumed
+        engine.toggle()                    # pause at 70 s
+        engine.toggle()                    # resume
+        beeps = collect_beeps(engine, clock, 5)
+        assert beeps == []                 # nothing until 120 s
+
+
+class TestLastFiveSeconds:
+    @pytest.fixture
+    def engine(self, config, clock):
+        config.timer_mode = "countdown"
+        config.countdown_duration = 30
+        config.sound_enabled = True
+        config.sound_interval = 6000       # keep interval beeps out of the way
+        config.alert_last_5_seconds = True
+        return TimerEngine(config, clock=clock)
+
+    def test_short_beeps_then_long(self, engine, clock):
+        engine.toggle()
+        beeps = collect_beeps(engine, clock, 29.95)
+        shorts = [b for b in beeps if b.short]
+        longs = [b for b in beeps if not b.short and not b.double]
+        assert len(shorts) == 5            # displayed 6,5,4,3,2
+        assert len(longs) == 1             # displayed 1
+
+    def test_warn_then_end_state(self, engine, clock):
+        engine.toggle()
+        clock.advance(26.5)                # remaining 3.5 → displayed 4
+        assert engine.tick().state == "warn"
+        clock.advance(2.6)                 # remaining 0.9 → displayed 1
+        assert engine.tick().state == "end"
+
+    def test_disabled_flag_suppresses(self, engine, clock):
+        engine.config.alert_last_5_seconds = False
+        engine.toggle()
+        beeps = collect_beeps(engine, clock, 29.5)
+        assert [b for b in beeps if b.short] == []
