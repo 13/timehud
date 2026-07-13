@@ -34,15 +34,9 @@ from PyQt6.QtWidgets import (
 )
 from timehud.config import Config, valid_presets
 from timehud.sound_manager import SoundManager
+from timehud.themes import get_theme
 from timehud.timer_engine import TimerEngine
 # ── Palette ────────────────────────────────────────────────────────────────
-_BG        = QColor(0,   0,   0,  185)   # dark translucent background
-_BORDER    = QColor(255, 255, 255, 38)   # subtle 1-px border
-_CLK_COLOR = "#00FF88"                   # green clock
-_TMR_RUN   = "#FFFFFF"                   # timer running
-_TMR_PAUSE = "#888888"                   # timer paused
-_TMR_WARN  = "#FF9900"                   # ≤ 10 s remaining
-_TMR_END   = "#FF3333"                   # countdown finished
 _SEP_COLOR = "rgba(255,255,255,35)"
 _BTN_STYLE = """
 QPushButton {
@@ -125,31 +119,21 @@ class OverlayWindow(QWidget):
         root.setSpacing(0)
         cfg = self.config
         fs  = cfg.font_size
-        ff  = cfg.font_family or "Monospace"
-        def make_font(size: int, bold: bool = True) -> QFont:
-            f = QFont(ff, -1)
-            f.setPixelSize(size)
-            f.setBold(bold)
-            return f
         # ── Clock row ─────────────────────────────────────────────────────
         self.lbl_clock = QLabel("--:--:--")
-        self.lbl_clock.setFont(make_font(fs))
         self.lbl_clock.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_clock.setStyleSheet(f"color:{_CLK_COLOR}; background:transparent;")
         # ── Separator ─────────────────────────────────────────────────────
         sep = QLabel()
         sep.setFixedHeight(1)
         sep.setStyleSheet(f"background:{_SEP_COLOR}; margin: 5px 0px;")
         # ── Timer display ─────────────────────────────────────────────────
         self.lbl_timer = QLabel("00:00")
-        self.lbl_timer.setFont(make_font(int(fs * 1.25)))
         self.lbl_timer.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_timer.setStyleSheet(f"color:{_TMR_PAUSE}; background:transparent;")
+        self.lbl_timer.setStyleSheet(f"color:{cfg.color_timer_pause}; background:transparent;")
         self.lbl_timer.setCursor(Qt.CursorShape.PointingHandCursor)
         self.lbl_timer.installEventFilter(self)
         # ── Mode label ────────────────────────────────────────────────────
         self.lbl_mode = QLabel("STOPWATCH")
-        self.lbl_mode.setFont(make_font(max(10, fs // 3), bold=False))
         self.lbl_mode.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_mode.setStyleSheet(
             "color:#666; background:transparent; letter-spacing:2px;"
@@ -201,7 +185,29 @@ class OverlayWindow(QWidget):
 
         self.sep = sep
 
+        self._apply_styles()
         self._refresh_mode_label()
+
+    def _apply_styles(self) -> None:
+        """Apply theme + config fonts/colors to the labels. Idempotent."""
+        cfg = self.config
+        theme = get_theme(cfg.theme)
+        fs = cfg.font_size
+        ff = theme.font_family or cfg.font_family or "Monospace"
+
+        def make_font(size: int, bold: bool = True) -> QFont:
+            f = QFont(ff, -1)
+            f.setPixelSize(size)
+            f.setBold(bold)
+            return f
+
+        self.lbl_clock.setFont(make_font(int(fs * theme.clock_scale)))
+        self.lbl_clock.setStyleSheet(
+            f"color:{_rgba(cfg.color_clock, theme.clock_alpha)}; background:transparent;"
+        )
+        self.lbl_timer.setFont(make_font(int(fs * theme.timer_scale)))
+        self.lbl_mode.setFont(make_font(max(10, fs // 3), bold=False))
+        self.sep.setVisible(cfg.show_timer and theme.show_separator)
 
     # ══ Positioning ══════════════════════════════════════════════════════════
     def _position_window(self) -> None:
@@ -283,11 +289,12 @@ class OverlayWindow(QWidget):
         result = self.engine.tick()
         self.lbl_timer.setText(_fmt(result.display))
 
+        theme = get_theme(self.config.theme)
         colors = {
             "run":   self.config.color_timer_run,
             "pause": self.config.color_timer_pause,
-            "warn":  _TMR_WARN,
-            "end":   _TMR_END,
+            "warn":  theme.color_warn,
+            "end":   theme.color_end,
         }
         self.lbl_timer.setStyleSheet(
             f"color:{colors[result.state]}; background:transparent;"
@@ -360,19 +367,24 @@ class OverlayWindow(QWidget):
             self.btn_mode.setText("CD")
     # ══ Painting ═════════════════════════════════════════════════════════════
     def paintEvent(self, _event) -> None:  # noqa: N802
-        """Draw dark rounded background with subtle border."""
+        """Draw the themed rounded background."""
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        theme = get_theme(self.config.theme)
+        r = theme.radius
         path = QPainterPath()
-        path.addRoundedRect(0, 0, self.width(), self.height(), 13, 13)
-        # Use dynamic bg color
+        path.addRoundedRect(0, 0, self.width(), self.height(), r, r)
         bg = QColor(self.config.color_bg)
-        bg.setAlpha(185)
+        bg.setAlpha(theme.bg_alpha)
         p.fillPath(path, bg)
-        pen = QPen(_BORDER)
-        pen.setWidthF(1.0)
-        p.setPen(pen)
-        p.drawPath(path)
+        if theme.border_alpha > 0:
+            pen = QPen(QColor(255, 255, 255, theme.border_alpha))
+            pen.setWidthF(1.0)
+            p.setPen(pen)
+            p.drawPath(path)
+        if theme.top_edge_alpha > 0:
+            p.setPen(QPen(QColor(255, 255, 255, theme.top_edge_alpha)))
+            p.drawLine(r, 1, self.width() - r, 1)
     # ══ Mouse events ═════════════════════════════════════════════════════════
     def eventFilter(self, obj, event):
         if obj in (self.lbl_timer, self.lbl_mode):
@@ -608,29 +620,16 @@ class OverlayWindow(QWidget):
             if not cfg.show_timer:
                 self.reset_timer()
 
-            fs = cfg.font_size
-            ff = cfg.font_family or "Monospace"
-            def make_font(size: int, bold: bool = True) -> QFont:
-                f = QFont(ff, -1)
-                f.setPixelSize(size)
-                f.setBold(bold)
-                return f
-
-            self.lbl_clock.setFont(make_font(fs))
-            self.lbl_clock.setStyleSheet(f"color:{cfg.color_clock}; background:transparent;")
-
-            self.lbl_timer.setFont(make_font(int(fs * 1.25)))
-            self.lbl_mode.setFont(make_font(max(10, fs // 3), bold=False))
+            self._apply_styles()
 
             self.lbl_clock.setVisible(cfg.show_clock)
-            self.sep.setVisible(cfg.show_timer)
             self.lbl_timer.setVisible(cfg.show_timer)
             self.lbl_mode.setVisible(cfg.show_timer)
             self.ctrl_widget.setVisible(cfg.show_timer and cfg.show_controls)
 
+            fs = cfg.font_size
             for btn in (self.btn_start, self.btn_reset, self.btn_mode):
-                btn_h = max(24, fs - 4)
-                btn.setFixedHeight(btn_h)
+                btn.setFixedHeight(max(24, fs - 4))
             self.btn_start.setFixedWidth(max(24, fs - 4) + 6)
             self.btn_reset.setFixedWidth(max(24, fs - 4) + 6)
             self.btn_mode.setFixedWidth(max(24, fs - 4) + 14)
@@ -667,6 +666,11 @@ class OverlayWindow(QWidget):
         if self._fade_value >= self.config.opacity:
             self._fade_timer.stop()
 # ── Helpers ────────────────────────────────────────────────────────────────
+def _rgba(hex_color: str, alpha: float) -> str:
+    """'#RRGGBB' + 0-1 alpha → Qt stylesheet rgba() string."""
+    h = hex_color.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    return f"rgba({r},{g},{b},{int(alpha * 255)})"
 def _fmt(secs: float) -> str:
     """Format seconds → HH:MM:SS (or MM:SS when < 1 h)."""
     s = max(0, int(secs))
