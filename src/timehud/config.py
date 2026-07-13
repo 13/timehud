@@ -57,6 +57,9 @@ class Config:
     ])
     active_preset: str = ""   # name of the applied preset, "" = none
 
+    # ── Theme ──────────────────────────────────────────────────────────────
+    theme: str = "classic"   # built-in theme name; see timehud/themes.py
+
     # ──────────────────────────────────────────────────────────────────────
 
     def save(self) -> None:
