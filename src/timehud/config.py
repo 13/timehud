@@ -49,6 +49,14 @@ class Config:
     auto_restart_countdown: bool = False
     alert_last_5_seconds: bool = False
 
+    # ── Presets ────────────────────────────────────────────────────────────
+    # Countdown presets shown in the right-click menu.
+    presets: list = field(default_factory=lambda: [
+        {"name": "1 min", "duration": 60},
+        {"name": "5 min", "duration": 300},
+    ])
+    active_preset: str = ""   # name of the applied preset, "" = none
+
     # ──────────────────────────────────────────────────────────────────────
 
     def save(self) -> None:
@@ -67,3 +75,18 @@ class Config:
             return cls(**{k: v for k, v in data.items() if k in valid_keys})
         except Exception:
             return cls()
+
+
+def valid_presets(presets: list) -> list:
+    """Filter out malformed preset entries (defensive against hand-edited config)."""
+    out = []
+    for p in presets:
+        if (
+            isinstance(p, dict)
+            and isinstance(p.get("name"), str)
+            and isinstance(p.get("duration"), int)
+            and not isinstance(p.get("duration"), bool)
+            and p["duration"] > 0
+        ):
+            out.append(p)
+    return out
