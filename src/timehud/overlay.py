@@ -209,10 +209,9 @@ class OverlayWindow(QWidget):
 
     def _apply_styles(self) -> None:
         """Apply theme + config fonts/colors to the labels. Idempotent."""
-        pulse = getattr(self, "_pulse_anim", None)
-        if pulse is not None:
-            pulse.stop()
-            pulse.deleteLater()
+        if self._pulse_anim is not None:
+            self._pulse_anim.stop()
+            self._pulse_anim.deleteLater()
             self._pulse_anim = None
         cfg = self.config
         theme = get_theme(cfg.theme)

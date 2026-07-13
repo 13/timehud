@@ -30,7 +30,7 @@ class Theme:
     timer_scale: float   # timer px = font_size * timer_scale
 
 
-THEMES: dict = {
+THEMES: dict[str, Theme] = {
     "classic": Theme(
         name="classic", label="Classic",
         font_family="",
