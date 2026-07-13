@@ -29,7 +29,7 @@ from PyQt6.QtGui import (
     QCursor, QGuiApplication,
 )
 from PyQt6.QtWidgets import (
-    QApplication, QHBoxLayout, QLabel, QMenu,
+    QApplication, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMenu,
     QPushButton, QVBoxLayout, QWidget,
 )
 from timehud.config import Config, valid_presets
@@ -79,6 +79,15 @@ class OverlayWindow(QWidget):
         self._timer_color_target = ""
         self._timer_color_current = QColor(config.color_timer_pause)
         self._timer_color_anim: QVariantAnimation | None = None
+        # Auto-hide controls
+        self._controls_fx: QGraphicsOpacityEffect | None = None
+        self._controls_anim: QVariantAnimation | None = None
+        self._hide_controls_timer = QTimer(self)
+        self._hide_controls_timer.setSingleShot(True)
+        self._hide_controls_timer.setInterval(2000)
+        self._hide_controls_timer.timeout.connect(lambda: self._fade_controls_to(0.0))
+        # Last-seconds pulse
+        self._pulse_anim: QVariantAnimation | None = None
         # ── Drag state ────────────────────────────────────────────────────
         self._drag_offset: QPoint | None = None
         # ── Build ─────────────────────────────────────────────────────────
@@ -191,6 +200,10 @@ class OverlayWindow(QWidget):
 
         self._apply_styles()
         self._refresh_mode_label()
+
+        self._controls_fx = QGraphicsOpacityEffect(self.ctrl_widget)
+        self._controls_fx.setOpacity(1.0)
+        self.ctrl_widget.setGraphicsEffect(self._controls_fx)
 
     def _apply_styles(self) -> None:
         """Apply theme + config fonts/colors to the labels. Idempotent."""
@@ -314,6 +327,13 @@ class OverlayWindow(QWidget):
                 self.sound.play_alert(double_beep=True)
             else:
                 self.sound.play_alert(short=beep.short)
+
+        if (
+            result.beeps
+            and self.config.timer_mode == "countdown"
+            and result.display <= 6.5
+        ):
+            self._pulse_timer_label()
 
     def _set_timer_color(self, color: str, animate: bool) -> None:
         if color == self._timer_color_target:
@@ -714,6 +734,50 @@ class OverlayWindow(QWidget):
             self.hide()
         else:
             self.show()
+    # ══ Auto-hide controls ═══════════════════════════════════════════════════
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self._hide_controls_timer.stop()
+        self._fade_controls_to(1.0)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        # Keep buttons visible while idle at 00:00 for discoverability
+        if not self.engine.is_idle():
+            self._hide_controls_timer.start()
+        super().leaveEvent(event)
+
+    def _fade_controls_to(self, target: float) -> None:
+        if self._controls_fx is None:
+            return
+        if self._controls_anim is not None:
+            self._controls_anim.stop()
+            self._controls_anim.deleteLater()
+        anim = QVariantAnimation(self)
+        anim.setDuration(300)
+        anim.setStartValue(self._controls_fx.opacity())
+        anim.setEndValue(target)
+        anim.valueChanged.connect(self._controls_fx.setOpacity)
+        anim.start()
+        self._controls_anim = anim
+
+    def _pulse_timer_label(self) -> None:
+        base = int(self.config.font_size * get_theme(self.config.theme).timer_scale)
+        if self._pulse_anim is not None:
+            self._pulse_anim.stop()
+            self._pulse_anim.deleteLater()
+        anim = QVariantAnimation(self)
+        anim.setDuration(180)
+        anim.setStartValue(base)
+        anim.setKeyValueAt(0.5, int(base * 1.06))
+        anim.setEndValue(base)
+        anim.valueChanged.connect(self._set_timer_px)
+        anim.start()
+        self._pulse_anim = anim
+
+    def _set_timer_px(self, px) -> None:
+        f = self.lbl_timer.font()
+        f.setPixelSize(int(px))
+        self.lbl_timer.setFont(f)
     # ══ Fade-in animation ═════════════════════════════════════════════════════
     def _fade_step(self) -> None:
         self._fade_value = min(self._fade_value + 0.06, self.config.opacity)
