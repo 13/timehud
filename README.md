@@ -64,6 +64,8 @@ timehud
 ### Right-click context menu
 
 - **Settings** – full settings dialog
+- **Presets** – one-click countdown presets (and back to stopwatch); save the
+  current countdown as a preset or manage them in Settings
 - **Click-Through** – toggle mouse pass-through
 - **Opacity** – quick opacity change
 - **Position** – snap to screen corner

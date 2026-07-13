@@ -32,7 +32,7 @@ from PyQt6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QMenu,
     QPushButton, QVBoxLayout, QWidget,
 )
-from timehud.config import Config
+from timehud.config import Config, valid_presets
 from timehud.sound_manager import SoundManager
 from timehud.timer_engine import TimerEngine
 # ── Palette ────────────────────────────────────────────────────────────────
@@ -318,13 +318,43 @@ class OverlayWindow(QWidget):
         self.btn_start.setText("▶")
         self._refresh_mode_label()
         self.config.save()
+    def _apply_stopwatch(self) -> None:
+        self.engine.set_mode("stopwatch")
+        self.btn_start.setText("▶")
+        self._refresh_mode_label()
+        self.config.save()
+    def _apply_preset(self, preset: dict) -> None:
+        self.config.timer_mode = "countdown"
+        self.config.countdown_duration = int(preset["duration"])
+        self.config.active_preset = preset["name"]
+        self.engine.reset()
+        self.btn_start.setText("▶")
+        self._refresh_mode_label()
+        self.config.save()
+        self._update()
+    def _save_current_preset(self) -> None:
+        from PyQt6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "Save preset", "Preset name:")
+        name = name.strip()
+        if not ok or not name:
+            return
+        # Same-name preset is overwritten (predictable rule per spec)
+        presets = [p for p in valid_presets(self.config.presets) if p["name"] != name]
+        presets.append({"name": name, "duration": int(self.config.countdown_duration)})
+        self.config.presets = presets
+        self.config.active_preset = name
+        self._refresh_mode_label()
+        self.config.save()
     def _refresh_mode_label(self) -> None:
         if self.config.timer_mode == "stopwatch":
             self.lbl_mode.setText("STOPWATCH")
             self.btn_mode.setText("SW")
         else:
             dur = _fmt(self.config.countdown_duration)
-            self.lbl_mode.setText(f"COUNTDOWN  {dur}")
+            if self.config.active_preset:
+                self.lbl_mode.setText(f"{self.config.active_preset.upper()}  ·  {dur}")
+            else:
+                self.lbl_mode.setText(f"COUNTDOWN  {dur}")
             self.btn_mode.setText("CD")
     # ══ Painting ═════════════════════════════════════════════════════════════
     def paintEvent(self, _event) -> None:  # noqa: N802
@@ -371,6 +401,7 @@ class OverlayWindow(QWidget):
                             delta = -min(step, self.config.countdown_duration - 1)
                         if delta:
                             self.config.countdown_duration += delta
+                            self.config.active_preset = ""
                             self.engine.adjust_countdown(delta)
                         self.config.save()
                         self._refresh_mode_label()
@@ -446,6 +477,31 @@ class OverlayWindow(QWidget):
         menu.setStyleSheet(_MENU_STYLE)
         act_settings = menu.addAction("⚙  Settings…")
         act_settings.triggered.connect(self._open_settings)
+        menu.addSeparator()
+
+        # Presets sub-menu
+        preset_menu = menu.addMenu("⏱  Presets")
+        act_sw = preset_menu.addAction("Stopwatch")
+        act_sw.setCheckable(True)
+        act_sw.setChecked(self.config.timer_mode == "stopwatch")
+        act_sw.triggered.connect(self._apply_stopwatch)
+        presets = valid_presets(self.config.presets)
+        if presets:
+            preset_menu.addSeparator()
+            for p in presets:
+                a = preset_menu.addAction(f'{p["name"]} {_fmt(p["duration"])}')
+                a.setCheckable(True)
+                a.setChecked(
+                    self.config.timer_mode == "countdown"
+                    and self.config.active_preset == p["name"]
+                )
+                a.triggered.connect(lambda checked, p=p: self._apply_preset(p))
+        preset_menu.addSeparator()
+        act_save = preset_menu.addAction("Save current as preset…")
+        act_save.setEnabled(self.config.timer_mode == "countdown")
+        act_save.triggered.connect(self._save_current_preset)
+        act_manage = preset_menu.addAction("Manage presets…")
+        act_manage.triggered.connect(lambda: self._open_settings(tab="presets"))
         menu.addSeparator()
 
         if include_window_actions:
@@ -536,10 +592,12 @@ class OverlayWindow(QWidget):
         self._apply_window_flags()
         self.move(pos)
         self.show()
-    def _open_settings(self) -> None:
+    def _open_settings(self, tab: str | None = None) -> None:
         # Import here to avoid circular deps / speed up startup
         from timehud.settings_dialog import SettingsDialog
         dlg = SettingsDialog(self.config, parent=None)
+        if tab is not None and hasattr(dlg, "select_tab"):
+            dlg.select_tab(tab)
 
         def update_ui():
             cfg = self.config
