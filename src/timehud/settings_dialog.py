@@ -7,11 +7,11 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QComboBox, QSpinBox, QCheckBox,
     QLineEdit, QPushButton, QFileDialog,
-    QTabWidget, QWidget, QSlider, QDialogButtonBox, QColorDialog,
+    QTabWidget, QWidget, QSlider, QColorDialog,
     QListWidget
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QPixmap
+from PyQt6.QtGui import QColor
 import os
 
 from timehud.config import Config, valid_presets

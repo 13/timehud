@@ -22,7 +22,7 @@ Controls:
 import datetime
 from collections.abc import Callable
 from PyQt6.QtCore import (
-    Qt, QPoint, QTimer, QEvent, QPropertyAnimation, pyqtProperty
+    Qt, QPoint, QTimer, QEvent
 )
 from PyQt6.QtGui import (
     QAction, QActionGroup, QColor, QFont, QPainter, QPainterPath, QPen,

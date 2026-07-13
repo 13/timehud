@@ -109,7 +109,12 @@ Right-click → **Settings** or edit `~/.config/timehud/config.json`:
   "sound_file": "",
   "click_through": false,
   "alert_last_5_seconds": true,
-  "auto_restart_countdown": false
+  "auto_restart_countdown": false,
+  "presets": [
+    { "name": "1 min", "duration": 60 },
+    { "name": "5 min", "duration": 300 }
+  ],
+  "active_preset": ""
 }
 ```
 
