@@ -321,6 +321,7 @@ class OverlayWindow(QWidget):
         self._timer_color_target = color
         if self._timer_color_anim is not None:
             self._timer_color_anim.stop()
+            self._timer_color_anim.deleteLater()
             self._timer_color_anim = None
         if not animate:
             self._timer_color_current = QColor(color)
