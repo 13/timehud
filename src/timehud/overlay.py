@@ -133,10 +133,10 @@ class OverlayWindow(QWidget):
         root.setContentsMargins(16, 12, 16, 10)
         root.setSpacing(0)
         cfg = self.config
-        fs  = cfg.font_size
         # ── Clock row ─────────────────────────────────────────────────────
         self.lbl_clock = QLabel("--:--:--")
         self.lbl_clock.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_clock.installEventFilter(self)
         # ── Separator ─────────────────────────────────────────────────────
         sep = QLabel()
         sep.setFixedHeight(1)
@@ -161,17 +161,12 @@ class OverlayWindow(QWidget):
         self.btn_reset = QPushButton("↺", self)
         self.btn_mode  = QPushButton("SW", self)  # SW / CD
 
-        btn_h = max(24, fs - 4)
         for btn in (self.btn_start, self.btn_reset, self.btn_mode):
             btn.setStyleSheet(_BTN_STYLE)
-            btn.setFixedHeight(btn_h)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             if not cfg.show_controls:
                 btn.hide()
-
-        self.btn_start.setFixedWidth(btn_h + 6)
-        self.btn_reset.setFixedWidth(btn_h + 6)
-        self.btn_mode.setFixedWidth(btn_h + 14)
+        self._apply_button_sizes()
         self.btn_start.clicked.connect(self.toggle_timer)
         self.btn_reset.clicked.connect(self.reset_timer)
         self.btn_mode.clicked.connect(self._toggle_mode)
@@ -206,6 +201,15 @@ class OverlayWindow(QWidget):
         self._controls_fx = QGraphicsOpacityEffect(self.ctrl_widget)
         self._controls_fx.setOpacity(1.0)
         self.ctrl_widget.setGraphicsEffect(self._controls_fx)
+
+    def _apply_button_sizes(self) -> None:
+        """Size control buttons relative to the configured font size."""
+        btn_h = max(24, self.config.font_size - 4)
+        for btn in (self.btn_start, self.btn_reset, self.btn_mode):
+            btn.setFixedHeight(btn_h)
+        self.btn_start.setFixedWidth(btn_h + 6)
+        self.btn_reset.setFixedWidth(btn_h + 6)
+        self.btn_mode.setFixedWidth(btn_h + 14)
 
     def _apply_styles(self) -> None:
         """Apply theme + config fonts/colors to the labels. Idempotent."""
@@ -455,6 +459,21 @@ class OverlayWindow(QWidget):
             p.drawLine(r, 1, self.width() - r, 1)
     # ══ Mouse events ═════════════════════════════════════════════════════════
     def eventFilter(self, obj, event):
+        if obj is self.lbl_clock:
+            if event.type() == QEvent.Type.Wheel:
+                delta = event.angleDelta().y()
+                step = 2 if delta > 0 else -2
+                new_size = max(10, min(120, self.config.font_size + step))
+                if new_size != self.config.font_size:
+                    self.config.font_size = new_size
+                    self._apply_styles()
+                    self._apply_button_sizes()
+                    self.adjustSize()
+                    if self.config.custom_x < 0:
+                        self._position_window()
+                    self.config.save()
+                return True
+            return super().eventFilter(obj, event)
         if obj in (self.lbl_timer, self.lbl_mode):
             if event.type() == QEvent.Type.MouseButtonPress:
                 if event.button() == Qt.MouseButton.LeftButton:
@@ -560,12 +579,14 @@ class OverlayWindow(QWidget):
 
         menu = QMenu(self)
         menu.setStyleSheet(_MENU_STYLE)
-        act_settings = menu.addAction("⚙  Settings…")
-        act_settings.triggered.connect(self._open_settings)
+        act_settings = menu.addAction("Settings…")
+        # Lambda drops QAction.triggered's `checked` bool, which would
+        # otherwise land in the optional `tab` parameter.
+        act_settings.triggered.connect(lambda: self._open_settings())
         menu.addSeparator()
 
         # Presets sub-menu
-        preset_menu = menu.addMenu("⏱  Presets")
+        preset_menu = menu.addMenu("Presets")
         act_sw = preset_menu.addAction("Stopwatch")
         act_sw.setCheckable(True)
         act_sw.setChecked(self.config.timer_mode == "stopwatch")
@@ -589,7 +610,7 @@ class OverlayWindow(QWidget):
         act_manage.triggered.connect(lambda: self._open_settings(tab="presets"))
 
         # Theme sub-menu
-        theme_menu = menu.addMenu("🎨  Theme")
+        theme_menu = menu.addMenu("Theme")
         theme_group = QActionGroup(theme_menu)
         theme_group.setExclusive(True)
         for t in THEMES.values():
@@ -601,12 +622,12 @@ class OverlayWindow(QWidget):
         menu.addSeparator()
 
         if include_window_actions:
-            ct_label = "🖱  Click-Through: ON" if self.config.click_through else "🖱  Click-Through: OFF"
+            ct_label = "Click-Through: ON" if self.config.click_through else "Click-Through: OFF"
             act_ct = menu.addAction(ct_label)
             act_ct.triggered.connect(self._toggle_click_through)
 
         # Opacity sub-menu
-        op_menu = menu.addMenu("💧  Opacity")
+        op_menu = menu.addMenu("Opacity")
         op_group = QActionGroup(op_menu)
         op_group.setExclusive(True)
         current_pct = max(0, min(100, round(self.config.opacity * 100)))
@@ -628,7 +649,7 @@ class OverlayWindow(QWidget):
                 lambda checked, v=current_pct / 100: self._set_opacity(v)
             )
         # Position sub-menu
-        pos_menu = menu.addMenu("📍  Position")
+        pos_menu = menu.addMenu("Position")
         pos_group = QActionGroup(pos_menu)
         pos_group.setExclusive(True)
         for preset in (
@@ -644,9 +665,9 @@ class OverlayWindow(QWidget):
 
         if include_window_actions:
             menu.addSeparator()
-            act_toggle = menu.addAction("👁  Show/Hide Overlay")
+            act_toggle = menu.addAction("Show/Hide Overlay")
             act_toggle.triggered.connect(self.toggle_visibility)
-        act_quit = menu.addAction("✕  Quit")
+        act_quit = menu.addAction("Quit")
         act_quit.triggered.connect(self._quit_app)
         return menu
     def contextMenuEvent(self, event) -> None:  # noqa: N802
@@ -717,12 +738,7 @@ class OverlayWindow(QWidget):
             self.lbl_mode.setVisible(cfg.show_timer)
             self.ctrl_widget.setVisible(cfg.show_timer and cfg.show_controls)
 
-            fs = cfg.font_size
-            for btn in (self.btn_start, self.btn_reset, self.btn_mode):
-                btn.setFixedHeight(max(24, fs - 4))
-            self.btn_start.setFixedWidth(max(24, fs - 4) + 6)
-            self.btn_reset.setFixedWidth(max(24, fs - 4) + 6)
-            self.btn_mode.setFixedWidth(max(24, fs - 4) + 14)
+            self._apply_button_sizes()
 
             self.setWindowOpacity(cfg.opacity)
             self.adjustSize()
