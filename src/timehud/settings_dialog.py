@@ -15,6 +15,7 @@ from PyQt6.QtGui import QColor
 import os
 
 from timehud.config import Config, valid_presets
+from timehud.themes import THEMES, apply_theme
 
 
 _DARK_STYLE = """
@@ -113,6 +114,11 @@ class SettingsDialog(QDialog):
         form = QFormLayout(tab)
         form.setSpacing(10)
         form.setContentsMargins(16, 16, 16, 16)
+
+        self.theme_combo = QComboBox()
+        for t in THEMES.values():
+            self.theme_combo.addItem(t.label, t.name)
+        form.addRow("Theme:", self.theme_combo)
 
         # Position preset
         self.position_combo = QComboBox()
@@ -394,6 +400,18 @@ class SettingsDialog(QDialog):
                 self.show_controls_cb.setChecked(False)
             _emit_if_valid()
 
+        def _on_theme_changed():
+            name = self.theme_combo.currentData()
+            if name and name != self.config.theme:
+                apply_theme(self.config, name)
+                self._update_color_btn(self.btn_color_bg, self.config.color_bg)
+                self._update_color_btn(self.btn_color_clock, self.config.color_clock)
+                self._update_color_btn(self.btn_color_timer_run, self.config.color_timer_run)
+                self._update_color_btn(self.btn_color_timer_pause, self.config.color_timer_pause)
+                self.font_family_edit.setText(self.config.font_family)
+                self.config_changed.emit()
+
+        self.theme_combo.currentIndexChanged.connect(_on_theme_changed)
         self.position_combo.currentIndexChanged.connect(_emit_if_valid)
         self.font_size_spin.valueChanged.connect(_emit_if_valid)
         self.font_family_edit.textChanged.connect(_emit_if_valid)
@@ -429,6 +447,9 @@ class SettingsDialog(QDialog):
 
     def _load_values(self) -> None:
         c = self.config
+
+        idx = self.theme_combo.findData(c.theme)
+        self.theme_combo.setCurrentIndex(max(0, idx))
 
         idx = self.position_combo.findText(c.position)
         self.position_combo.setCurrentIndex(max(0, idx))

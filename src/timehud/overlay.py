@@ -34,7 +34,7 @@ from PyQt6.QtWidgets import (
 )
 from timehud.config import Config, valid_presets
 from timehud.sound_manager import SoundManager
-from timehud.themes import get_theme
+from timehud.themes import THEMES, apply_theme, get_theme
 from timehud.timer_engine import TimerEngine
 # ── Palette ────────────────────────────────────────────────────────────────
 _SEP_COLOR = "rgba(255,255,255,35)"
@@ -518,6 +518,17 @@ class OverlayWindow(QWidget):
         act_save.triggered.connect(self._save_current_preset)
         act_manage = preset_menu.addAction("Manage presets…")
         act_manage.triggered.connect(lambda: self._open_settings(tab="presets"))
+
+        # Theme sub-menu
+        theme_menu = menu.addMenu("🎨  Theme")
+        theme_group = QActionGroup(theme_menu)
+        theme_group.setExclusive(True)
+        for t in THEMES.values():
+            a: QAction = theme_menu.addAction(t.label)
+            a.setCheckable(True)
+            a.setChecked(t.name == self.config.theme)
+            theme_group.addAction(a)
+            a.triggered.connect(lambda checked, n=t.name: self._set_theme(n))
         menu.addSeparator()
 
         if include_window_actions:
@@ -577,6 +588,15 @@ class OverlayWindow(QWidget):
         self.config.opacity = value
         self.setWindowOpacity(value)
         self.config.save()
+    def _set_theme(self, name: str) -> None:
+        apply_theme(self.config, name)
+        self._apply_styles()
+        self.adjustSize()
+        if self.config.custom_x < 0:
+            self._position_window()
+        self.config.save()
+        self.update()      # repaint themed background
+        self._update()     # refresh timer color immediately
     def _set_preset_position(self, preset):
         self.config.position = preset
         self.config.custom_x = -1
