@@ -88,6 +88,8 @@ class OverlayWindow(QWidget):
         self._hide_controls_timer.timeout.connect(lambda: self._fade_controls_to(0.0))
         # Last-seconds pulse
         self._pulse_anim: QVariantAnimation | None = None
+        # Track countdown duration to detect settings-driven changes
+        self._last_cd_duration = config.countdown_duration
         # ── Drag state ────────────────────────────────────────────────────
         self._drag_offset: QPoint | None = None
         # ── Build ─────────────────────────────────────────────────────────
@@ -207,6 +209,11 @@ class OverlayWindow(QWidget):
 
     def _apply_styles(self) -> None:
         """Apply theme + config fonts/colors to the labels. Idempotent."""
+        pulse = getattr(self, "_pulse_anim", None)
+        if pulse is not None:
+            pulse.stop()
+            pulse.deleteLater()
+            self._pulse_anim = None
         cfg = self.config
         theme = get_theme(cfg.theme)
         fs = cfg.font_size
@@ -373,6 +380,12 @@ class OverlayWindow(QWidget):
         self.engine.reset()
         self.btn_start.setText("▶")
         self._update()
+    def _sync_countdown_duration(self) -> None:
+        """Resync engine remaining after countdown_duration changed in Settings."""
+        if self.config.countdown_duration != self._last_cd_duration:
+            self._last_cd_duration = self.config.countdown_duration
+            if not self.engine.running:
+                self.engine.adjust_countdown(0)   # stopped: reload from config
     def _toggle_mode(self) -> None:
         """Switch stopwatch ↔ countdown."""
         new_mode = "countdown" if self.config.timer_mode == "stopwatch" else "stopwatch"
@@ -390,6 +403,7 @@ class OverlayWindow(QWidget):
     def _apply_preset(self, preset: dict) -> None:
         self.config.timer_mode = "countdown"
         self.config.countdown_duration = int(preset["duration"])
+        self._last_cd_duration = self.config.countdown_duration
         self.config.active_preset = preset["name"]
         self.engine.reset()
         self.btn_start.setText("▶")
@@ -470,6 +484,7 @@ class OverlayWindow(QWidget):
                             delta = -min(step, self.config.countdown_duration - 1)
                         if delta:
                             self.config.countdown_duration += delta
+                            self._last_cd_duration = self.config.countdown_duration
                             self.config.active_preset = ""
                             self.engine.adjust_countdown(delta)
                         self.config.save()
@@ -695,6 +710,7 @@ class OverlayWindow(QWidget):
             if not cfg.show_timer:
                 self.reset_timer()
 
+            self._sync_countdown_duration()
             self._apply_styles()
 
             self.lbl_clock.setVisible(cfg.show_clock)
