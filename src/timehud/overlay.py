@@ -22,7 +22,7 @@ Controls:
 import datetime
 from collections.abc import Callable
 from PyQt6.QtCore import (
-    Qt, QPoint, QTimer, QEvent
+    Qt, QPoint, QTimer, QEvent, QVariantAnimation
 )
 from PyQt6.QtGui import (
     QAction, QActionGroup, QColor, QFont, QPainter, QPainterPath, QPen,
@@ -75,6 +75,10 @@ class OverlayWindow(QWidget):
         self._last_show_tray_icon = config.show_tray_icon
         # ── Timer state ───────────────────────────────────────────────────
         self.engine = TimerEngine(config)
+        # Timer label color animation
+        self._timer_color_target = ""
+        self._timer_color_current = QColor(config.color_timer_pause)
+        self._timer_color_anim: QVariantAnimation | None = None
         # ── Drag state ────────────────────────────────────────────────────
         self._drag_offset: QPoint | None = None
         # ── Build ─────────────────────────────────────────────────────────
@@ -199,7 +203,7 @@ class OverlayWindow(QWidget):
             f = QFont(ff, -1)
             f.setPixelSize(size)
             f.setBold(bold)
-            return f
+            return _tabular(f)
 
         self.lbl_clock.setFont(make_font(int(fs * theme.clock_scale)))
         self.lbl_clock.setStyleSheet(
@@ -296,9 +300,11 @@ class OverlayWindow(QWidget):
             "warn":  theme.color_warn,
             "end":   theme.color_end,
         }
-        self.lbl_timer.setStyleSheet(
-            f"color:{colors[result.state]}; background:transparent;"
+        # Crisp flashes during the countdown's final seconds; fade otherwise
+        animate = result.state != "end" and not (
+            self.config.timer_mode == "countdown" and result.display <= 6.5
         )
+        self._set_timer_color(colors[result.state], animate)
 
         if result.finished and not result.restarted:
             self.btn_start.setText("▶")
@@ -308,6 +314,34 @@ class OverlayWindow(QWidget):
                 self.sound.play_alert(double_beep=True)
             else:
                 self.sound.play_alert(short=beep.short)
+
+    def _set_timer_color(self, color: str, animate: bool) -> None:
+        if color == self._timer_color_target:
+            return
+        self._timer_color_target = color
+        if self._timer_color_anim is not None:
+            self._timer_color_anim.stop()
+            self._timer_color_anim = None
+        if not animate:
+            self._timer_color_current = QColor(color)
+            self._paint_timer_color(self._timer_color_current)
+            return
+        anim = QVariantAnimation(self)
+        anim.setDuration(200)
+        anim.setStartValue(self._timer_color_current)
+        anim.setEndValue(QColor(color))
+        anim.valueChanged.connect(self._on_timer_color_step)
+        anim.start()
+        self._timer_color_anim = anim
+
+    def _on_timer_color_step(self, value) -> None:
+        self._timer_color_current = value
+        self._paint_timer_color(value)
+
+    def _paint_timer_color(self, qcolor) -> None:
+        self.lbl_timer.setStyleSheet(
+            f"color:{qcolor.name()}; background:transparent;"
+        )
     # ══ Timer logic ══════════════════════════════════════════════════════════
     def toggle_timer(self) -> None:
         """Start if stopped, pause if running."""
@@ -686,6 +720,13 @@ class OverlayWindow(QWidget):
         if self._fade_value >= self.config.opacity:
             self._fade_timer.stop()
 # ── Helpers ────────────────────────────────────────────────────────────────
+def _tabular(font: QFont) -> QFont:
+    """Enable tabular (fixed-width) digits where supported (Qt >= 6.7)."""
+    try:
+        font.setFeature(QFont.Tag("tnum"), 1)
+    except (AttributeError, TypeError):
+        pass  # older Qt: mono fonts are tabular anyway
+    return font
 def _rgba(hex_color: str, alpha: float) -> str:
     """'#RRGGBB' + 0-1 alpha → Qt stylesheet rgba() string."""
     h = hex_color.lstrip("#")
