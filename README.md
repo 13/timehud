@@ -34,10 +34,11 @@ bash install.sh
 ## Manual install (no venv)
 
 ```bash
-pip install PyQt6 pynput
-export PYTHONPATH="src:$PYTHONPATH"
-python -m timehud.main
+pip install .          # or:  pip install .[hotkeys]  for global hotkeys
+timehud
 ```
+
+(The old `PYTHONPATH=src` invocation still works; keep it as a one-line alternative for running from a checkout without installing: `PYTHONPATH=src python -m timehud.main`.)
 
 ---
 
@@ -63,6 +64,8 @@ python -m timehud.main
 ### Right-click context menu
 
 - **Settings** – full settings dialog
+- **Presets** – one-click countdown presets (and back to stopwatch); save the
+  current countdown as a preset or manage them in Settings
 - **Click-Through** – toggle mouse pass-through
 - **Opacity** – quick opacity change
 - **Position** – snap to screen corner
@@ -105,8 +108,13 @@ Right-click → **Settings** or edit `~/.config/timehud/config.json`:
   "sound_interval": 60,
   "sound_file": "",
   "click_through": false,
-  "alert_last_5_seconds": true,
-  "auto_restart_countdown": false
+  "alert_last_5_seconds": false,
+  "auto_restart_countdown": false,
+  "presets": [
+    { "name": "1 min", "duration": 60 },
+    { "name": "5 min", "duration": 300 }
+  ],
+  "active_preset": ""
 }
 ```
 

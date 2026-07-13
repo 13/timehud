@@ -42,3 +42,4 @@ venv/
 .venv/
 env/
 .env/
+.superpowers/

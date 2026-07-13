@@ -20,11 +20,9 @@ Controls:
   Ctrl+Q      – quit
 """
 import datetime
-import time
-import math
 from collections.abc import Callable
 from PyQt6.QtCore import (
-    Qt, QPoint, QTimer, QEvent, QPropertyAnimation, pyqtProperty
+    Qt, QPoint, QTimer, QEvent
 )
 from PyQt6.QtGui import (
     QAction, QActionGroup, QColor, QFont, QPainter, QPainterPath, QPen,
@@ -34,8 +32,9 @@ from PyQt6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QMenu,
     QPushButton, QVBoxLayout, QWidget,
 )
-from timehud.config import Config
+from timehud.config import Config, valid_presets
 from timehud.sound_manager import SoundManager
+from timehud.timer_engine import TimerEngine
 # ── Palette ────────────────────────────────────────────────────────────────
 _BG        = QColor(0,   0,   0,  185)   # dark translucent background
 _BORDER    = QColor(255, 255, 255, 38)   # subtle 1-px border
@@ -81,14 +80,7 @@ class OverlayWindow(QWidget):
         self._on_tray_icon_toggle = on_tray_icon_toggle
         self._last_show_tray_icon = config.show_tray_icon
         # ── Timer state ───────────────────────────────────────────────────
-        self._running      = False
-        self._start_mono   = 0.0   # time.monotonic() when last started
-        self._elapsed      = 0.0   # accumulated seconds (stopwatch)
-        self._cd_remaining = float(config.countdown_duration)
-        # Sound beat counter: fires every sound_interval seconds
-        self._sound_beats  = 0
-        self._sound_alert_before_beats = 0
-        self._last_short_beep_sec = -1
+        self.engine = TimerEngine(config)
         # ── Drag state ────────────────────────────────────────────────────
         self._drag_offset: QPoint | None = None
         # ── Build ─────────────────────────────────────────────────────────
@@ -283,131 +275,76 @@ class OverlayWindow(QWidget):
     def _update(self) -> None:
         """Called every 100 ms to refresh the display."""
         now = datetime.datetime.now()
-        # ── Clock ─────────────────────────────────────────────────────────
         if self.config.show_clock:
             self.lbl_clock.setText(now.strftime("%H:%M:%S"))
         if not self.config.show_timer:
             return
 
-        color_override = None
-        if self._running and self.config.sound_enabled and self.config.sound_alert_before > 0:
-            ref = self._get_elapsed()
-            next_main_beep_target = (int(ref / self.config.sound_interval) + 1) * self.config.sound_interval
-            alert_before_target = next_main_beep_target - self.config.sound_alert_before
-            if ref >= alert_before_target and ref < next_main_beep_target:
-                color_override = _TMR_WARN
+        result = self.engine.tick()
+        self.lbl_timer.setText(_fmt(result.display))
 
-        # ── Timer ─────────────────────────────────────────────────────────
-        if self.config.timer_mode == "stopwatch":
-            elapsed = self._get_elapsed()
-            self.lbl_timer.setText(_fmt(elapsed))
-            color = self.config.color_timer_run if self._running else self.config.color_timer_pause
-            if self._running and color_override is not None:
-                color = color_override
-            self.lbl_timer.setStyleSheet(
-                f"color:{color}; background:transparent;"
-            )
-        else:
-            remaining = self._get_remaining()
-            sec_display = int(math.ceil(max(0.0, remaining)))
-            self.lbl_timer.setText(_fmt(max(0.0, remaining)))
+        colors = {
+            "run":   self.config.color_timer_run,
+            "pause": self.config.color_timer_pause,
+            "warn":  _TMR_WARN,
+            "end":   _TMR_END,
+        }
+        self.lbl_timer.setStyleSheet(
+            f"color:{colors[result.state]}; background:transparent;"
+        )
 
-            # Custom behavior for the last 5 seconds:
-            if remaining <= 0:
-                color = _TMR_END
-                if self._running:
-                    # Countdown finished strictly
-                    if self.config.auto_restart_countdown:
-                        self._cd_remaining = float(self.config.countdown_duration)
-                        self._start_mono  = time.monotonic()
-                        self._sound_beats = 0
-                        self._last_short_beep_sec = -1
-                    else:
-                        self._running = False
-                        self.btn_start.setText("▶")
-            elif self._running and 0 < remaining <= 6.0 and self.config.alert_last_5_seconds:
-                if sec_display == 1:
-                    color = _TMR_END  # At 1 the color should be red
-                else:
-                    color = _TMR_WARN # At 2..5 the color should be orange
+        if result.finished and not result.restarted:
+            self.btn_start.setText("▶")
 
-                if sec_display != self._last_short_beep_sec and sec_display in (1, 2, 3, 4, 5, 6):
-                    self._last_short_beep_sec = sec_display
-                    if sec_display == 1:
-                        self.sound.play_alert(short=False)  # "at 1 it should beep long"
-                    else:
-                        self.sound.play_alert(short=True)   # Short on 5, 4, 3, 2
+        for beep in result.beeps:
+            if beep.double:
+                self.sound.play_alert(double_beep=True)
             else:
-                color = self.config.color_timer_run if self._running else self.config.color_timer_pause
-
-            if self._running and color_override is not None and remaining > 6.0:
-                color = color_override
-
-            self.lbl_timer.setStyleSheet(
-                f"color:{color}; background:transparent;"
-            )
-        # ── Periodic sound alerts ─────────────────────────────────────────
-        if self._running and self.config.sound_enabled:
-            ref     = self._get_elapsed()   # seconds since "start" of this run
-
-            if self.config.sound_alert_before > 0:
-                next_early_beep_target = (self._sound_alert_before_beats + 1) * self.config.sound_interval - self.config.sound_alert_before
-                if next_early_beep_target > 0 and ref >= next_early_beep_target:
-                    self._sound_alert_before_beats += 1
-                    self.sound.play_alert(double_beep=True)
-
-            beats   = int(ref / self.config.sound_interval)
-            if beats > self._sound_beats:
-                self._sound_beats = beats
-                self.sound.play_alert()
+                self.sound.play_alert(short=beep.short)
     # ══ Timer logic ══════════════════════════════════════════════════════════
-    def _get_elapsed(self) -> float:
-        """Stopwatch: total elapsed seconds."""
-        if self._running:
-            return self._elapsed + (time.monotonic() - self._start_mono)
-        return self._elapsed
-    def _get_remaining(self) -> float:
-        """Countdown: seconds remaining."""
-        if self._running:
-            return self._cd_remaining - (time.monotonic() - self._start_mono)
-        return self._cd_remaining
     def toggle_timer(self) -> None:
         """Start if stopped, pause if running."""
-        if self._running:
-            # Pause – snapshot the accumulator
-            if self.config.timer_mode == "stopwatch":
-                self._elapsed += time.monotonic() - self._start_mono
-            else:
-                self._cd_remaining -= time.monotonic() - self._start_mono
-                self._cd_remaining = max(0.0, self._cd_remaining)
-            self._running = False
-            self.btn_start.setText("▶")
-        else:
-            # Guard: don't start a finished countdown
-            if self.config.timer_mode == "countdown" and self._cd_remaining <= 0:
-                self._cd_remaining = float(self.config.countdown_duration)
-            self._start_mono  = time.monotonic()
-            self._running     = True
-            self._sound_beats = int(self._get_elapsed() / self.config.sound_interval)
-            self._sound_alert_before_beats = int((self._get_elapsed() + self.config.sound_alert_before) / self.config.sound_interval)
-            self.btn_start.setText("⏸")
+        self.engine.toggle()
+        self.btn_start.setText("⏸" if self.engine.running else "▶")
     def reset_timer(self) -> None:
         """Stop and zero the timer."""
-        self._running      = False
-        self._elapsed      = 0.0
-        self._cd_remaining = float(self.config.countdown_duration)
-        self._sound_beats  = 0
-        self._sound_alert_before_beats = 0
-        self._last_short_beep_sec = -1
+        self.engine.reset()
         self.btn_start.setText("▶")
         self._update()
     def _toggle_mode(self) -> None:
         """Switch stopwatch ↔ countdown."""
-        self.reset_timer()
-        if self.config.timer_mode == "stopwatch":
-            self.config.timer_mode = "countdown"
-        else:
-            self.config.timer_mode = "stopwatch"
+        new_mode = "countdown" if self.config.timer_mode == "stopwatch" else "stopwatch"
+        self.engine.set_mode(new_mode)
+        self.btn_start.setText("▶")
+        self._refresh_mode_label()
+        self.config.save()
+        self._update()
+    def _apply_stopwatch(self) -> None:
+        self.engine.set_mode("stopwatch")
+        self.btn_start.setText("▶")
+        self._refresh_mode_label()
+        self.config.save()
+        self._update()
+    def _apply_preset(self, preset: dict) -> None:
+        self.config.timer_mode = "countdown"
+        self.config.countdown_duration = int(preset["duration"])
+        self.config.active_preset = preset["name"]
+        self.engine.reset()
+        self.btn_start.setText("▶")
+        self._refresh_mode_label()
+        self.config.save()
+        self._update()
+    def _save_current_preset(self) -> None:
+        from PyQt6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "Save preset", "Preset name:")
+        name = name.strip()
+        if not ok or not name:
+            return
+        # Same-name preset is overwritten (predictable rule per spec)
+        presets = [p for p in valid_presets(self.config.presets) if p["name"] != name]
+        presets.append({"name": name, "duration": int(self.config.countdown_duration)})
+        self.config.presets = presets
+        self.config.active_preset = name
         self._refresh_mode_label()
         self.config.save()
     def _refresh_mode_label(self) -> None:
@@ -416,7 +353,10 @@ class OverlayWindow(QWidget):
             self.btn_mode.setText("SW")
         else:
             dur = _fmt(self.config.countdown_duration)
-            self.lbl_mode.setText(f"COUNTDOWN  {dur}")
+            if self.config.active_preset:
+                self.lbl_mode.setText(f"{self.config.active_preset.upper()}  ·  {dur}")
+            else:
+                self.lbl_mode.setText(f"COUNTDOWN  {dur}")
             self.btn_mode.setText("CD")
     # ══ Painting ═════════════════════════════════════════════════════════════
     def paintEvent(self, _event) -> None:  # noqa: N802
@@ -450,48 +390,45 @@ class OverlayWindow(QWidget):
                 return True
             elif event.type() == QEvent.Type.Wheel:
                 if obj == self.lbl_mode:
-                    delta = event.angleDelta().y()
+                    delta_wheel = event.angleDelta().y()
                     pos_x = event.position().x()
                     width = obj.width()
 
                     if self.config.timer_mode == "countdown" and pos_x > width * 0.55:
                         step = 1 if pos_x > width * 0.8 else 60
-                        if delta > 0:
-                            self.config.countdown_duration += step
-                            if self._running:
-                                self._cd_remaining += step
-                        elif delta < 0:
-                            change = min(step, self.config.countdown_duration - 1)
-                            if change > 0:
-                                self.config.countdown_duration -= change
-                                if self._running:
-                                    self._cd_remaining -= change
-
-                        if not self._running:
-                            self._cd_remaining = float(self.config.countdown_duration)
-
+                        delta = 0
+                        if delta_wheel > 0:
+                            delta = step
+                        elif delta_wheel < 0:
+                            delta = -min(step, self.config.countdown_duration - 1)
+                        if delta:
+                            self.config.countdown_duration += delta
+                            self.config.active_preset = ""
+                            self.engine.adjust_countdown(delta)
                         self.config.save()
                         self._refresh_mode_label()
                         self._update()
                     else:
                         modes = ["stopwatch", "countdown"]
                         curr = modes.index(self.config.timer_mode) if self.config.timer_mode in modes else 0
-                        new_mode = modes[(curr + (-1 if delta > 0 else 1)) % len(modes)]
+                        new_mode = modes[(curr + (-1 if delta_wheel > 0 else 1)) % len(modes)]
                         if self.config.timer_mode != new_mode:
-                            self.reset_timer()
-                            self.config.timer_mode = new_mode
+                            self.engine.set_mode(new_mode)
+                            self.btn_start.setText("▶")
                             self._refresh_mode_label()
                             self.config.save()
+                            self._update()
                 elif obj == self.lbl_timer:
                     delta = event.angleDelta().y()
                     modes = ["stopwatch", "countdown"]
                     curr = modes.index(self.config.timer_mode) if self.config.timer_mode in modes else 0
                     new_mode = modes[(curr + (-1 if delta > 0 else 1)) % len(modes)]
                     if self.config.timer_mode != new_mode:
-                        self.reset_timer()
-                        self.config.timer_mode = new_mode
+                        self.engine.set_mode(new_mode)
+                        self.btn_start.setText("▶")
                         self._refresh_mode_label()
                         self.config.save()
+                        self._update()
                 return True
         return super().eventFilter(obj, event)
     def mousePressEvent(self, event) -> None:  # noqa: N802
@@ -544,6 +481,31 @@ class OverlayWindow(QWidget):
         menu.setStyleSheet(_MENU_STYLE)
         act_settings = menu.addAction("⚙  Settings…")
         act_settings.triggered.connect(self._open_settings)
+        menu.addSeparator()
+
+        # Presets sub-menu
+        preset_menu = menu.addMenu("⏱  Presets")
+        act_sw = preset_menu.addAction("Stopwatch")
+        act_sw.setCheckable(True)
+        act_sw.setChecked(self.config.timer_mode == "stopwatch")
+        act_sw.triggered.connect(self._apply_stopwatch)
+        presets = valid_presets(self.config.presets)
+        if presets:
+            preset_menu.addSeparator()
+            for p in presets:
+                a = preset_menu.addAction(f'{p["name"]} {_fmt(p["duration"])}')
+                a.setCheckable(True)
+                a.setChecked(
+                    self.config.timer_mode == "countdown"
+                    and self.config.active_preset == p["name"]
+                )
+                a.triggered.connect(lambda checked, p=p: self._apply_preset(p))
+        preset_menu.addSeparator()
+        act_save = preset_menu.addAction("Save current as preset…")
+        act_save.setEnabled(self.config.timer_mode == "countdown")
+        act_save.triggered.connect(self._save_current_preset)
+        act_manage = preset_menu.addAction("Manage presets…")
+        act_manage.triggered.connect(lambda: self._open_settings(tab="presets"))
         menu.addSeparator()
 
         if include_window_actions:
@@ -634,10 +596,12 @@ class OverlayWindow(QWidget):
         self._apply_window_flags()
         self.move(pos)
         self.show()
-    def _open_settings(self) -> None:
+    def _open_settings(self, tab: str | None = None) -> None:
         # Import here to avoid circular deps / speed up startup
         from timehud.settings_dialog import SettingsDialog
         dlg = SettingsDialog(self.config, parent=None)
+        if tab is not None:
+            dlg.select_tab(tab)
 
         def update_ui():
             cfg = self.config

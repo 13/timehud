@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "timehud"
+dynamic = ["version"]
+description = "Lightweight transparent HUD overlay for Linux — clock + stopwatch/countdown"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["PyQt6>=6.11.0"]
+
+[project.optional-dependencies]
+hotkeys = ["pynput>=1.8.1"]
+dev = ["pytest>=8", "ruff>=0.4"]
+
+[project.scripts]
+timehud = "timehud.main:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "timehud.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+timehud = ["*.svg"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
