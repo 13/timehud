@@ -318,11 +318,13 @@ class OverlayWindow(QWidget):
         self.btn_start.setText("▶")
         self._refresh_mode_label()
         self.config.save()
+        self._update()
     def _apply_stopwatch(self) -> None:
         self.engine.set_mode("stopwatch")
         self.btn_start.setText("▶")
         self._refresh_mode_label()
         self.config.save()
+        self._update()
     def _apply_preset(self, preset: dict) -> None:
         self.config.timer_mode = "countdown"
         self.config.countdown_duration = int(preset["duration"])
@@ -415,6 +417,7 @@ class OverlayWindow(QWidget):
                             self.btn_start.setText("▶")
                             self._refresh_mode_label()
                             self.config.save()
+                            self._update()
                 elif obj == self.lbl_timer:
                     delta = event.angleDelta().y()
                     modes = ["stopwatch", "countdown"]
@@ -425,6 +428,7 @@ class OverlayWindow(QWidget):
                         self.btn_start.setText("▶")
                         self._refresh_mode_label()
                         self.config.save()
+                        self._update()
                 return True
         return super().eventFilter(obj, event)
     def mousePressEvent(self, event) -> None:  # noqa: N802
@@ -596,7 +600,7 @@ class OverlayWindow(QWidget):
         # Import here to avoid circular deps / speed up startup
         from timehud.settings_dialog import SettingsDialog
         dlg = SettingsDialog(self.config, parent=None)
-        if tab is not None and hasattr(dlg, "select_tab"):
+        if tab is not None:
             dlg.select_tab(tab)
 
         def update_ui():
