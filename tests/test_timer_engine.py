@@ -197,3 +197,36 @@ class TestLastFiveSeconds:
         engine.toggle()
         beeps = collect_beeps(engine, clock, 29.5)
         assert [b for b in beeps if b.short] == []
+
+
+class TestIsIdle:
+    def test_idle_at_reset(self, engine):
+        assert engine.is_idle() is True
+
+    def test_not_idle_while_running(self, engine, clock):
+        engine.toggle()
+        clock.advance(1)
+        assert engine.is_idle() is False
+
+    def test_not_idle_when_paused_midway(self, engine, clock):
+        engine.toggle()
+        clock.advance(5)
+        engine.toggle()
+        assert engine.is_idle() is False
+
+    def test_idle_again_after_reset(self, engine, clock):
+        engine.toggle()
+        clock.advance(5)
+        engine.reset()
+        assert engine.is_idle() is True
+
+    def test_idle_countdown_at_full_duration(self, config, clock):
+        config.timer_mode = "countdown"
+        config.countdown_duration = 60
+        from timehud.timer_engine import TimerEngine
+        e = TimerEngine(config, clock=clock)
+        assert e.is_idle() is True
+        e.toggle()
+        clock.advance(3)
+        e.toggle()
+        assert e.is_idle() is False

@@ -51,6 +51,14 @@ class TimerEngine:
             return self._cd_remaining - (self._clock() - self._start_mono)
         return self._cd_remaining
 
+    def is_idle(self) -> bool:
+        """True when stopped at the initial position (never started or reset)."""
+        if self.running:
+            return False
+        if self.config.timer_mode == "stopwatch":
+            return self._elapsed == 0.0
+        return self._cd_remaining == float(self.config.countdown_duration)
+
     # ── Commands ───────────────────────────────────────────────────────
     def toggle(self) -> None:
         """Start if stopped, pause if running."""

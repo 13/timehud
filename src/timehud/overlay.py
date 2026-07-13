@@ -22,27 +22,21 @@ Controls:
 import datetime
 from collections.abc import Callable
 from PyQt6.QtCore import (
-    Qt, QPoint, QTimer, QEvent
+    Qt, QPoint, QTimer, QEvent, QVariantAnimation
 )
 from PyQt6.QtGui import (
     QAction, QActionGroup, QColor, QFont, QPainter, QPainterPath, QPen,
     QCursor, QGuiApplication,
 )
 from PyQt6.QtWidgets import (
-    QApplication, QHBoxLayout, QLabel, QMenu,
+    QApplication, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMenu,
     QPushButton, QVBoxLayout, QWidget,
 )
 from timehud.config import Config, valid_presets
 from timehud.sound_manager import SoundManager
+from timehud.themes import THEMES, apply_theme, get_theme
 from timehud.timer_engine import TimerEngine
 # ── Palette ────────────────────────────────────────────────────────────────
-_BG        = QColor(0,   0,   0,  185)   # dark translucent background
-_BORDER    = QColor(255, 255, 255, 38)   # subtle 1-px border
-_CLK_COLOR = "#00FF88"                   # green clock
-_TMR_RUN   = "#FFFFFF"                   # timer running
-_TMR_PAUSE = "#888888"                   # timer paused
-_TMR_WARN  = "#FF9900"                   # ≤ 10 s remaining
-_TMR_END   = "#FF3333"                   # countdown finished
 _SEP_COLOR = "rgba(255,255,255,35)"
 _BTN_STYLE = """
 QPushButton {
@@ -81,6 +75,21 @@ class OverlayWindow(QWidget):
         self._last_show_tray_icon = config.show_tray_icon
         # ── Timer state ───────────────────────────────────────────────────
         self.engine = TimerEngine(config)
+        # Timer label color animation
+        self._timer_color_target = ""
+        self._timer_color_current = QColor(config.color_timer_pause)
+        self._timer_color_anim: QVariantAnimation | None = None
+        # Auto-hide controls
+        self._controls_fx: QGraphicsOpacityEffect | None = None
+        self._controls_anim: QVariantAnimation | None = None
+        self._hide_controls_timer = QTimer(self)
+        self._hide_controls_timer.setSingleShot(True)
+        self._hide_controls_timer.setInterval(2000)
+        self._hide_controls_timer.timeout.connect(lambda: self._fade_controls_to(0.0))
+        # Last-seconds pulse
+        self._pulse_anim: QVariantAnimation | None = None
+        # Track countdown duration to detect settings-driven changes
+        self._last_cd_duration = config.countdown_duration
         # ── Drag state ────────────────────────────────────────────────────
         self._drag_offset: QPoint | None = None
         # ── Build ─────────────────────────────────────────────────────────
@@ -125,31 +134,21 @@ class OverlayWindow(QWidget):
         root.setSpacing(0)
         cfg = self.config
         fs  = cfg.font_size
-        ff  = cfg.font_family or "Monospace"
-        def make_font(size: int, bold: bool = True) -> QFont:
-            f = QFont(ff, -1)
-            f.setPixelSize(size)
-            f.setBold(bold)
-            return f
         # ── Clock row ─────────────────────────────────────────────────────
         self.lbl_clock = QLabel("--:--:--")
-        self.lbl_clock.setFont(make_font(fs))
         self.lbl_clock.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_clock.setStyleSheet(f"color:{_CLK_COLOR}; background:transparent;")
         # ── Separator ─────────────────────────────────────────────────────
         sep = QLabel()
         sep.setFixedHeight(1)
         sep.setStyleSheet(f"background:{_SEP_COLOR}; margin: 5px 0px;")
         # ── Timer display ─────────────────────────────────────────────────
         self.lbl_timer = QLabel("00:00")
-        self.lbl_timer.setFont(make_font(int(fs * 1.25)))
         self.lbl_timer.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_timer.setStyleSheet(f"color:{_TMR_PAUSE}; background:transparent;")
+        self.lbl_timer.setStyleSheet(f"color:{cfg.color_timer_pause}; background:transparent;")
         self.lbl_timer.setCursor(Qt.CursorShape.PointingHandCursor)
         self.lbl_timer.installEventFilter(self)
         # ── Mode label ────────────────────────────────────────────────────
         self.lbl_mode = QLabel("STOPWATCH")
-        self.lbl_mode.setFont(make_font(max(10, fs // 3), bold=False))
         self.lbl_mode.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_mode.setStyleSheet(
             "color:#666; background:transparent; letter-spacing:2px;"
@@ -201,7 +200,37 @@ class OverlayWindow(QWidget):
 
         self.sep = sep
 
+        self._apply_styles()
         self._refresh_mode_label()
+
+        self._controls_fx = QGraphicsOpacityEffect(self.ctrl_widget)
+        self._controls_fx.setOpacity(1.0)
+        self.ctrl_widget.setGraphicsEffect(self._controls_fx)
+
+    def _apply_styles(self) -> None:
+        """Apply theme + config fonts/colors to the labels. Idempotent."""
+        if self._pulse_anim is not None:
+            self._pulse_anim.stop()
+            self._pulse_anim.deleteLater()
+            self._pulse_anim = None
+        cfg = self.config
+        theme = get_theme(cfg.theme)
+        fs = cfg.font_size
+        ff = theme.font_family or cfg.font_family or "Monospace"
+
+        def make_font(size: int, bold: bool = True) -> QFont:
+            f = QFont(ff, -1)
+            f.setPixelSize(size)
+            f.setBold(bold)
+            return _tabular(f)
+
+        self.lbl_clock.setFont(make_font(int(fs * theme.clock_scale)))
+        self.lbl_clock.setStyleSheet(
+            f"color:{_rgba(cfg.color_clock, theme.clock_alpha)}; background:transparent;"
+        )
+        self.lbl_timer.setFont(make_font(int(fs * theme.timer_scale)))
+        self.lbl_mode.setFont(make_font(max(10, fs // 3), bold=False))
+        self.sep.setVisible(cfg.show_timer and theme.show_separator)
 
     # ══ Positioning ══════════════════════════════════════════════════════════
     def _position_window(self) -> None:
@@ -283,15 +312,18 @@ class OverlayWindow(QWidget):
         result = self.engine.tick()
         self.lbl_timer.setText(_fmt(result.display))
 
+        theme = get_theme(self.config.theme)
         colors = {
             "run":   self.config.color_timer_run,
             "pause": self.config.color_timer_pause,
-            "warn":  _TMR_WARN,
-            "end":   _TMR_END,
+            "warn":  theme.color_warn,
+            "end":   theme.color_end,
         }
-        self.lbl_timer.setStyleSheet(
-            f"color:{colors[result.state]}; background:transparent;"
+        # Crisp flashes during the countdown's final seconds; fade otherwise
+        animate = result.state != "end" and not (
+            self.config.timer_mode == "countdown" and result.display <= 6.5
         )
+        self._set_timer_color(colors[result.state], animate)
 
         if result.finished and not result.restarted:
             self.btn_start.setText("▶")
@@ -301,6 +333,42 @@ class OverlayWindow(QWidget):
                 self.sound.play_alert(double_beep=True)
             else:
                 self.sound.play_alert(short=beep.short)
+
+        if (
+            result.beeps
+            and self.config.timer_mode == "countdown"
+            and result.display <= 6.5
+        ):
+            self._pulse_timer_label()
+
+    def _set_timer_color(self, color: str, animate: bool) -> None:
+        if color == self._timer_color_target:
+            return
+        self._timer_color_target = color
+        if self._timer_color_anim is not None:
+            self._timer_color_anim.stop()
+            self._timer_color_anim.deleteLater()
+            self._timer_color_anim = None
+        if not animate:
+            self._timer_color_current = QColor(color)
+            self._paint_timer_color(self._timer_color_current)
+            return
+        anim = QVariantAnimation(self)
+        anim.setDuration(200)
+        anim.setStartValue(self._timer_color_current)
+        anim.setEndValue(QColor(color))
+        anim.valueChanged.connect(self._on_timer_color_step)
+        anim.start()
+        self._timer_color_anim = anim
+
+    def _on_timer_color_step(self, value) -> None:
+        self._timer_color_current = value
+        self._paint_timer_color(value)
+
+    def _paint_timer_color(self, qcolor) -> None:
+        self.lbl_timer.setStyleSheet(
+            f"color:{qcolor.name()}; background:transparent;"
+        )
     # ══ Timer logic ══════════════════════════════════════════════════════════
     def toggle_timer(self) -> None:
         """Start if stopped, pause if running."""
@@ -311,6 +379,12 @@ class OverlayWindow(QWidget):
         self.engine.reset()
         self.btn_start.setText("▶")
         self._update()
+    def _sync_countdown_duration(self) -> None:
+        """Resync engine remaining after countdown_duration changed in Settings."""
+        if self.config.countdown_duration != self._last_cd_duration:
+            self._last_cd_duration = self.config.countdown_duration
+            if not self.engine.running:
+                self.engine.adjust_countdown(0)   # stopped: reload from config
     def _toggle_mode(self) -> None:
         """Switch stopwatch ↔ countdown."""
         new_mode = "countdown" if self.config.timer_mode == "stopwatch" else "stopwatch"
@@ -328,6 +402,7 @@ class OverlayWindow(QWidget):
     def _apply_preset(self, preset: dict) -> None:
         self.config.timer_mode = "countdown"
         self.config.countdown_duration = int(preset["duration"])
+        self._last_cd_duration = self.config.countdown_duration
         self.config.active_preset = preset["name"]
         self.engine.reset()
         self.btn_start.setText("▶")
@@ -360,19 +435,24 @@ class OverlayWindow(QWidget):
             self.btn_mode.setText("CD")
     # ══ Painting ═════════════════════════════════════════════════════════════
     def paintEvent(self, _event) -> None:  # noqa: N802
-        """Draw dark rounded background with subtle border."""
+        """Draw the themed rounded background."""
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        theme = get_theme(self.config.theme)
+        r = theme.radius
         path = QPainterPath()
-        path.addRoundedRect(0, 0, self.width(), self.height(), 13, 13)
-        # Use dynamic bg color
+        path.addRoundedRect(0, 0, self.width(), self.height(), r, r)
         bg = QColor(self.config.color_bg)
-        bg.setAlpha(185)
+        bg.setAlpha(theme.bg_alpha)
         p.fillPath(path, bg)
-        pen = QPen(_BORDER)
-        pen.setWidthF(1.0)
-        p.setPen(pen)
-        p.drawPath(path)
+        if theme.border_alpha > 0:
+            pen = QPen(QColor(255, 255, 255, theme.border_alpha))
+            pen.setWidthF(1.0)
+            p.setPen(pen)
+            p.drawPath(path)
+        if theme.top_edge_alpha > 0:
+            p.setPen(QPen(QColor(255, 255, 255, theme.top_edge_alpha)))
+            p.drawLine(r, 1, self.width() - r, 1)
     # ══ Mouse events ═════════════════════════════════════════════════════════
     def eventFilter(self, obj, event):
         if obj in (self.lbl_timer, self.lbl_mode):
@@ -403,6 +483,7 @@ class OverlayWindow(QWidget):
                             delta = -min(step, self.config.countdown_duration - 1)
                         if delta:
                             self.config.countdown_duration += delta
+                            self._last_cd_duration = self.config.countdown_duration
                             self.config.active_preset = ""
                             self.engine.adjust_countdown(delta)
                         self.config.save()
@@ -506,6 +587,17 @@ class OverlayWindow(QWidget):
         act_save.triggered.connect(self._save_current_preset)
         act_manage = preset_menu.addAction("Manage presets…")
         act_manage.triggered.connect(lambda: self._open_settings(tab="presets"))
+
+        # Theme sub-menu
+        theme_menu = menu.addMenu("🎨  Theme")
+        theme_group = QActionGroup(theme_menu)
+        theme_group.setExclusive(True)
+        for t in THEMES.values():
+            a: QAction = theme_menu.addAction(t.label)
+            a.setCheckable(True)
+            a.setChecked(t.name == self.config.theme)
+            theme_group.addAction(a)
+            a.triggered.connect(lambda checked, n=t.name: self._set_theme(n))
         menu.addSeparator()
 
         if include_window_actions:
@@ -565,6 +657,15 @@ class OverlayWindow(QWidget):
         self.config.opacity = value
         self.setWindowOpacity(value)
         self.config.save()
+    def _set_theme(self, name: str) -> None:
+        apply_theme(self.config, name)
+        self._apply_styles()
+        self.adjustSize()
+        if self.config.custom_x < 0:
+            self._position_window()
+        self.config.save()
+        self.update()      # repaint themed background
+        self._update()     # refresh timer color immediately
     def _set_preset_position(self, preset):
         self.config.position = preset
         self.config.custom_x = -1
@@ -608,29 +709,17 @@ class OverlayWindow(QWidget):
             if not cfg.show_timer:
                 self.reset_timer()
 
-            fs = cfg.font_size
-            ff = cfg.font_family or "Monospace"
-            def make_font(size: int, bold: bool = True) -> QFont:
-                f = QFont(ff, -1)
-                f.setPixelSize(size)
-                f.setBold(bold)
-                return f
-
-            self.lbl_clock.setFont(make_font(fs))
-            self.lbl_clock.setStyleSheet(f"color:{cfg.color_clock}; background:transparent;")
-
-            self.lbl_timer.setFont(make_font(int(fs * 1.25)))
-            self.lbl_mode.setFont(make_font(max(10, fs // 3), bold=False))
+            self._sync_countdown_duration()
+            self._apply_styles()
 
             self.lbl_clock.setVisible(cfg.show_clock)
-            self.sep.setVisible(cfg.show_timer)
             self.lbl_timer.setVisible(cfg.show_timer)
             self.lbl_mode.setVisible(cfg.show_timer)
             self.ctrl_widget.setVisible(cfg.show_timer and cfg.show_controls)
 
+            fs = cfg.font_size
             for btn in (self.btn_start, self.btn_reset, self.btn_mode):
-                btn_h = max(24, fs - 4)
-                btn.setFixedHeight(btn_h)
+                btn.setFixedHeight(max(24, fs - 4))
             self.btn_start.setFixedWidth(max(24, fs - 4) + 6)
             self.btn_reset.setFixedWidth(max(24, fs - 4) + 6)
             self.btn_mode.setFixedWidth(max(24, fs - 4) + 14)
@@ -660,6 +749,50 @@ class OverlayWindow(QWidget):
             self.hide()
         else:
             self.show()
+    # ══ Auto-hide controls ═══════════════════════════════════════════════════
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self._hide_controls_timer.stop()
+        self._fade_controls_to(1.0)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        # Keep buttons visible while idle at 00:00 for discoverability
+        if not self.engine.is_idle():
+            self._hide_controls_timer.start()
+        super().leaveEvent(event)
+
+    def _fade_controls_to(self, target: float) -> None:
+        if self._controls_fx is None:
+            return
+        if self._controls_anim is not None:
+            self._controls_anim.stop()
+            self._controls_anim.deleteLater()
+        anim = QVariantAnimation(self)
+        anim.setDuration(300)
+        anim.setStartValue(self._controls_fx.opacity())
+        anim.setEndValue(target)
+        anim.valueChanged.connect(self._controls_fx.setOpacity)
+        anim.start()
+        self._controls_anim = anim
+
+    def _pulse_timer_label(self) -> None:
+        base = int(self.config.font_size * get_theme(self.config.theme).timer_scale)
+        if self._pulse_anim is not None:
+            self._pulse_anim.stop()
+            self._pulse_anim.deleteLater()
+        anim = QVariantAnimation(self)
+        anim.setDuration(180)
+        anim.setStartValue(base)
+        anim.setKeyValueAt(0.5, int(base * 1.06))
+        anim.setEndValue(base)
+        anim.valueChanged.connect(self._set_timer_px)
+        anim.start()
+        self._pulse_anim = anim
+
+    def _set_timer_px(self, px) -> None:
+        f = self.lbl_timer.font()
+        f.setPixelSize(int(px))
+        self.lbl_timer.setFont(f)
     # ══ Fade-in animation ═════════════════════════════════════════════════════
     def _fade_step(self) -> None:
         self._fade_value = min(self._fade_value + 0.06, self.config.opacity)
@@ -667,6 +800,18 @@ class OverlayWindow(QWidget):
         if self._fade_value >= self.config.opacity:
             self._fade_timer.stop()
 # ── Helpers ────────────────────────────────────────────────────────────────
+def _tabular(font: QFont) -> QFont:
+    """Enable tabular (fixed-width) digits where supported (Qt >= 6.7)."""
+    try:
+        font.setFeature(QFont.Tag("tnum"), 1)
+    except (AttributeError, TypeError):
+        pass  # older Qt: mono fonts are tabular anyway
+    return font
+def _rgba(hex_color: str, alpha: float) -> str:
+    """'#RRGGBB' + 0-1 alpha → Qt stylesheet rgba() string."""
+    h = hex_color.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    return f"rgba({r},{g},{b},{int(alpha * 255)})"
 def _fmt(secs: float) -> str:
     """Format seconds → HH:MM:SS (or MM:SS when < 1 h)."""
     s = max(0, int(secs))

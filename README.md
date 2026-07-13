@@ -66,6 +66,7 @@ timehud
 - **Settings** – full settings dialog
 - **Presets** – one-click countdown presets (and back to stopwatch); save the
   current countdown as a preset or manage them in Settings
+- **Theme** – switch between built-in looks
 - **Click-Through** – toggle mouse pass-through
 - **Opacity** – quick opacity change
 - **Position** – snap to screen corner
@@ -96,6 +97,7 @@ Right-click → **Settings** or edit `~/.config/timehud/config.json`:
 
 ```json
 {
+  "theme": "classic",
   "position": "top-right",
   "opacity": 0.88,
   "font_size": 30,
@@ -123,6 +125,12 @@ Right-click → **Settings** or edit `~/.config/timehud/config.json`:
 `top-left` · `top-right` · `bottom-left` · `bottom-right` · `top-center` · `bottom-center`
 
 You can also drag the overlay anywhere — the position is saved automatically.
+
+### Themes
+
+Right-click → **Theme** (or Settings → Display): `Classic` (default),
+`Terminal`, `Glass`, `Mono`. Picking a theme sets the color defaults — you can
+still customize individual colors afterwards in Settings.
 
 ### Sound alerts
 
