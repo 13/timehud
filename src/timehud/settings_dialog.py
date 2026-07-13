@@ -7,13 +7,14 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QComboBox, QSpinBox, QCheckBox,
     QLineEdit, QPushButton, QFileDialog,
-    QTabWidget, QWidget, QSlider, QDialogButtonBox, QColorDialog
+    QTabWidget, QWidget, QSlider, QDialogButtonBox, QColorDialog,
+    QListWidget
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPixmap
 import os
 
-from timehud.config import Config
+from timehud.config import Config, valid_presets
 
 
 _DARK_STYLE = """
@@ -85,8 +86,10 @@ class SettingsDialog(QDialog):
         root.setSpacing(12)
 
         tabs = QTabWidget()
+        self._tabs = tabs
         tabs.addTab(self._display_tab(),  "🖥️  Display")
         tabs.addTab(self._timer_tab(),    "⏱  Timer")
+        tabs.addTab(self._presets_tab(),  "📋  Presets")
         tabs.addTab(self._sound_tab(),    "🔔  Sound")
         tabs.addTab(self._about_tab(),    "ℹ️  About")
         root.addWidget(tabs)
@@ -203,6 +206,36 @@ class SettingsDialog(QDialog):
 
         return tab
 
+    def _presets_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        self.preset_list = QListWidget()
+        self.preset_list.currentRowChanged.connect(self._preset_selected)
+        layout.addWidget(self.preset_list)
+
+        row = QHBoxLayout()
+        self.preset_name_edit = QLineEdit()
+        self.preset_name_edit.setPlaceholderText("Name")
+        self.preset_dur_spin = QSpinBox()
+        self.preset_dur_spin.setRange(1, 24 * 3600)
+        self.preset_dur_spin.setSuffix(" s")
+        self.preset_dur_spin.setValue(300)
+        row.addWidget(self.preset_name_edit, 1)
+        row.addWidget(self.preset_dur_spin)
+        layout.addLayout(row)
+
+        btns = QHBoxLayout()
+        add_btn = QPushButton("Add / Update")
+        add_btn.clicked.connect(self._preset_add)
+        rm_btn = QPushButton("Remove")
+        rm_btn.clicked.connect(self._preset_remove)
+        btns.addStretch()
+        btns.addWidget(add_btn)
+        btns.addWidget(rm_btn)
+        layout.addLayout(btns)
+        return tab
+
     def _sound_tab(self) -> QWidget:
         tab = QWidget()
         form = QFormLayout(tab)
@@ -297,6 +330,46 @@ class SettingsDialog(QDialog):
         layout.addStretch()
         return tab
 
+    def _reload_preset_list(self) -> None:
+        self.preset_list.clear()
+        for p in valid_presets(self.config.presets):
+            m, s = divmod(p["duration"], 60)
+            self.preset_list.addItem(f'{p["name"]}  —  {m:02d}:{s:02d}')
+
+    def _preset_selected(self, row: int) -> None:
+        presets = valid_presets(self.config.presets)
+        if 0 <= row < len(presets):
+            self.preset_name_edit.setText(presets[row]["name"])
+            self.preset_dur_spin.setValue(presets[row]["duration"])
+
+    def _preset_add(self) -> None:
+        name = self.preset_name_edit.text().strip()
+        if not name:
+            return
+        presets = [p for p in valid_presets(self.config.presets) if p["name"] != name]
+        presets.append({"name": name, "duration": self.preset_dur_spin.value()})
+        self.config.presets = presets
+        self._reload_preset_list()
+        self.config_changed.emit()
+
+    def _preset_remove(self) -> None:
+        row = self.preset_list.currentRow()
+        presets = valid_presets(self.config.presets)
+        if 0 <= row < len(presets):
+            removed = presets.pop(row)
+            if self.config.active_preset == removed["name"]:
+                self.config.active_preset = ""
+            self.config.presets = presets
+            self._reload_preset_list()
+            self.config_changed.emit()
+
+    def select_tab(self, name: str) -> None:
+        """Open the dialog focused on a named tab (e.g. 'presets')."""
+        labels = {self._tabs.tabText(i).split()[-1].lower(): i
+                  for i in range(self._tabs.count())}
+        if name.lower() in labels:
+            self._tabs.setCurrentIndex(labels[name.lower()])
+
     # ── Load / apply ───────────────────────────────────────────────────────
 
     def _update_color_btn(self, btn: QPushButton, hex_color: str):
@@ -344,6 +417,8 @@ class SettingsDialog(QDialog):
         c.show_clock  = self.show_clock_cb.isChecked()
         c.show_timer  = self.show_timer_cb.isChecked()
         c.timer_mode          = self.mode_combo.currentText()
+        if self.countdown_spin.value() != c.countdown_duration:
+            c.active_preset = ""   # duration changed manually → preset no longer applies
         c.countdown_duration  = self.countdown_spin.value()
         c.auto_restart_countdown = self.auto_restart_countdown_cb.isChecked()
         c.sound_enabled  = self.sound_enabled_cb.isChecked()
@@ -377,6 +452,8 @@ class SettingsDialog(QDialog):
         self.sound_interval_spin.setValue(c.sound_interval)
         self.sound_alert_before_spin.setValue(c.sound_alert_before)
         self.sound_file_edit.setText(c.sound_file)
+
+        self._reload_preset_list()
 
         self._update_color_btn(self.btn_color_bg, c.color_bg)
         self._update_color_btn(self.btn_color_clock, c.color_clock)
