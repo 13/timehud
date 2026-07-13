@@ -34,10 +34,11 @@ bash install.sh
 ## Manual install (no venv)
 
 ```bash
-pip install PyQt6 pynput
-export PYTHONPATH="src:$PYTHONPATH"
-python -m timehud.main
+pip install .          # or:  pip install .[hotkeys]  for global hotkeys
+timehud
 ```
+
+(The old `PYTHONPATH=src` invocation still works; keep it as a one-line alternative for running from a checkout without installing: `PYTHONPATH=src python -m timehud.main`.)
 
 ---
 

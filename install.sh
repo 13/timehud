@@ -10,15 +10,14 @@ python3 -m venv "$VENV"
 
 echo "==> Installing dependencies …"
 "$VENV/bin/pip" install --upgrade pip -q
-"$VENV/bin/pip" install -r "$SCRIPT_DIR/requirements.txt"
+"$VENV/bin/pip" install -e "$SCRIPT_DIR[hotkeys]"
 
 # Create launcher script
 LAUNCHER="$SCRIPT_DIR/timehud"
 cat > "$LAUNCHER" << 'EOF'
 #!/usr/bin/env bash
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export PYTHONPATH="$DIR/src:$PYTHONPATH"
-exec "$DIR/.venv/bin/python" -m timehud.main "$@"
+exec "$DIR/.venv/bin/timehud" "$@"
 EOF
 chmod +x "$LAUNCHER"
 
