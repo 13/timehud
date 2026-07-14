@@ -64,7 +64,8 @@ timehud
 ### Right-click context menu
 
 - **Settings** – full settings dialog
-- **Presets** – one-click countdown presets (and back to stopwatch); save the
+- **Presets** – one-click countdown, interval (work/rest for a total time,
+  e.g. 45/15 for 10 min) and stopwatch (beep interval) presets; save the
   current countdown as a preset or manage them in Settings
 - **Theme** – switch between built-in looks
 - **Click-Through** – toggle mouse pass-through
@@ -107,6 +108,7 @@ Right-click → **Settings** or edit `~/.config/timehud/config.json`:
   "interval_work": 40,
   "interval_rest": 20,
   "interval_rounds": 8,
+  "progress_style": "line",
   "show_clock": true,
   "show_timer": true,
   "sound_enabled": true,

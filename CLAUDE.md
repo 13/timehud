@@ -57,4 +57,6 @@ Packaging: `pyproject.toml` (setuptools src layout, dynamic version); `app/` is 
 - Behavior quirks in `TimerEngine` (warn window only when remaining > 6 s; auto-restart not resetting `_sound_alert_before_beats`; display reverting to full duration one tick after countdown finish) are deliberate 1:1 ports from the original overlay code, pinned by tests — don't "fix" without intent.
 - Keep the README settings-JSON example in sync with `Config` dataclass fields when adding config keys.
 - `active_preset` must be cleared whenever `countdown_duration` changes by means other than applying a preset (wheel handler and settings dialog already do this).
-- Interval mode: trailing rest skipped, no periodic `sound_interval` beeps, last-5 shorts only (no long at 1) — pinned by tests.
+- Beep timing: last-5 shorts at displayed 5..1, long beep exactly at 00:00 (countdown finish, interval transitions and session end). Interval mode: trailing rest skipped, no periodic `sound_interval` beeps. Pinned by tests.
+- Preset shapes (see `valid_presets`): countdown `{name, duration}`, interval `{name, type, work, rest, total}` (rounds derived from total), stopwatch `{name, type, interval}` (sets `sound_interval`).
+- `progress_style` config: `line` (bar under timer) | `border` (traced around window outline in `paintEvent`) | `off`.
