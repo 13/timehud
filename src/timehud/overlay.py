@@ -27,7 +27,7 @@ from PyQt6.QtCore import (
     Qt, QPoint, QTimer, QEvent, QEasingCurve, QVariantAnimation
 )
 from PyQt6.QtGui import (
-    QAction, QActionGroup, QColor, QFont, QFontMetrics, QPainter, QPainterPath,
+    QColor, QFont, QFontMetrics, QPainter, QPainterPath,
     QPen, QCursor, QGuiApplication,
 )
 from PyQt6.QtWidgets import (
@@ -35,9 +35,11 @@ from PyQt6.QtWidgets import (
     QPushButton, QVBoxLayout, QWidget,
 )
 from timehud.config import Config, interval_preset_rounds, valid_presets
+from timehud.menus import populate_context_menu
 from timehud.sound_manager import SoundManager
-from timehud.themes import THEMES, apply_theme, get_theme
+from timehud.themes import apply_theme, get_theme
 from timehud.timer_engine import TimerEngine, fmt_seconds
+from timehud.widgets import ProgressBar, rgba, tabular
 
 _fmt = fmt_seconds
 
@@ -55,77 +57,6 @@ QPushButton {
 QPushButton:hover  { background: rgba(255,255,255,38); color:#FFF; }
 QPushButton:pressed{ background: rgba(255,255,255,55); }
 """
-_MENU_STYLE = """
-QMenu {
-    background: #1A1A1A; color: #CCCCCC;
-    border: 1px solid #333; border-radius: 6px;
-    padding: 4px 0;
-}
-QMenu::item          { padding: 6px 22px; }
-QMenu::item:selected { background: #2E2E2E; color: #FFF; }
-QMenu::separator     { height: 1px; background: #333; margin: 3px 6px; }
-"""
-
-
-class _ProgressBar(QWidget):
-    """Thin rounded bar showing remaining fraction of a countdown/phase.
-
-    Successive tick fractions are interpolated over ~one tick period so the
-    fill moves continuously instead of stepping at 10 fps.
-    """
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self._fraction = -1.0          # latest target from the engine
-        self._display_fraction = -1.0  # what paintEvent draws (animated)
-        self._color = QColor("#FFFFFF")
-        self._anim: QVariantAnimation | None = None
-        self.setFixedHeight(3)
-        self.hide()
-
-    def set_state(self, fraction: float, color: str) -> None:
-        qc = QColor(color)
-        # Visibility before the dedup return: update_ui may have hidden the
-        # bar while show_timer was off, with fraction/color unchanged.
-        self.setVisible(fraction >= 0.0)
-        if fraction == self._fraction and qc == self._color:
-            return
-        previous = self._display_fraction
-        self._fraction = fraction
-        self._color = qc
-        if self._anim is not None:
-            self._anim.stop()
-            self._anim.deleteLater()
-            self._anim = None
-        # Snap on hide/reset/large jumps; glide between adjacent ticks
-        if fraction < 0 or previous < 0 or abs(fraction - previous) > 0.2:
-            self._display_fraction = fraction
-            self.update()
-            return
-        anim = QVariantAnimation(self)
-        anim.setDuration(120)
-        anim.setStartValue(previous)
-        anim.setEndValue(fraction)
-        anim.valueChanged.connect(self._on_anim_step)
-        anim.start()
-        self._anim = anim
-
-    def _on_anim_step(self, value) -> None:
-        self._display_fraction = float(value)
-        self.update()
-
-    def paintEvent(self, _event) -> None:  # noqa: N802
-        if self._display_fraction < 0:
-            return
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(255, 255, 255, 30))
-        p.drawRoundedRect(self.rect(), 1.5, 1.5)
-        w = int(self.width() * min(1.0, self._display_fraction))
-        if w > 0:
-            p.setBrush(self._color)
-            p.drawRoundedRect(0, 0, w, self.height(), 1.5, 1.5)
 
 
 class OverlayWindow(QWidget):
@@ -267,7 +198,7 @@ class OverlayWindow(QWidget):
         root.addWidget(sep)
         self.lbl_timer.setVisible(cfg.show_timer)
         root.addWidget(self.lbl_timer)
-        self.progress_bar = _ProgressBar()
+        self.progress_bar = ProgressBar()
         root.addWidget(self.progress_bar)
         self.lbl_mode.setVisible(cfg.show_timer)
         root.addWidget(self.lbl_mode)
@@ -317,11 +248,11 @@ class OverlayWindow(QWidget):
             f = QFont(ff, -1)
             f.setPixelSize(size)
             f.setBold(bold)
-            return _tabular(f)
+            return tabular(f)
 
         self.lbl_clock.setFont(make_font(int(fs * theme.clock_scale)))
         self.lbl_clock.setStyleSheet(
-            f"color:{_rgba(cfg.color_clock, theme.clock_alpha)}; background:transparent;"
+            f"color:{rgba(cfg.color_clock, theme.clock_alpha)}; background:transparent;"
         )
         timer_font = make_font(int(fs * theme.timer_scale))
         self.lbl_timer.setFont(timer_font)
@@ -848,113 +779,7 @@ class OverlayWindow(QWidget):
     def _populate_context_menu(
         self, menu: QMenu, include_window_actions: bool | None = None
     ) -> None:
-        if include_window_actions is None:
-            include_window_actions = self.config.show_tray_icon
-        menu.setStyleSheet(_MENU_STYLE)
-        act_settings = menu.addAction("Settings…")
-        # Lambda drops QAction.triggered's `checked` bool, which would
-        # otherwise land in the optional `tab` parameter.
-        act_settings.triggered.connect(lambda: self._open_settings())
-        menu.addSeparator()
-
-        # Presets sub-menu
-        preset_menu = menu.addMenu("Presets")
-        act_sw = preset_menu.addAction("Stopwatch")
-        act_sw.setCheckable(True)
-        act_sw.setChecked(self.config.timer_mode == "stopwatch")
-        act_sw.triggered.connect(self._apply_stopwatch)
-        presets = valid_presets(self.config.presets)
-        if presets:
-            preset_menu.addSeparator()
-            for p in presets:
-                if p.get("type") == "interval":
-                    label = (
-                        f'{p["name"]} {p["work"]}/{p["rest"]} ×{interval_preset_rounds(p)}'
-                    )
-                elif p.get("type") == "stopwatch":
-                    label = f'{p["name"]} {p["work"]}/{p["rest"]} ↑'
-                else:
-                    label = f'{p["name"]} {_fmt(p["duration"])}'
-                a = preset_menu.addAction(label)
-                a.setCheckable(True)
-                preset_mode = p.get("type", "countdown")
-                if preset_mode not in ("interval", "stopwatch"):
-                    preset_mode = "countdown"
-                a.setChecked(
-                    self.config.timer_mode == preset_mode
-                    and self.config.active_preset == p["name"]
-                )
-                a.triggered.connect(lambda checked, p=p: self._apply_preset(p))
-        preset_menu.addSeparator()
-        act_save = preset_menu.addAction("Save current as preset…")
-        # Plain stopwatch (no cycle) has nothing to capture in a preset
-        act_save.setEnabled(
-            self.config.timer_mode != "stopwatch" or self.config.stopwatch_work > 0
-        )
-        act_save.triggered.connect(self._save_current_preset)
-        act_manage = preset_menu.addAction("Manage presets…")
-        act_manage.triggered.connect(lambda: self._open_settings(tab="presets"))
-
-        # Theme sub-menu
-        theme_menu = menu.addMenu("Theme")
-        theme_group = QActionGroup(theme_menu)
-        theme_group.setExclusive(True)
-        for t in THEMES.values():
-            a: QAction = theme_menu.addAction(t.label)
-            a.setCheckable(True)
-            a.setChecked(t.name == self.config.theme)
-            theme_group.addAction(a)
-            a.triggered.connect(lambda checked, n=t.name: self._set_theme(n))
-        menu.addSeparator()
-
-        if include_window_actions:
-            ct_label = "Click-Through: ON" if self.config.click_through else "Click-Through: OFF"
-            act_ct = menu.addAction(ct_label)
-            act_ct.triggered.connect(self._toggle_click_through)
-
-        # Opacity sub-menu
-        op_menu = menu.addMenu("Opacity")
-        op_group = QActionGroup(op_menu)
-        op_group.setExclusive(True)
-        current_pct = max(0, min(100, round(self.config.opacity * 100)))
-        matched_opacity = False
-        for pct in (30, 50, 70, 85, 95, 100):
-            a: QAction = op_menu.addAction(f"{pct}%")
-            a.setCheckable(True)
-            op_group.addAction(a)
-            if current_pct == pct:
-                a.setChecked(True)
-                matched_opacity = True
-            a.triggered.connect(lambda checked, v=pct/100: self._set_opacity(v))
-        if not matched_opacity:
-            current_action = op_menu.addAction(f"Current: {current_pct}%")
-            current_action.setCheckable(True)
-            current_action.setChecked(True)
-            op_group.addAction(current_action)
-            current_action.triggered.connect(
-                lambda checked, v=current_pct / 100: self._set_opacity(v)
-            )
-        # Position sub-menu
-        pos_menu = menu.addMenu("Position")
-        pos_group = QActionGroup(pos_menu)
-        pos_group.setExclusive(True)
-        for preset in (
-            "top-left", "top-right",
-            "bottom-left", "bottom-right",
-            "top-center", "bottom-center",
-        ):
-            a: QAction = pos_menu.addAction(preset.replace("-", " ").title())
-            a.setCheckable(True)
-            a.setChecked(preset == self.config.position)
-            pos_group.addAction(a)
-            a.triggered.connect(lambda checked, p=preset: self._set_preset_position(p))
-
-        if include_window_actions:
-            menu.addSeparator()
-            act_toggle = menu.addAction("Show/Hide Overlay")
-            act_toggle.triggered.connect(self.toggle_visibility)
-        act_quit = menu.addAction("Quit")
-        act_quit.triggered.connect(self._quit_app)
+        populate_context_menu(self, menu, include_window_actions)
 
     def contextMenuEvent(self, event) -> None:  # noqa: N802
         """Right-click context menu."""
@@ -1178,15 +1003,3 @@ class OverlayWindow(QWidget):
         if self._fade_value >= self.config.opacity:
             self._fade_timer.stop()
 # ── Helpers ────────────────────────────────────────────────────────────────
-def _tabular(font: QFont) -> QFont:
-    """Enable tabular (fixed-width) digits where supported (Qt >= 6.7)."""
-    try:
-        font.setFeature(QFont.Tag("tnum"), 1)
-    except (AttributeError, TypeError):
-        pass  # older Qt: mono fonts are tabular anyway
-    return font
-def _rgba(hex_color: str, alpha: float) -> str:
-    """'#RRGGBB' + 0-1 alpha → Qt stylesheet rgba() string."""
-    h = hex_color.lstrip("#")
-    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
-    return f"rgba({r},{g},{b},{int(alpha * 255)})"

@@ -20,10 +20,11 @@ pip install -e ".[dev]"
 timehud                            # console script (when installed)
 # Useful flags: --position <preset>, --reset-config, --wayland, --no-tray, --version
 
-# Tests (Qt-free, run headless)
+# Tests (all headless; engine/config/themes tests are Qt-free,
+# tests/test_overlay.py uses pytest-qt with the offscreen platform)
 pytest                             # full suite
 pytest tests/test_timer_engine.py -v                    # one file
-pytest tests/test_timer_engine.py::TestCountdown -v     # one class
+pytest tests/test_overlay.py::TestGeometry -v           # one class
 
 # Lint
 ruff check src tests
@@ -44,7 +45,9 @@ Application code in `src/timehud/` (run as `python -m timehud.main` or `timehud`
 - **`main.py`** — entry point. Forces `QT_QPA_PLATFORM=xcb` (XWayland) *before* Qt imports unless `--wayland` is passed — required for `X11BypassWindowManagerHint` (always-on-top over fullscreen) on Wayland sessions. Owns the system tray icon and pynput global-hotkey registration; calls `window.toggle_timer/reset_timer/toggle_visibility`, so those overlay method names are a contract.
 - **`timer_engine.py`** — `TimerEngine`, the Qt-free timer state machine (stopwatch/countdown/interval modes, pause/resume, beep scheduling). The UI calls `tick()` every 100 ms and gets a `TickResult(display, state, beeps, finished, restarted, phase, round, rounds, progress)`; state is `"run" | "pause" | "warn" | "end"`. Injectable `clock` parameter makes tests deterministic. **Keep this module free of Qt imports** — the test suite depends on it running headless.
 - **`themes.py`** — frozen `Theme` dataclass registry (classic/terminal/glass/mono), Qt-free. `apply_theme` stamps colors into config; structure (radius, alphas, scales) is read live via `get_theme(config.theme)`. Classic must stay pixel-identical to the pre-theme look — guarded by `tests/test_themes.py`.
-- **`overlay.py`** — `OverlayWindow`: frameless translucent always-on-top widget. Renders `TickResult` (state→color mapping), forwards `Beep` events to `SoundManager`, handles drag/wheel/keyboard, and builds the context menu (shared by window right-click and tray — the tray menu is built once, the window menu per-open).
+- **`overlay.py`** — `OverlayWindow`: frameless translucent always-on-top widget. Renders `TickResult` (state→color mapping, ceiled countdown/interval labels), forwards `Beep` events to `SoundManager`, handles drag/wheel/keyboard and all animations (fold, pulse, color fade, border progress).
+- **`menus.py`** — `populate_context_menu(overlay, menu, …)` builds the context menu into a caller-provided QMenu (window right-click builds fresh per open; the tray's persistent menu rebuilds on `aboutToShow`).
+- **`widgets.py`** — `ProgressBar` (animated line bar), `rgba`/`tabular` styling helpers.
 - **`config.py`** — `Config` dataclass persisted as JSON at `~/.config/timehud/config.json`. `Config.load()` filters unknown keys, so adding a field only requires a new dataclass attribute with a default (old configs keep loading — preserve this). Presets live here (`presets` list of `{"name", "duration"}`, `active_preset`), with module-level `valid_presets()` filtering malformed entries.
 - **`settings_dialog.py`** — tabbed `SettingsDialog` with live updates: changes apply to the running overlay as controls change (`_connect_live_updates`), not only on Apply. `select_tab("presets")` opens a specific tab (used by "Manage presets…").
 - **`sound_manager.py`** — generates beep WAVs with stdlib only, shells out to first available player (paplay → aplay → ffplay → mpv). No Python audio dependency.
