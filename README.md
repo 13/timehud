@@ -65,7 +65,8 @@ timehud
 
 - **Settings** – full settings dialog
 - **Presets** – one-click countdown, interval (work/rest for a total time,
-  e.g. 45/15 for 10 min) and stopwatch (beep interval) presets; save the
+  e.g. 45/15 for 10 min) and stopwatch (work/rest cycles counting upward
+  forever) presets; save the
   current countdown as a preset or manage them in Settings
 - **Theme** – switch between built-in looks
 - **Click-Through** – toggle mouse pass-through

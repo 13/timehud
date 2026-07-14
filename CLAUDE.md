@@ -58,5 +58,6 @@ Packaging: `pyproject.toml` (setuptools src layout, dynamic version); `app/` is 
 - Keep the README settings-JSON example in sync with `Config` dataclass fields when adding config keys.
 - `active_preset` must be cleared whenever `countdown_duration` changes by means other than applying a preset (wheel handler and settings dialog already do this).
 - Beep timing: last-5 shorts at displayed 5..1, long beep exactly at 00:00 (countdown finish, interval transitions and session end). Interval mode: trailing rest skipped, no periodic `sound_interval` beeps. Pinned by tests.
-- Preset shapes (see `valid_presets`): countdown `{name, duration}`, interval `{name, type, work, rest, total}` (rounds derived from total), stopwatch `{name, type, interval}` (sets `sound_interval`).
+- Preset shapes (see `valid_presets`): countdown `{name, duration}`, interval `{name, type, work, rest, total}` (rounds derived from total), stopwatch `{name, type, work, rest}` (sets `stopwatch_work/rest` — count-up cycling, endless; work=0 in config means plain stopwatch).
+- Settings dialog is non-modal; the overlay stays interactive. `_open_settings` keeps a single instance in `self._settings_dlg` and reverts a config snapshot on reject.
 - `progress_style` config: `line` (bar under timer) | `border` (traced around window outline in `paintEvent`) | `off`.

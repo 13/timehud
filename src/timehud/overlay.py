@@ -169,6 +169,8 @@ class OverlayWindow(QWidget):
             config.interval_rest,
             config.interval_rounds,
         )
+        # Non-modal settings dialog (None = closed)
+        self._settings_dlg = None
         # ── Drag state ────────────────────────────────────────────────────
         self._drag_offset: QPoint | None = None
         # ── Build ─────────────────────────────────────────────────────────
@@ -306,10 +308,9 @@ class OverlayWindow(QWidget):
         fs = cfg.font_size
         ff = theme.font_family or cfg.font_family or "Monospace"
 
-        # Symmetric: bottom distance equals top (unless padding_top overrides)
         pad = cfg.padding
         pad_top = cfg.padding_top if cfg.padding_top >= 0 else pad
-        self.layout().setContentsMargins(pad + 4, pad_top, pad + 4, pad)
+        self.layout().setContentsMargins(pad + 4, pad_top, pad + 4, self._bottom_margin())
 
         def make_font(size: int, bold: bool = True) -> QFont:
             f = QFont(ff, -1)
@@ -468,7 +469,10 @@ class OverlayWindow(QWidget):
         self._set_border_progress(border_fraction, theme_bar_color)
 
         if result.phase and not self.engine.is_idle():
-            label = f"{result.phase.upper()} {result.round}/{result.rounds}"
+            if result.rounds > 0:
+                label = f"{result.phase.upper()} {result.round}/{result.rounds}"
+            else:
+                label = f"{result.phase.upper()} {result.round}"   # endless cycle
             if label != self._interval_label:
                 self._interval_label = label
                 self.lbl_mode.setText(label)
@@ -560,6 +564,8 @@ class OverlayWindow(QWidget):
         self._update()
     def _apply_stopwatch(self) -> None:
         self.config.active_preset = ""   # plain stopwatch, no preset
+        self.config.stopwatch_work = 0
+        self.config.stopwatch_rest = 0
         self.engine.set_mode("stopwatch")
         self.btn_start.setText("▶")
         self._refresh_mode_label()
@@ -568,12 +574,8 @@ class OverlayWindow(QWidget):
     def _apply_preset(self, preset: dict) -> None:
         if preset.get("type") == "stopwatch":
             self.config.timer_mode = "stopwatch"
-            if preset["interval"] > 0:
-                self.config.sound_interval = preset["interval"]
-                self.config.sound_enabled = True
-            else:
-                self.config.sound_enabled = False
-            self.config.sound_alert_before = preset.get("alert_before", 0)
+            self.config.stopwatch_work = int(preset["work"])
+            self.config.stopwatch_rest = int(preset["rest"])
         elif preset.get("type") == "interval":
             self.config.timer_mode = "interval"
             self.config.interval_work = int(preset["work"])
@@ -610,13 +612,11 @@ class OverlayWindow(QWidget):
                 "total": (cfg.interval_work + cfg.interval_rest) * cfg.interval_rounds,
             }
         elif self.config.timer_mode == "stopwatch":
-            interval = self.config.sound_interval if self.config.sound_enabled else 0
             new_preset = {
                 "name": name,
                 "type": "stopwatch",
-                "interval": interval,
-                # A silent preset has no beeps to pre-announce
-                "alert_before": self.config.sound_alert_before if interval > 0 else 0,
+                "work": self.config.stopwatch_work,
+                "rest": self.config.stopwatch_rest,
             }
         else:
             new_preset = {"name": name, "duration": int(self.config.countdown_duration)}
@@ -630,8 +630,15 @@ class OverlayWindow(QWidget):
     def _refresh_mode_label(self) -> None:
         self._interval_label = ""   # force live label re-sync on next tick
         if self.config.timer_mode == "stopwatch":
-            if self.config.active_preset:
-                self.lbl_mode.setText(f"{self.config.active_preset.upper()} · STOPWATCH")
+            cfg = self.config
+            if cfg.stopwatch_work > 0:
+                base = f"{cfg.stopwatch_work}s/{cfg.stopwatch_rest}s ↑"
+                if cfg.active_preset:
+                    self.lbl_mode.setText(f"{cfg.active_preset.upper()} · {base}")
+                else:
+                    self.lbl_mode.setText(f"STOPWATCH {base}")
+            elif cfg.active_preset:
+                self.lbl_mode.setText(f"{cfg.active_preset.upper()} · STOPWATCH")
             else:
                 self.lbl_mode.setText("STOPWATCH")
             self.btn_mode.setText("SW")
@@ -842,12 +849,7 @@ class OverlayWindow(QWidget):
                         f'{p["name"]} {p["work"]}/{p["rest"]} ×{interval_preset_rounds(p)}'
                     )
                 elif p.get("type") == "stopwatch":
-                    if p["interval"] > 0:
-                        label = f'{p["name"]} every {p["interval"]}s'
-                        if p.get("alert_before", 0) > 0:
-                            label += f' (−{p["alert_before"]}s pre-beep)'
-                    else:
-                        label = f'{p["name"]} silent'
+                    label = f'{p["name"]} {p["work"]}/{p["rest"]} ↑'
                 else:
                     label = f'{p["name"]} {_fmt(p["duration"])}'
                 a = preset_menu.addAction(label)
@@ -862,6 +864,10 @@ class OverlayWindow(QWidget):
                 a.triggered.connect(lambda checked, p=p: self._apply_preset(p))
         preset_menu.addSeparator()
         act_save = preset_menu.addAction("Save current as preset…")
+        # Plain stopwatch (no cycle) has nothing to capture in a preset
+        act_save.setEnabled(
+            self.config.timer_mode != "stopwatch" or self.config.stopwatch_work > 0
+        )
         act_save.triggered.connect(self._save_current_preset)
         act_manage = preset_menu.addAction("Manage presets…")
         act_manage.triggered.connect(lambda: self._open_settings(tab="presets"))
@@ -979,6 +985,14 @@ class OverlayWindow(QWidget):
         # Import here to avoid circular deps / speed up startup
         from timehud.settings_dialog import SettingsDialog
 
+        if self._settings_dlg is not None:
+            # Already open: bring it to the front instead of stacking dialogs
+            if tab is not None:
+                self._settings_dlg.select_tab(tab)
+            self._settings_dlg.raise_()
+            self._settings_dlg.activateWindow()
+            return
+
         snapshot = asdict(self.config)   # asdict deep-copies nested containers
 
         dlg = SettingsDialog(self.config, parent=None)
@@ -1023,14 +1037,19 @@ class OverlayWindow(QWidget):
 
         dlg.config_changed.connect(update_ui)
 
-        if dlg.exec():
+        def on_finished(result: int) -> None:
+            if not result:
+                # Cancel: live-applied changes are rolled back
+                for key, value in snapshot.items():
+                    setattr(self.config, key, value)
             update_ui()
-        else:
-            # Cancel: live-applied changes are rolled back
-            for key, value in snapshot.items():
-                setattr(self.config, key, value)
-            update_ui()
-        self.config.save()
+            self.config.save()
+            self._settings_dlg = None
+            dlg.deleteLater()
+
+        dlg.finished.connect(on_finished)
+        self._settings_dlg = dlg
+        dlg.show()   # non-modal: the HUD stays interactive underneath
 
     def toggle_visibility(self) -> None:
         """Show or hide the overlay (used by global hotkeys)."""
@@ -1078,8 +1097,21 @@ class OverlayWindow(QWidget):
             # actually shrink with the fold.
             natural = self.ctrl_widget.sizeHint().height()
             self.ctrl_widget.setFixedHeight(int(natural * pos))
+        m = self.layout().contentsMargins()
+        self.layout().setContentsMargins(
+            m.left(), m.top(), m.right(), self._bottom_margin()
+        )
         self.layout().activate()
         self.adjustSize()
+
+    def _bottom_margin(self) -> int:
+        """Buttons sit 2 px above the border; without them, symmetric padding."""
+        cfg = self.config
+        if not (cfg.show_timer and cfg.show_controls):
+            return cfg.padding
+        # Blend with the fold position so the margin animates with the row
+        pos = self._controls_pos
+        return int(round(2 * pos + cfg.padding * (1 - pos)))
 
     def _unfix_controls_height(self) -> None:
         """Undo the fold's fixed height so buttons size freely again."""

@@ -52,6 +52,7 @@ class TimerEngine:
         self._last_short_beep_sec = -1
         self._phase = "work"
         self._round = 1
+        self._cycle_beats = 0
         if config.timer_mode == "interval":
             self._cd_remaining = float(config.interval_work)
 
@@ -106,6 +107,8 @@ class TimerEngine:
                 (self.elapsed() + self.config.sound_alert_before)
                 / self.config.sound_interval
             )
+            if self._cycling():
+                self._cycle_beats = self._cycle_boundaries(self.elapsed())
 
     def reset(self) -> None:
         self.running = False
@@ -116,6 +119,7 @@ class TimerEngine:
         self._last_short_beep_sec = -1
         self._phase = "work"
         self._round = 1
+        self._cycle_beats = 0
         if self.config.timer_mode == "interval":
             self._cd_remaining = float(self.config.interval_work)
 
@@ -160,14 +164,38 @@ class TimerEngine:
         return Beep(), False
 
     # ── Tick ───────────────────────────────────────────────────────────
+    def _cycling(self) -> bool:
+        """Stopwatch counting upward through work/rest cycles."""
+        return self.config.timer_mode == "stopwatch" and self.config.stopwatch_work > 0
+
+    def _cycle_boundaries(self, elapsed: float) -> int:
+        """Phase boundaries passed by `elapsed` (work-ends and rest-ends)."""
+        work = self.config.stopwatch_work
+        rest = self.config.stopwatch_rest
+        cycle = work + rest
+        full = int(elapsed // cycle)
+        pos = elapsed - full * cycle
+        if rest > 0:
+            return full * 2 + (1 if pos >= work else 0)
+        return full
+
     def tick(self) -> TickResult:
         beeps: list[Beep] = []
         finished = False
         restarted = False
+        cyc_phase = ""
+        cyc_round = 0
+        cyc_progress = None
 
         # Warn window: sound_alert_before seconds before the next interval beep
         warn = False
-        if self.running and self.config.timer_mode != "interval" and self.config.sound_enabled and self.config.sound_alert_before > 0:
+        if (
+            self.running
+            and self.config.timer_mode != "interval"
+            and not self._cycling()
+            and self.config.sound_enabled
+            and self.config.sound_alert_before > 0
+        ):
             ref = self.elapsed()
             next_beep = (int(ref / self.config.sound_interval) + 1) * self.config.sound_interval
             warn = next_beep - self.config.sound_alert_before <= ref < next_beep
@@ -177,6 +205,33 @@ class TimerEngine:
             state = "run" if self.running else "pause"
             if state == "run" and warn:
                 state = "warn"
+            if self._cycling():
+                work = self.config.stopwatch_work
+                rest = self.config.stopwatch_rest
+                cycle = work + rest
+                pos = display % cycle if cycle > 0 else 0.0
+                in_work = pos < work
+                cyc_phase = "work" if in_work else "rest"
+                cyc_round = int(display // cycle) + 1
+                phase_dur = work if in_work else rest
+                phase_remaining = (work - pos) if in_work else (cycle - pos)
+                if phase_dur > 0:
+                    cyc_progress = max(0.0, min(1.0, phase_remaining / phase_dur))
+                if self.running:
+                    # Boundary beeps: double when rest starts, long when work starts
+                    marks = self._cycle_boundaries(display)
+                    if marks > self._cycle_beats:
+                        self._cycle_beats = marks
+                        rest_start = rest > 0 and marks % 2 == 1
+                        beeps.append(Beep(double=True) if rest_start else Beep())
+                        self._last_short_beep_sec = -1
+                    # Last-5 shorts before each boundary, on the label grid
+                    if self.config.alert_last_5_seconds and phase_remaining < 6.0:
+                        state = "warn"
+                        sec = int(phase_remaining)
+                        if sec != self._last_short_beep_sec and 1 <= sec <= 5:
+                            self._last_short_beep_sec = sec
+                            beeps.append(Beep(short=True))
         elif self.config.timer_mode == "interval":
             remaining = self.remaining()
             display = max(0.0, remaining)
@@ -233,8 +288,13 @@ class TimerEngine:
                 if state == "run" and warn and remaining > 6.0:
                     state = "warn"
 
-        # Periodic interval beeps
-        if self.running and self.config.timer_mode != "interval" and self.config.sound_enabled:
+        # Periodic interval beeps (not while a cycle structure provides beeps)
+        if (
+            self.running
+            and self.config.timer_mode != "interval"
+            and not self._cycling()
+            and self.config.sound_enabled
+        ):
             ref = self.elapsed()
             if self.config.sound_alert_before > 0:
                 target = (
@@ -258,11 +318,13 @@ class TimerEngine:
                 progress = max(0.0, min(1.0, display / dur))
 
         in_interval = self.config.timer_mode == "interval"
+        if cyc_progress is not None:
+            progress = cyc_progress
         return TickResult(
             display=display, state=state, beeps=beeps,
             finished=finished, restarted=restarted,
-            phase=self._phase if in_interval else "",
-            round=self._round if in_interval else 0,
+            phase=self._phase if in_interval else cyc_phase,
+            round=self._round if in_interval else cyc_round,
             rounds=self.config.interval_rounds if in_interval else 0,
             progress=progress,
         )
