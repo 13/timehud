@@ -142,6 +142,13 @@ class SettingsDialog(QDialog):
         self.padding_spin.setToolTip("Space between the window border and the text")
         form.addRow("Padding:", self.padding_spin)
 
+        self.padding_top_spin = QSpinBox()
+        self.padding_top_spin.setRange(-1, 40)
+        self.padding_top_spin.setSuffix(" px")
+        self.padding_top_spin.setSpecialValueText("same as padding")
+        self.padding_top_spin.setToolTip("Top padding override; 'same as padding' follows the value above")
+        form.addRow("Top padding:", self.padding_top_spin)
+
         # Font family
         self.font_family_edit = QLineEdit()
         self.font_family_edit.setPlaceholderText("e.g. Monospace, JetBrains Mono")
@@ -531,6 +538,7 @@ class SettingsDialog(QDialog):
         self.position_combo.currentIndexChanged.connect(_emit_if_valid)
         self.font_size_spin.valueChanged.connect(_emit_if_valid)
         self.padding_spin.valueChanged.connect(_emit_if_valid)
+        self.padding_top_spin.valueChanged.connect(_emit_if_valid)
         self.font_family_edit.textChanged.connect(_emit_if_valid)
         self.opacity_slider.valueChanged.connect(_emit_if_valid)
         self.show_tray_icon_cb.toggled.connect(_emit_if_valid)
@@ -550,6 +558,7 @@ class SettingsDialog(QDialog):
         c.position    = self.position_combo.currentText()
         c.font_size   = self.font_size_spin.value()
         c.padding     = self.padding_spin.value()
+        c.padding_top = self.padding_top_spin.value()
         c.font_family = self.font_family_edit.text() or "Monospace"
         c.opacity     = self.opacity_slider.value() / 100.0
         c.show_tray_icon = self.show_tray_icon_cb.isChecked()
@@ -594,6 +603,7 @@ class SettingsDialog(QDialog):
 
         self.font_size_spin.setValue(c.font_size)
         self.padding_spin.setValue(c.padding)
+        self.padding_top_spin.setValue(c.padding_top)
         self.font_family_edit.setText(c.font_family)
         self.opacity_slider.setValue(int(c.opacity * 100))
         self.show_tray_icon_cb.setChecked(c.show_tray_icon)

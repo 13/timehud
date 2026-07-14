@@ -305,7 +305,8 @@ class OverlayWindow(QWidget):
 
         # padding=12 reproduces the historical (16, 12, 16, 10) margins
         pad = cfg.padding
-        self.layout().setContentsMargins(pad + 4, pad, pad + 4, max(0, pad - 2))
+        pad_top = cfg.padding_top if cfg.padding_top >= 0 else pad
+        self.layout().setContentsMargins(pad + 4, pad_top, pad + 4, max(0, pad - 2))
 
         def make_font(size: int, bold: bool = True) -> QFont:
             f = QFont(ff, -1)
