@@ -50,7 +50,7 @@ timehud
 |--------|--------|
 | ▶ / ⏸ | Start / pause timer |
 | ↺      | Reset timer to zero |
-| SW/CD  | Toggle Stopwatch ↔ Countdown mode |
+| SW/CD/IV  | Toggle Stopwatch ↔ Countdown ↔ Interval mode |
 
 ### Timer Label Mouse Interactions
 *You can also interact directly by clicking on the countdown/stopwatch numbers:*
@@ -59,7 +59,7 @@ timehud
 |--------|--------|
 | Single Click | Start / pause timer |
 | Double Click | Reset timer to zero |
-| Scroll Wheel | Toggle Stopwatch ↔ Countdown mode |
+| Scroll Wheel | Toggle Stopwatch ↔ Countdown ↔ Interval mode |
 
 ### Right-click context menu
 
@@ -104,6 +104,9 @@ Right-click → **Settings** or edit `~/.config/timehud/config.json`:
   "font_family": "Monospace",
   "timer_mode": "stopwatch",
   "countdown_duration": 300,
+  "interval_work": 40,
+  "interval_rest": 20,
+  "interval_rounds": 8,
   "show_clock": true,
   "show_timer": true,
   "sound_enabled": true,
@@ -140,6 +143,14 @@ Leave `sound_file` empty to use the built-in 880 Hz beep, or point it to any `.w
 Requires one of these audio players: **paplay** (PulseAudio/PipeWire), **aplay**, **ffplay**, or **mpv**.
 
 If `alert_last_5_seconds` is enabled, the timer will play short beeps at 5, 4, 3, 2, and 1 seconds remaining. On 0, it plays a long beep. Additionally, the timer text will flash its warning color on these exact seconds.
+
+### Interval mode
+
+Work/rest rounds for training (default 40 s work / 20 s rest × 8 rounds,
+configurable in Settings → Timer). The round counter shows `WORK 3/8` /
+`REST 3/8`, rest phases tint the timer blue, and a thin progress bar under
+the timer depletes through each phase. Double beep = rest starts, long
+beep = work starts; the session ends after the last work phase.
 
 ---
 
