@@ -308,6 +308,10 @@ class SettingsDialog(QDialog):
         layout.addWidget(self._preset_sw_row)
 
         snd_row = QHBoxLayout()
+        self.preset_boundary_cb = QCheckBox("phase beeps")
+        self.preset_boundary_cb.setChecked(True)
+        self.preset_boundary_cb.setToolTip("Beep when a work/rest phase ends")
+        snd_row.addWidget(self.preset_boundary_cb)
         self.preset_last5_cb = QCheckBox("last-5 beeps")
         self.preset_every_spin = QSpinBox()
         self.preset_every_spin.setRange(0, 3600)
@@ -455,6 +459,7 @@ class SettingsDialog(QDialog):
         p = presets[row]
         self.preset_name_edit.setText(p["name"])
         c = self.config
+        self.preset_boundary_cb.setChecked(p.get("boundary", True))
         self.preset_last5_cb.setChecked(p.get("last5", c.alert_last_5_seconds))
         self.preset_every_spin.setValue(p.get("every", c.sound_interval))
         self.preset_before_spin.setValue(p.get("before", c.sound_alert_before))
@@ -493,6 +498,7 @@ class SettingsDialog(QDialog):
             }
         else:
             new_preset = {"name": name, "duration": self.preset_dur_spin.value()}
+        new_preset["boundary"] = self.preset_boundary_cb.isChecked()
         new_preset["last5"] = self.preset_last5_cb.isChecked()
         new_preset["every"] = self.preset_every_spin.value()
         new_preset["before"] = self.preset_before_spin.value()

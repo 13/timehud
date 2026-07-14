@@ -338,6 +338,22 @@ class TestInterval:
         assert engine.remaining() == pytest.approx(30)
         assert engine.is_idle() is False
 
+    def test_interval_prebeep_before_transitions(self, engine, clock):
+        engine.config.sound_alert_before = 5
+        engine.reset()
+        engine.toggle()
+        beeps = collect_beeps(engine, clock, 44)      # work phase, ends at 40
+        doubles = [b for b in beeps if b.double]
+        assert len(doubles) == 2                      # pre-beep at 35 + work→rest at 40
+
+    def test_interval_phase_beeps_toggle_off(self, engine, clock):
+        engine.config.phase_beeps = False
+        engine.reset()
+        engine.toggle()
+        beeps = collect_beeps(engine, clock, 61)      # crosses work→rest→work
+        assert [b for b in beeps if b.double] == []
+        assert [b for b in beeps if not b.short and not b.double] == []
+
     def test_restart_after_finish(self, engine, clock):
         engine.toggle()
         for _ in range(2):
@@ -453,6 +469,34 @@ class TestCyclingStopwatch:
         engine.toggle()                             # resume
         beeps = collect_beeps(engine, clock, 5)     # elapsed 55, next boundary 60
         assert beeps == []
+
+    def test_prebeep_double_before_each_boundary(self, engine, clock):
+        engine.config.sound_alert_before = 10
+        engine.reset()
+        engine.toggle()
+        beeps = collect_beeps(engine, clock, 44)      # work ends at 45
+        doubles = [b for b in beeps if b.double]
+        assert len(doubles) == 1                      # pre-beep at 35 s
+        beeps = collect_beeps(engine, clock, 15)      # through rest (ends 60)
+        doubles = [b for b in beeps if b.double]
+        assert len(doubles) == 2                      # boundary double at 45 + pre-beep at 50
+
+    def test_prebeep_not_replayed_after_pause(self, engine, clock):
+        engine.config.sound_alert_before = 10
+        engine.reset()
+        engine.toggle()
+        collect_beeps(engine, clock, 40)              # pre-beep at 35 consumed
+        engine.toggle()
+        engine.toggle()
+        beeps = collect_beeps(engine, clock, 3)       # still inside the window
+        assert [b for b in beeps if b.double] == []
+
+    def test_phase_beeps_toggle_off(self, engine, clock):
+        engine.config.phase_beeps = False
+        engine.reset()
+        engine.toggle()
+        beeps = collect_beeps(engine, clock, 121)     # two full cycles
+        assert [b for b in beeps if b.double or (not b.short and not b.double)] == []
 
     def test_plain_stopwatch_unchanged(self, config, clock):
         config.timer_mode = "stopwatch"

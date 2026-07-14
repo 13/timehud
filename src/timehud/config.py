@@ -44,6 +44,7 @@ class Config:
     # ── Cycling stopwatch (0 = plain stopwatch) ────────────────────────────
     stopwatch_work: int = 0   # seconds of work per cycle while counting up
     stopwatch_rest: int = 0   # seconds of rest per cycle
+    phase_beeps: bool = True  # beep on interval/cycle phase boundaries
 
     # ── Sound ──────────────────────────────────────────────────────────────
     sound_enabled: bool = True
@@ -117,6 +118,8 @@ def valid_presets(presets: list) -> list:
         if not isinstance(p, dict) or not isinstance(p.get("name"), str):
             continue
         if "last5" in p and not isinstance(p["last5"], bool):
+            continue
+        if "boundary" in p and not isinstance(p["boundary"], bool):
             continue
         if not _is_int(p.get("every", 0), 0) or not _is_int(p.get("before", 0), 0):
             continue
