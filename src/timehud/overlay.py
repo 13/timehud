@@ -541,12 +541,9 @@ class OverlayWindow(QWidget):
         # Optional per-preset sound rules override the global ones
         if "last5" in preset:
             self.config.alert_last_5_seconds = bool(preset["last5"])
-        if "every" in preset:
-            self.config.sound_interval = int(preset["every"])
-        if "before" in preset:
-            self.config.sound_alert_before = int(preset["before"])
-        # Phase-boundary beeps default ON; presets may disable them
+        # Phase-end long beep defaults ON; halfway double defaults OFF
         self.config.phase_beeps = bool(preset.get("boundary", True))
+        self.config.halfway_beep = bool(preset.get("halfway", False))
         self.config.active_preset = preset["name"]
         self.engine.reset()
         self.btn_start.setText("▶")
@@ -579,9 +576,8 @@ class OverlayWindow(QWidget):
             new_preset = {"name": name, "duration": int(self.config.countdown_duration)}
         # Capture the current sound rules with the preset
         new_preset["last5"] = self.config.alert_last_5_seconds
-        new_preset["every"] = self.config.sound_interval
-        new_preset["before"] = self.config.sound_alert_before
         new_preset["boundary"] = self.config.phase_beeps
+        new_preset["halfway"] = self.config.halfway_beep
         # Same-name preset is overwritten (predictable rule per spec)
         presets = [p for p in valid_presets(self.config.presets) if p["name"] != name]
         presets.append(new_preset)
@@ -969,13 +965,13 @@ class OverlayWindow(QWidget):
         self.adjustSize()
 
     def _bottom_margin(self) -> int:
-        """Buttons sit 4 px above the border; without them, symmetric padding."""
+        """Buttons sit 8 px above the border; without them, symmetric padding."""
         cfg = self.config
         if not (cfg.show_timer and cfg.show_controls):
             return cfg.padding
         # Blend with the fold position so the margin animates with the row
         pos = self._controls_pos
-        return int(round(4 * pos + cfg.padding * (1 - pos)))
+        return int(round(8 * pos + cfg.padding * (1 - pos)))
 
     def _unfix_controls_height(self) -> None:
         """Undo the fold's fixed height so buttons size freely again."""

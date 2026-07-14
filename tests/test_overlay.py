@@ -35,7 +35,7 @@ class TestGeometry:
     def test_default_margins(self, overlay):
         w = overlay()
         m = w.layout().contentsMargins()
-        assert (m.left(), m.top(), m.right(), m.bottom()) == (16, 12, 16, 4)
+        assert (m.left(), m.top(), m.right(), m.bottom()) == (16, 12, 16, 8)
 
     def test_padding_top_override(self, overlay):
         w = overlay(padding_top=2)
@@ -52,7 +52,7 @@ class TestGeometry:
         qtbot.waitUntil(lambda: w._controls_pos == 1.0, timeout=2000)
         assert w.height() == h_full
         assert w.ctrl_widget.maximumHeight() == 16777215
-        assert w.layout().contentsMargins().bottom() == 4
+        assert w.layout().contentsMargins().bottom() == 8
 
     def test_buttons_fit_after_font_growth(self, qtbot, overlay):
         w = overlay()
@@ -109,15 +109,21 @@ class TestPresets:
         w._toggle_mode()
         assert w.config.active_preset == ""
 
-    def test_sound_rules_applied_and_legacy_untouched(self, overlay):
+    def test_sound_toggles_applied_and_legacy_ignored(self, overlay):
         w = overlay()
         w.config.sound_interval = 90
-        w._apply_preset({"name": "quiet", "duration": 60, "every": 0, "last5": True})
-        assert w.config.sound_interval == 0
+        w._apply_preset(
+            {"name": "hiit", "type": "interval", "work": 45, "rest": 15,
+             "total": 600, "last5": True, "boundary": False, "halfway": True}
+        )
         assert w.config.alert_last_5_seconds is True
-        w.config.sound_interval = 90
-        w._apply_preset({"name": "legacy", "duration": 60})
+        assert w.config.phase_beeps is False
+        assert w.config.halfway_beep is True
+        # legacy every/before keys and plain presets leave sound_interval alone
+        w._apply_preset({"name": "legacy", "duration": 60, "every": 0, "before": 5})
         assert w.config.sound_interval == 90
+        assert w.config.phase_beeps is True      # defaults restored
+        assert w.config.halfway_beep is False
 
 
 class TestBeepLabelAlignment:
@@ -208,9 +214,9 @@ class TestSettingsDialog:
         dlg.reject()
         qtbot.waitUntil(lambda: w._settings_dlg is None, timeout=2000)
 
-    def test_quiet_preset_survives_settings(self, qtbot, overlay):
+    def test_zero_sound_interval_survives_settings(self, qtbot, overlay):
         w = overlay()
-        w._apply_preset({"name": "quiet", "duration": 300, "every": 0})
+        w.config.sound_interval = 0            # periodic beeps off (Sound tab)
         w._open_settings()
         dlg = w._settings_dlg
         assert dlg.sound_interval_spin.value() == 0

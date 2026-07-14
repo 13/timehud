@@ -278,7 +278,7 @@ class TestInterval:
         clock.advance(40.05)
         r = engine.tick()
         assert r.phase == "rest" and r.round == 1
-        assert [b for b in r.beeps if b.double], "work->rest must double-beep"
+        assert [b for b in r.beeps if not b.double and not b.short], "phase end = long beep"
         assert r.display == pytest.approx(20, abs=0.1)
 
     def test_rest_to_work_advances_round(self, engine, clock):
@@ -338,13 +338,20 @@ class TestInterval:
         assert engine.remaining() == pytest.approx(30)
         assert engine.is_idle() is False
 
-    def test_interval_prebeep_before_transitions(self, engine, clock):
-        engine.config.sound_alert_before = 5
+    def test_interval_halfway_double_in_work(self, engine, clock):
+        engine.config.halfway_beep = True
         engine.reset()
         engine.toggle()
-        beeps = collect_beeps(engine, clock, 44)      # work phase, ends at 40
+        beeps = collect_beeps(engine, clock, 39)      # work phase (40 s, half = 20)
         doubles = [b for b in beeps if b.double]
-        assert len(doubles) == 2                      # pre-beep at 35 + work→rest at 40
+        assert len(doubles) == 1                      # halfway at 20 s
+
+    def test_interval_transitions_all_long(self, engine, clock):
+        engine.toggle()
+        beeps = collect_beeps(engine, clock, 61)      # work→rest at 40, rest→work at 60
+        longs = [b for b in beeps if not b.short and not b.double]
+        assert len(longs) == 2
+        assert [b for b in beeps if b.double] == []
 
     def test_interval_phase_beeps_toggle_off(self, engine, clock):
         engine.config.phase_beeps = False
@@ -423,13 +430,12 @@ class TestCyclingStopwatch:
         r = engine.tick()
         assert r.phase == "work" and r.round == 2
 
-    def test_boundary_beeps(self, engine, clock):
+    def test_boundary_beeps_all_long(self, engine, clock):
         engine.toggle()
         beeps = collect_beeps(engine, clock, 121)
-        doubles = [b for b in beeps if b.double]
         longs = [b for b in beeps if not b.double and not b.short]
-        assert len(doubles) == 2                    # work→rest at 45s and 105s
-        assert len(longs) == 2                      # rest→work at 60s and 120s
+        assert len(longs) == 4                      # 45, 60, 105, 120 s
+        assert [b for b in beeps if b.double] == [] # double is halfway-only
 
     def test_zero_rest_long_beeps_only(self, engine, clock):
         engine.config.stopwatch_rest = 0
@@ -470,26 +476,41 @@ class TestCyclingStopwatch:
         beeps = collect_beeps(engine, clock, 5)     # elapsed 55, next boundary 60
         assert beeps == []
 
-    def test_prebeep_double_before_each_boundary(self, engine, clock):
-        engine.config.sound_alert_before = 10
+    def test_halfway_double_in_each_work_phase(self, engine, clock):
+        engine.config.halfway_beep = True
         engine.reset()
         engine.toggle()
-        beeps = collect_beeps(engine, clock, 44)      # work ends at 45
+        beeps = collect_beeps(engine, clock, 44)      # work phase (45 s, half = 22.5)
         doubles = [b for b in beeps if b.double]
-        assert len(doubles) == 1                      # pre-beep at 35 s
-        beeps = collect_beeps(engine, clock, 15)      # through rest (ends 60)
-        doubles = [b for b in beeps if b.double]
-        assert len(doubles) == 2                      # boundary double at 45 + pre-beep at 50
-
-    def test_prebeep_not_replayed_after_pause(self, engine, clock):
-        engine.config.sound_alert_before = 10
-        engine.reset()
-        engine.toggle()
-        collect_beeps(engine, clock, 40)              # pre-beep at 35 consumed
-        engine.toggle()
-        engine.toggle()
-        beeps = collect_beeps(engine, clock, 3)       # still inside the window
+        assert len(doubles) == 1                      # halfway at 22.5 s
+        beeps = collect_beeps(engine, clock, 15)      # rest: no halfway cue
         assert [b for b in beeps if b.double] == []
+        beeps = collect_beeps(engine, clock, 25)      # round 2 work halfway at 82.5
+        assert len([b for b in beeps if b.double]) == 1
+
+    def test_halfway_not_replayed_after_pause(self, engine, clock):
+        engine.config.halfway_beep = True
+        engine.reset()
+        engine.toggle()
+        collect_beeps(engine, clock, 25)              # halfway at 22.5 consumed
+        engine.toggle()
+        engine.toggle()
+        beeps = collect_beeps(engine, clock, 3)
+        assert [b for b in beeps if b.double] == []
+
+    def test_halfway_off_by_default(self, engine, clock):
+        engine.toggle()
+        beeps = collect_beeps(engine, clock, 44)
+        assert [b for b in beeps if b.double] == []
+
+    def test_rest_phase_keeps_run_state_outside_last5(self, engine, clock):
+        engine.config.halfway_beep = True
+        engine.config.alert_last_5_seconds = True
+        engine.reset()
+        engine.toggle()
+        clock.advance(47)                             # rest, 13 s remaining
+        r = engine.tick()
+        assert r.phase == "rest" and r.state == "run" # blue rest, no warn tint
 
     def test_phase_beeps_toggle_off(self, engine, clock):
         engine.config.phase_beeps = False

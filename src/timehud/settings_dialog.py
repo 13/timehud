@@ -308,20 +308,16 @@ class SettingsDialog(QDialog):
         layout.addWidget(self._preset_sw_row)
 
         snd_row = QHBoxLayout()
-        self.preset_boundary_cb = QCheckBox("phase beeps")
+        self.preset_boundary_cb = QCheckBox("phase-end beep")
         self.preset_boundary_cb.setChecked(True)
-        self.preset_boundary_cb.setToolTip("Beep when a work/rest phase ends")
-        snd_row.addWidget(self.preset_boundary_cb)
+        self.preset_boundary_cb.setToolTip("Long beep when a work/rest phase ends")
+        self.preset_halfway_cb = QCheckBox("halfway double")
+        self.preset_halfway_cb.setToolTip("Fast double beep at half of each work phase")
         self.preset_last5_cb = QCheckBox("last-5 beeps")
-        self.preset_every_spin = QSpinBox()
-        self.preset_every_spin.setRange(0, 3600)
-        self.preset_every_spin.setSuffix(" s alert every (0 = off)")
-        self.preset_before_spin = QSpinBox()
-        self.preset_before_spin.setRange(0, 600)
-        self.preset_before_spin.setSuffix(" s pre-beep (0 = off)")
+        self.preset_last5_cb.setToolTip("Short beeps at 5..1 before a phase/countdown ends")
+        snd_row.addWidget(self.preset_boundary_cb)
+        snd_row.addWidget(self.preset_halfway_cb)
         snd_row.addWidget(self.preset_last5_cb)
-        snd_row.addWidget(self.preset_every_spin)
-        snd_row.addWidget(self.preset_before_spin)
         layout.addLayout(snd_row)
 
         btns = QHBoxLayout()
@@ -460,9 +456,8 @@ class SettingsDialog(QDialog):
         self.preset_name_edit.setText(p["name"])
         c = self.config
         self.preset_boundary_cb.setChecked(p.get("boundary", True))
+        self.preset_halfway_cb.setChecked(p.get("halfway", False))
         self.preset_last5_cb.setChecked(p.get("last5", c.alert_last_5_seconds))
-        self.preset_every_spin.setValue(p.get("every", c.sound_interval))
-        self.preset_before_spin.setValue(p.get("before", c.sound_alert_before))
         if p.get("type") == "interval":
             self.preset_type_combo.setCurrentText("interval")
             self.preset_work_spin.setValue(p["work"])
@@ -499,9 +494,8 @@ class SettingsDialog(QDialog):
         else:
             new_preset = {"name": name, "duration": self.preset_dur_spin.value()}
         new_preset["boundary"] = self.preset_boundary_cb.isChecked()
+        new_preset["halfway"] = self.preset_halfway_cb.isChecked()
         new_preset["last5"] = self.preset_last5_cb.isChecked()
-        new_preset["every"] = self.preset_every_spin.value()
-        new_preset["before"] = self.preset_before_spin.value()
         presets = [p for p in valid_presets(self.config.presets) if p["name"] != name]
         presets.append(new_preset)
         self.config.presets = presets
@@ -650,9 +644,9 @@ class SettingsDialog(QDialog):
         self.sound_file_edit.setText(c.sound_file)
 
         self._reload_preset_list()
+        self.preset_boundary_cb.setChecked(c.phase_beeps)
+        self.preset_halfway_cb.setChecked(c.halfway_beep)
         self.preset_last5_cb.setChecked(c.alert_last_5_seconds)
-        self.preset_every_spin.setValue(c.sound_interval)
-        self.preset_before_spin.setValue(c.sound_alert_before)
 
         self._update_color_btn(self.btn_color_bg, c.color_bg)
         self._update_color_btn(self.btn_color_clock, c.color_clock)

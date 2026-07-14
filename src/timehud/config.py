@@ -44,7 +44,8 @@ class Config:
     # ── Cycling stopwatch (0 = plain stopwatch) ────────────────────────────
     stopwatch_work: int = 0   # seconds of work per cycle while counting up
     stopwatch_rest: int = 0   # seconds of rest per cycle
-    phase_beeps: bool = True  # beep on interval/cycle phase boundaries
+    phase_beeps: bool = True   # long beep when a work/rest phase ends
+    halfway_beep: bool = False # fast double beep at half of each work phase
 
     # ── Sound ──────────────────────────────────────────────────────────────
     sound_enabled: bool = True
@@ -109,9 +110,10 @@ def valid_presets(presets: list) -> list:
                  — cycles work/rest like interval, but counts upward forever
 
     All types may carry optional sound rules, applied to the config when the
-    preset is selected: "last5" (bool → alert_last_5_seconds), "every"
-    (int >= 0 → sound_interval, 0 = no periodic beeps), "before"
-    (int >= 0 → sound_alert_before).
+    preset is selected: "last5" (bool → alert_last_5_seconds), "boundary"
+    (bool → phase_beeps, long beep at phase end, default on) and "halfway"
+    (bool → halfway_beep, fast double beep at half of each work phase).
+    Legacy "every"/"before" keys are ignored.
     """
     out = []
     for p in presets:
@@ -121,7 +123,7 @@ def valid_presets(presets: list) -> list:
             continue
         if "boundary" in p and not isinstance(p["boundary"], bool):
             continue
-        if not _is_int(p.get("every", 0), 0) or not _is_int(p.get("before", 0), 0):
+        if "halfway" in p and not isinstance(p["halfway"], bool):
             continue
         if p.get("type") == "stopwatch":
             if _is_int(p.get("work"), 1) and _is_int(p.get("rest"), 0):

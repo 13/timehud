@@ -152,8 +152,9 @@ If `alert_last_5_seconds` is enabled, the timer will play short beeps at 5, 4, 3
 Work/rest rounds for training (default 40 s work / 20 s rest × 8 rounds,
 configurable in Settings → Timer). The round counter shows `WORK 3/8` /
 `REST 3/8`, rest phases tint the timer blue, and a thin progress bar under
-the timer depletes through each phase. Double beep = rest starts, long
-beep = work starts; the session ends after the last work phase.
+the timer depletes through each phase. A long beep marks every phase end
+(toggleable per preset), and an optional fast double beep fires at half of
+each work phase; the session ends after the last work phase.
 
 ---
 
