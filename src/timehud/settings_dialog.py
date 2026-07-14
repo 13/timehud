@@ -14,7 +14,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
 import os
 
-from timehud.config import Config, valid_presets
+from timehud.config import Config, interval_preset_rounds, valid_presets
 from timehud.themes import THEMES, apply_theme
 from timehud.timer_engine import fmt_seconds
 
@@ -238,13 +238,38 @@ class SettingsDialog(QDialog):
         row = QHBoxLayout()
         self.preset_name_edit = QLineEdit()
         self.preset_name_edit.setPlaceholderText("Name")
+        self.preset_type_combo = QComboBox()
+        self.preset_type_combo.addItems(["countdown", "interval"])
+        self.preset_type_combo.currentIndexChanged.connect(self._preset_type_changed)
         self.preset_dur_spin = QSpinBox()
         self.preset_dur_spin.setRange(1, 24 * 3600)
         self.preset_dur_spin.setSuffix(" s")
         self.preset_dur_spin.setValue(300)
         row.addWidget(self.preset_name_edit, 1)
+        row.addWidget(self.preset_type_combo)
         row.addWidget(self.preset_dur_spin)
         layout.addLayout(row)
+
+        iv_row = QHBoxLayout()
+        self.preset_work_spin = QSpinBox()
+        self.preset_work_spin.setRange(5, 3600)
+        self.preset_work_spin.setSuffix(" s work")
+        self.preset_work_spin.setValue(45)
+        self.preset_rest_spin = QSpinBox()
+        self.preset_rest_spin.setRange(0, 3600)
+        self.preset_rest_spin.setSuffix(" s rest")
+        self.preset_rest_spin.setValue(15)
+        self.preset_total_spin = QSpinBox()
+        self.preset_total_spin.setRange(1, 24 * 60)
+        self.preset_total_spin.setSuffix(" min total")
+        self.preset_total_spin.setValue(10)
+        iv_row.addWidget(self.preset_work_spin)
+        iv_row.addWidget(self.preset_rest_spin)
+        iv_row.addWidget(self.preset_total_spin)
+        self._preset_iv_row = QWidget()
+        self._preset_iv_row.setLayout(iv_row)
+        self._preset_iv_row.hide()
+        layout.addWidget(self._preset_iv_row)
 
         btns = QHBoxLayout()
         add_btn = QPushButton("Add / Update")
@@ -354,20 +379,50 @@ class SettingsDialog(QDialog):
     def _reload_preset_list(self) -> None:
         self.preset_list.clear()
         for p in valid_presets(self.config.presets):
-            self.preset_list.addItem(f'{p["name"]}  —  {fmt_seconds(p["duration"])}')
+            if p.get("type") == "interval":
+                rounds = interval_preset_rounds(p)
+                self.preset_list.addItem(
+                    f'{p["name"]}  —  {p["work"]}/{p["rest"]} ×{rounds}'
+                )
+            else:
+                self.preset_list.addItem(f'{p["name"]}  —  {fmt_seconds(p["duration"])}')
+
+    def _preset_type_changed(self) -> None:
+        is_interval = self.preset_type_combo.currentText() == "interval"
+        self.preset_dur_spin.setVisible(not is_interval)
+        self._preset_iv_row.setVisible(is_interval)
 
     def _preset_selected(self, row: int) -> None:
         presets = valid_presets(self.config.presets)
-        if 0 <= row < len(presets):
-            self.preset_name_edit.setText(presets[row]["name"])
-            self.preset_dur_spin.setValue(presets[row]["duration"])
+        if not (0 <= row < len(presets)):
+            return
+        p = presets[row]
+        self.preset_name_edit.setText(p["name"])
+        if p.get("type") == "interval":
+            self.preset_type_combo.setCurrentText("interval")
+            self.preset_work_spin.setValue(p["work"])
+            self.preset_rest_spin.setValue(p["rest"])
+            self.preset_total_spin.setValue(max(1, round(p["total"] / 60)))
+        else:
+            self.preset_type_combo.setCurrentText("countdown")
+            self.preset_dur_spin.setValue(p["duration"])
 
     def _preset_add(self) -> None:
         name = self.preset_name_edit.text().strip()
         if not name:
             return
+        if self.preset_type_combo.currentText() == "interval":
+            new_preset = {
+                "name": name,
+                "type": "interval",
+                "work": self.preset_work_spin.value(),
+                "rest": self.preset_rest_spin.value(),
+                "total": self.preset_total_spin.value() * 60,
+            }
+        else:
+            new_preset = {"name": name, "duration": self.preset_dur_spin.value()}
         presets = [p for p in valid_presets(self.config.presets) if p["name"] != name]
-        presets.append({"name": name, "duration": self.preset_dur_spin.value()})
+        presets.append(new_preset)
         self.config.presets = presets
         self._reload_preset_list()
         self.config_changed.emit()
@@ -454,6 +509,12 @@ class SettingsDialog(QDialog):
         c.timer_mode          = self.mode_combo.currentText()
         if self.countdown_spin.value() != c.countdown_duration:
             c.active_preset = ""   # duration changed manually → preset no longer applies
+        if (
+            self.interval_work_spin.value(),
+            self.interval_rest_spin.value(),
+            self.interval_rounds_spin.value(),
+        ) != (c.interval_work, c.interval_rest, c.interval_rounds):
+            c.active_preset = ""   # interval settings changed manually
         c.countdown_duration  = self.countdown_spin.value()
         c.auto_restart_countdown = self.auto_restart_countdown_cb.isChecked()
         c.interval_work   = self.interval_work_spin.value()
