@@ -120,3 +120,31 @@ class TestStopwatchPresets:
         iv = {"name": "hiit", "type": "interval", "work": 45, "rest": 15, "total": 600}
         sw = {"name": "45/15 up", "type": "stopwatch", "work": 45, "rest": 15}
         assert valid_presets([cd, iv, sw]) == [cd, iv, sw]
+
+
+class TestPresetSoundRules:
+    def test_sound_fields_accepted_on_all_types(self):
+        snd = {"last5": True, "every": 60, "before": 5}
+        presets = [
+            {"name": "cd", "duration": 300, **snd},
+            {"name": "iv", "type": "interval", "work": 45, "rest": 15, "total": 600, **snd},
+            {"name": "sw", "type": "stopwatch", "work": 45, "rest": 15, **snd},
+        ]
+        assert valid_presets(presets) == presets
+
+    def test_sound_fields_optional(self):
+        p = {"name": "plain", "duration": 300}
+        assert valid_presets([p]) == [p]
+
+    def test_zero_every_allowed(self):
+        p = {"name": "quiet", "duration": 300, "every": 0}
+        assert valid_presets([p]) == [p]
+
+    def test_malformed_sound_fields_filtered(self):
+        raw = [
+            {"name": "bad last5", "duration": 300, "last5": "yes"},
+            {"name": "bad every", "duration": 300, "every": -1},
+            {"name": "bool every", "duration": 300, "every": True},
+            {"name": "bad before", "duration": 300, "before": "5"},
+        ]
+        assert valid_presets(raw) == []

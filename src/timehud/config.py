@@ -106,10 +106,19 @@ def valid_presets(presets: list) -> list:
       stopwatch: {"name": str, "type": "stopwatch",
                   "work": int > 0, "rest": int >= 0}
                  — cycles work/rest like interval, but counts upward forever
+
+    All types may carry optional sound rules, applied to the config when the
+    preset is selected: "last5" (bool → alert_last_5_seconds), "every"
+    (int >= 0 → sound_interval, 0 = no periodic beeps), "before"
+    (int >= 0 → sound_alert_before).
     """
     out = []
     for p in presets:
         if not isinstance(p, dict) or not isinstance(p.get("name"), str):
+            continue
+        if "last5" in p and not isinstance(p["last5"], bool):
+            continue
+        if not _is_int(p.get("every", 0), 0) or not _is_int(p.get("before", 0), 0):
             continue
         if p.get("type") == "stopwatch":
             if _is_int(p.get("work"), 1) and _is_int(p.get("rest"), 0):

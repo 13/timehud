@@ -354,6 +354,30 @@ class TestInterval:
         assert r.display == pytest.approx(40, abs=0.1)
 
 
+class TestZeroSoundInterval:
+    """sound_interval == 0 disables periodic beeps without crashing."""
+
+    def test_stopwatch_no_periodic_no_crash(self, config, clock):
+        config.timer_mode = "stopwatch"
+        config.sound_enabled = True
+        config.sound_interval = 0
+        config.sound_alert_before = 5
+        e = TimerEngine(config, clock=clock)
+        e.toggle()
+        assert collect_beeps(e, clock, 120) == []
+
+    def test_countdown_finish_beep_still_fires(self, config, clock):
+        config.timer_mode = "countdown"
+        config.countdown_duration = 10
+        config.sound_enabled = True
+        config.sound_interval = 0
+        e = TimerEngine(config, clock=clock)
+        e.toggle()
+        beeps = collect_beeps(e, clock, 10.2)
+        longs = [b for b in beeps if not b.short and not b.double]
+        assert len(longs) == 1
+
+
 class TestCyclingStopwatch:
     @pytest.fixture
     def engine(self, config, clock):

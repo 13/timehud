@@ -26,8 +26,8 @@ from PyQt6.QtCore import (
     Qt, QPoint, QTimer, QEvent, QEasingCurve, QVariantAnimation
 )
 from PyQt6.QtGui import (
-    QAction, QActionGroup, QColor, QFont, QPainter, QPainterPath, QPen,
-    QCursor, QGuiApplication,
+    QAction, QActionGroup, QColor, QFont, QFontMetrics, QPainter, QPainterPath,
+    QPen, QCursor, QGuiApplication,
 )
 from PyQt6.QtWidgets import (
     QApplication, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMenu,
@@ -322,7 +322,12 @@ class OverlayWindow(QWidget):
         self.lbl_clock.setStyleSheet(
             f"color:{_rgba(cfg.color_clock, theme.clock_alpha)}; background:transparent;"
         )
-        self.lbl_timer.setFont(make_font(int(fs * theme.timer_scale)))
+        timer_font = make_font(int(fs * theme.timer_scale))
+        self.lbl_timer.setFont(timer_font)
+        # Fixed height with pulse headroom: the last-seconds pulse grows the
+        # font 6% and must not reflow the labels underneath
+        fm = QFontMetrics(timer_font)
+        self.lbl_timer.setFixedHeight(int(fm.height() * 1.08))
         self.lbl_mode.setFont(make_font(max(10, fs // 3), bold=False))
         self.sep.setVisible(cfg.show_timer and theme.show_separator)
 
@@ -590,6 +595,13 @@ class OverlayWindow(QWidget):
             self.config.timer_mode = "countdown"
             self.config.countdown_duration = int(preset["duration"])
             self._last_cd_duration = self.config.countdown_duration
+        # Optional per-preset sound rules override the global ones
+        if "last5" in preset:
+            self.config.alert_last_5_seconds = bool(preset["last5"])
+        if "every" in preset:
+            self.config.sound_interval = int(preset["every"])
+        if "before" in preset:
+            self.config.sound_alert_before = int(preset["before"])
         self.config.active_preset = preset["name"]
         self.engine.reset()
         self.btn_start.setText("▶")
@@ -620,6 +632,10 @@ class OverlayWindow(QWidget):
             }
         else:
             new_preset = {"name": name, "duration": int(self.config.countdown_duration)}
+        # Capture the current sound rules with the preset
+        new_preset["last5"] = self.config.alert_last_5_seconds
+        new_preset["every"] = self.config.sound_interval
+        new_preset["before"] = self.config.sound_alert_before
         # Same-name preset is overwritten (predictable rule per spec)
         presets = [p for p in valid_presets(self.config.presets) if p["name"] != name]
         presets.append(new_preset)
