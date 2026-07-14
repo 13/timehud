@@ -404,6 +404,7 @@ class OverlayWindow(QWidget):
         """Stop and zero the timer."""
         self.engine.reset()
         self.btn_start.setText("▶")
+        self._refresh_mode_label()
         self._update()
     def _sync_countdown_duration(self) -> None:
         """Resync engine remaining after countdown_duration changed in Settings."""
@@ -462,6 +463,7 @@ class OverlayWindow(QWidget):
         self._refresh_mode_label()
         self.config.save()
     def _refresh_mode_label(self) -> None:
+        self._interval_label = ""   # force live label re-sync on next tick
         if self.config.timer_mode == "stopwatch":
             self.lbl_mode.setText("STOPWATCH")
             self.btn_mode.setText("SW")
