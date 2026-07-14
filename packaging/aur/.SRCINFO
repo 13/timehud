@@ -1,0 +1,17 @@
+]7;file:///home/ben/repo/timehud/packaging/aurpkgbase = timehud
+	pkgdesc = Transparent HUD overlay with clock, countdown, interval and cycling stopwatch timers
+	pkgver = 0.5.0
+	pkgrel = 1
+	url = https://github.com/13/timehud
+	arch = any
+	license = MIT
+	makedepends = python-build
+	makedepends = python-installer
+	makedepends = python-wheel
+	makedepends = python-setuptools
+	depends = python-pyqt6
+	optdepends = python-pynput: global hotkeys (Ctrl+Shift+Space etc.)
+	source = timehud-0.5.0.tar.gz::https://github.com/13/timehud/archive/refs/tags/v0.5.0.tar.gz
+	sha256sums = 37401dab527d8f654835230ea6a4088ba5c066b08fed8d191aa69ae907c96ac9
+
+pkgname = timehud

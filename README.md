@@ -166,6 +166,14 @@ Pass `--wayland` to use the native Wayland backend (overlay may not appear above
 
 ## Packaging
 
+### Arch Linux (AUR-style)
+
+```bash
+cd packaging/aur && makepkg -si
+```
+
+See `packaging/aur/README.md` for publishing to the AUR.
+
 ### AppImage - manual build
 
 ```bash
