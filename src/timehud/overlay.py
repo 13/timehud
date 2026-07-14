@@ -95,6 +95,12 @@ class OverlayWindow(QWidget):
         self._pulse_anim: QVariantAnimation | None = None
         # Track countdown duration to detect settings-driven changes
         self._last_cd_duration = config.countdown_duration
+        self._interval_label = ""
+        self._last_interval_cfg = (
+            config.interval_work,
+            config.interval_rest,
+            config.interval_rounds,
+        )
         # ── Drag state ────────────────────────────────────────────────────
         self._drag_offset: QPoint | None = None
         # ── Build ─────────────────────────────────────────────────────────
@@ -332,7 +338,18 @@ class OverlayWindow(QWidget):
         animate = result.state != "end" and not (
             self.config.timer_mode == "countdown" and result.display <= 6.5
         )
-        self._set_timer_color(colors[result.state], animate)
+        color = colors[result.state]
+        if result.phase == "rest" and result.state == "run":
+            color = theme.color_rest
+        self._set_timer_color(color, animate)
+
+        if result.phase and not self.engine.is_idle():
+            label = f"{result.phase.upper()} {result.round}/{result.rounds}"
+            if label != self._interval_label:
+                self._interval_label = label
+                self.lbl_mode.setText(label)
+        else:
+            self._interval_label = ""
 
         if result.finished and not result.restarted:
             self.btn_start.setText("▶")
@@ -394,10 +411,23 @@ class OverlayWindow(QWidget):
             self._last_cd_duration = self.config.countdown_duration
             if not self.engine.running:
                 self.engine.adjust_countdown(0)   # stopped: reload from config
+    def _sync_interval_config(self) -> None:
+        """Reset the engine when interval settings change while stopped."""
+        cur = (
+            self.config.interval_work,
+            self.config.interval_rest,
+            self.config.interval_rounds,
+        )
+        if cur != self._last_interval_cfg:
+            self._last_interval_cfg = cur
+            if self.config.timer_mode == "interval" and not self.engine.running:
+                self.engine.reset()
+                self.btn_start.setText("▶")
     def _toggle_mode(self) -> None:
-        """Switch stopwatch ↔ countdown."""
-        new_mode = "countdown" if self.config.timer_mode == "stopwatch" else "stopwatch"
-        self.engine.set_mode(new_mode)
+        """Cycle stopwatch → countdown → interval."""
+        modes = ["stopwatch", "countdown", "interval"]
+        curr = modes.index(self.config.timer_mode) if self.config.timer_mode in modes else 0
+        self.engine.set_mode(modes[(curr + 1) % len(modes)])
         self.btn_start.setText("▶")
         self._refresh_mode_label()
         self.config.save()
@@ -435,6 +465,12 @@ class OverlayWindow(QWidget):
         if self.config.timer_mode == "stopwatch":
             self.lbl_mode.setText("STOPWATCH")
             self.btn_mode.setText("SW")
+        elif self.config.timer_mode == "interval":
+            cfg = self.config
+            self.lbl_mode.setText(
+                f"INTERVAL {cfg.interval_work}s/{cfg.interval_rest}s ×{cfg.interval_rounds}"
+            )
+            self.btn_mode.setText("IV")
         else:
             dur = _fmt(self.config.countdown_duration)
             if self.config.active_preset:
@@ -514,7 +550,7 @@ class OverlayWindow(QWidget):
                         self._refresh_mode_label()
                         self._update()
                     else:
-                        modes = ["stopwatch", "countdown"]
+                        modes = ["stopwatch", "countdown", "interval"]
                         curr = modes.index(self.config.timer_mode) if self.config.timer_mode in modes else 0
                         new_mode = modes[(curr + (-1 if delta_wheel > 0 else 1)) % len(modes)]
                         if self.config.timer_mode != new_mode:
@@ -525,7 +561,7 @@ class OverlayWindow(QWidget):
                             self._update()
                 elif obj == self.lbl_timer:
                     delta = event.angleDelta().y()
-                    modes = ["stopwatch", "countdown"]
+                    modes = ["stopwatch", "countdown", "interval"]
                     curr = modes.index(self.config.timer_mode) if self.config.timer_mode in modes else 0
                     new_mode = modes[(curr + (-1 if delta > 0 else 1)) % len(modes)]
                     if self.config.timer_mode != new_mode:
@@ -744,6 +780,7 @@ class OverlayWindow(QWidget):
                 self.reset_timer()
 
             self._sync_countdown_duration()
+            self._sync_interval_config()
             self._apply_styles()
 
             self.lbl_clock.setVisible(cfg.show_clock)
