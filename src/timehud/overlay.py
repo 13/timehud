@@ -474,6 +474,7 @@ class OverlayWindow(QWidget):
         """Cycle stopwatch → countdown → interval."""
         modes = ["stopwatch", "countdown", "interval"]
         curr = modes.index(self.config.timer_mode) if self.config.timer_mode in modes else 0
+        self.config.active_preset = ""   # manual mode change ends the preset
         self.engine.set_mode(modes[(curr + 1) % len(modes)])
         self.btn_start.setText("▶")
         self._refresh_mode_label()
@@ -626,6 +627,7 @@ class OverlayWindow(QWidget):
                         curr = modes.index(self.config.timer_mode) if self.config.timer_mode in modes else 0
                         new_mode = modes[(curr + (-1 if delta_wheel > 0 else 1)) % len(modes)]
                         if self.config.timer_mode != new_mode:
+                            self.config.active_preset = ""
                             self.engine.set_mode(new_mode)
                             self.btn_start.setText("▶")
                             self._refresh_mode_label()
@@ -637,6 +639,7 @@ class OverlayWindow(QWidget):
                     curr = modes.index(self.config.timer_mode) if self.config.timer_mode in modes else 0
                     new_mode = modes[(curr + (-1 if delta > 0 else 1)) % len(modes)]
                     if self.config.timer_mode != new_mode:
+                        self.config.active_preset = ""
                         self.engine.set_mode(new_mode)
                         self.btn_start.setText("▶")
                         self._refresh_mode_label()

@@ -509,6 +509,12 @@ class SettingsDialog(QDialog):
         c.timer_mode          = self.mode_combo.currentText()
         if self.countdown_spin.value() != c.countdown_duration:
             c.active_preset = ""   # duration changed manually → preset no longer applies
+        if (
+            self.interval_work_spin.value(),
+            self.interval_rest_spin.value(),
+            self.interval_rounds_spin.value(),
+        ) != (c.interval_work, c.interval_rest, c.interval_rounds):
+            c.active_preset = ""   # interval settings changed manually
         c.countdown_duration  = self.countdown_spin.value()
         c.auto_restart_countdown = self.auto_restart_countdown_cb.isChecked()
         c.interval_work   = self.interval_work_spin.value()
