@@ -289,6 +289,10 @@ class OverlayWindow(QWidget):
         self.lbl_mode.setFont(make_font(max(10, fs // 3), bold=False))
         self.sep.setVisible(cfg.show_timer and theme.show_separator)
 
+    def _has_custom_pos(self) -> bool:
+        """True when the user dragged the overlay to a custom position."""
+        return self.config.custom_x >= 0 and self.config.custom_y >= 0
+
     # ══ Positioning ══════════════════════════════════════════════════════════
     def _position_window(self) -> None:
         self.adjustSize()
@@ -299,7 +303,7 @@ class OverlayWindow(QWidget):
             screen = QApplication.primaryScreen()
         scr  = screen.availableGeometry()
         # Use saved drag position if present
-        if self.config.custom_x >= 0 and self.config.custom_y >= 0:
+        if self._has_custom_pos():
             self.move(self.config.custom_x, self.config.custom_y)
             return
         presets = {
@@ -336,7 +340,7 @@ class OverlayWindow(QWidget):
         # Preset positions re-anchor exactly (keeps top-center centered after
         # size changes from mode/preset switches); quadrant anchoring below is
         # only for freely dragged windows.
-        if self.config.custom_x < 0 and self.config.custom_y < 0:
+        if not self._has_custom_pos():
             self._position_window()
             return
 
@@ -627,7 +631,7 @@ class OverlayWindow(QWidget):
                     self._apply_styles()
                     self._apply_button_sizes()
                     self.adjustSize()
-                    if self.config.custom_x < 0:
+                    if not self._has_custom_pos():
                         self._position_window()
                     self.config.save()
                 return True
@@ -860,7 +864,7 @@ class OverlayWindow(QWidget):
         apply_theme(self.config, name)
         self._apply_styles()
         self.adjustSize()
-        if self.config.custom_x < 0:
+        if not self._has_custom_pos():
             self._position_window()
         self.config.save()
         self.update()      # repaint themed background
@@ -930,7 +934,7 @@ class OverlayWindow(QWidget):
 
             self.setWindowOpacity(cfg.opacity)
             self.adjustSize()
-            if cfg.custom_x < 0:
+            if not self._has_custom_pos():
                 self._position_window()
             self._refresh_mode_label()
 

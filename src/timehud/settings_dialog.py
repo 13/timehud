@@ -548,6 +548,11 @@ class SettingsDialog(QDialog):
             self.interval_rounds_spin.value(),
         ) != (c.interval_work, c.interval_rest, c.interval_rounds):
             c.active_preset = ""   # interval settings changed manually
+        if c.timer_mode == "stopwatch" and (
+            self.sound_interval_spin.value() != c.sound_interval
+            or self.sound_enabled_cb.isChecked() != c.sound_enabled
+        ):
+            c.active_preset = ""   # stopwatch preset identity is its beep interval
         c.countdown_duration  = self.countdown_spin.value()
         c.auto_restart_countdown = self.auto_restart_countdown_cb.isChecked()
         c.interval_work   = self.interval_work_spin.value()
