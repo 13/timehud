@@ -140,6 +140,14 @@ class TestPresetSoundRules:
         p = {"name": "quiet", "duration": 300, "every": 0}
         assert valid_presets([p]) == [p]
 
+    def test_boundary_field_accepted(self):
+        p = {"name": "sw", "type": "stopwatch", "work": 45, "rest": 15, "boundary": False}
+        assert valid_presets([p]) == [p]
+
+    def test_malformed_boundary_filtered(self):
+        p = {"name": "sw", "type": "stopwatch", "work": 45, "rest": 15, "boundary": "no"}
+        assert valid_presets([p]) == []
+
     def test_malformed_sound_fields_filtered(self):
         raw = [
             {"name": "bad last5", "duration": 300, "last5": "yes"},

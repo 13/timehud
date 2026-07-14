@@ -54,6 +54,8 @@ class TimerEngine:
         self._phase = "work"
         self._round = 1
         self._cycle_beats = 0
+        self._cycle_prebeep = 0
+        self._phase_prebeep_done = False
         if config.timer_mode == "interval":
             self._cd_remaining = float(config.interval_work)
 
@@ -125,6 +127,8 @@ class TimerEngine:
         self._phase = "work"
         self._round = 1
         self._cycle_beats = 0
+        self._cycle_prebeep = 0
+        self._phase_prebeep_done = False
         if self.config.timer_mode == "interval":
             self._cd_remaining = float(self.config.interval_work)
 
@@ -160,12 +164,14 @@ class TimerEngine:
                 self._cd_remaining = float(self.config.interval_work)
             self._start_mono = self._clock()
             self._last_short_beep_sec = -1
+            self._phase_prebeep_done = False
             return (Beep(double=True) if self._phase == "rest" else Beep()), False
         self._phase = "work"
         self._round += 1
         self._cd_remaining = float(self.config.interval_work)
         self._start_mono = self._clock()
         self._last_short_beep_sec = -1
+        self._phase_prebeep_done = False
         return Beep(), False
 
     # ── Tick ───────────────────────────────────────────────────────────
@@ -228,9 +234,18 @@ class TimerEngine:
                     marks = self._cycle_boundaries(display)
                     if marks > self._cycle_beats:
                         self._cycle_beats = marks
-                        rest_start = rest > 0 and marks % 2 == 1
-                        beeps.append(Beep(double=True) if rest_start else Beep())
+                        if self.config.phase_beeps:
+                            rest_start = rest > 0 and marks % 2 == 1
+                            beeps.append(Beep(double=True) if rest_start else Beep())
                         self._last_short_beep_sec = -1
+                    # Fast double pre-beep sound_alert_before s before a boundary
+                    before = self.config.sound_alert_before
+                    if before > 0 and phase_remaining <= before:
+                        state = "warn"
+                        upcoming = self._cycle_beats + 1
+                        if self._cycle_prebeep != upcoming:
+                            self._cycle_prebeep = upcoming
+                            beeps.append(Beep(double=True))
                     # Last-5 shorts before each boundary, on the label grid
                     if self.config.alert_last_5_seconds and phase_remaining <= 5.0:
                         state = "warn"
@@ -244,7 +259,7 @@ class TimerEngine:
             if remaining <= 0:
                 if self.running:
                     transition_beep, done = self._advance_phase()
-                    if transition_beep is not None:
+                    if transition_beep is not None and self.config.phase_beeps:
                         beeps.append(transition_beep)
                     if done:
                         finished = True
@@ -265,6 +280,14 @@ class TimerEngine:
                     beeps.append(Beep(short=True))
             else:
                 state = "run" if self.running else "pause"
+            # Fast double pre-beep sound_alert_before s before the transition
+            before = self.config.sound_alert_before
+            if self.running and before > 0 and 0 < remaining <= before:
+                if state == "run":
+                    state = "warn"
+                if not self._phase_prebeep_done:
+                    self._phase_prebeep_done = True
+                    beeps.append(Beep(double=True))
         else:
             remaining = self.remaining()
             display = max(0.0, remaining)

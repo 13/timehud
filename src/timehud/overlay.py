@@ -260,7 +260,9 @@ class OverlayWindow(QWidget):
         # font 6% and must not reflow the labels underneath
         fm = QFontMetrics(timer_font)
         self.lbl_timer.setFixedHeight(int(fm.height() * 1.08))
-        self.lbl_mode.setFont(make_font(max(10, fs // 3), bold=False))
+        # Bigger + semibold so WORK/REST round info is readable from distance
+        self.lbl_mode.setFont(make_font(max(11, int(fs * 0.42)), bold=True))
+        self._set_mode_label_color(None)
         self.sep.setVisible(cfg.show_timer and theme.show_separator)
 
     def _set_border_progress(self, fraction: float, color: str) -> None:
@@ -419,6 +421,9 @@ class OverlayWindow(QWidget):
             if label != self._interval_label:
                 self._interval_label = label
                 self.lbl_mode.setText(label)
+                self._set_mode_label_color(
+                    theme.color_rest if result.phase == "rest" else theme.color_clock
+                )
         else:
             self._interval_label = ""
 
@@ -540,6 +545,8 @@ class OverlayWindow(QWidget):
             self.config.sound_interval = int(preset["every"])
         if "before" in preset:
             self.config.sound_alert_before = int(preset["before"])
+        # Phase-boundary beeps default ON; presets may disable them
+        self.config.phase_beeps = bool(preset.get("boundary", True))
         self.config.active_preset = preset["name"]
         self.engine.reset()
         self.btn_start.setText("▶")
@@ -574,6 +581,7 @@ class OverlayWindow(QWidget):
         new_preset["last5"] = self.config.alert_last_5_seconds
         new_preset["every"] = self.config.sound_interval
         new_preset["before"] = self.config.sound_alert_before
+        new_preset["boundary"] = self.config.phase_beeps
         # Same-name preset is overwritten (predictable rule per spec)
         presets = [p for p in valid_presets(self.config.presets) if p["name"] != name]
         presets.append(new_preset)
@@ -581,8 +589,16 @@ class OverlayWindow(QWidget):
         self.config.active_preset = name
         self._refresh_mode_label()
         self.config.save()
+    def _set_mode_label_color(self, color: str | None) -> None:
+        """Phase color for the live WORK/REST label; brighter gray otherwise."""
+        c = color or "#999999"
+        self.lbl_mode.setStyleSheet(
+            f"color:{c}; background:transparent; letter-spacing:2px;"
+        )
+
     def _refresh_mode_label(self) -> None:
         self._interval_label = ""   # force live label re-sync on next tick
+        self._set_mode_label_color(None)
         if self.config.timer_mode == "stopwatch":
             cfg = self.config
             if cfg.stopwatch_work > 0:
