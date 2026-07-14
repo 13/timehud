@@ -41,6 +41,10 @@ class Config:
     interval_rest: int = 20     # seconds of rest (0 = back-to-back rounds)
     interval_rounds: int = 8
 
+    # ── Cycling stopwatch (0 = plain stopwatch) ────────────────────────────
+    stopwatch_work: int = 0   # seconds of work per cycle while counting up
+    stopwatch_rest: int = 0   # seconds of rest per cycle
+
     # ── Sound ──────────────────────────────────────────────────────────────
     sound_enabled: bool = True
     sound_interval: int = 60   # play alert every N seconds of running time
@@ -100,15 +104,15 @@ def valid_presets(presets: list) -> list:
       interval:  {"name": str, "type": "interval",
                   "work": int > 0, "rest": int >= 0, "total": int >= work}
       stopwatch: {"name": str, "type": "stopwatch",
-                  "interval": int >= 0 (beep every N s; 0 = silent),
-                  "alert_before": int >= 0 optional (pre-beep N s earlier)}
+                  "work": int > 0, "rest": int >= 0}
+                 — cycles work/rest like interval, but counts upward forever
     """
     out = []
     for p in presets:
         if not isinstance(p, dict) or not isinstance(p.get("name"), str):
             continue
         if p.get("type") == "stopwatch":
-            if _is_int(p.get("interval"), 0) and _is_int(p.get("alert_before", 0), 0):
+            if _is_int(p.get("work"), 1) and _is_int(p.get("rest"), 0):
                 out.append(p)
         elif p.get("type") == "interval":
             if (

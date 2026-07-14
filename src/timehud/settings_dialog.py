@@ -74,7 +74,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.config = config
         self.setWindowTitle("TimeHUD – Settings")
-        self.setModal(True)
+        self.setModal(False)   # HUD stays usable while settings are open
         self.setMinimumWidth(400)
         self.setStyleSheet(_DARK_STYLE)
         self._build_ui()
@@ -292,16 +292,16 @@ class SettingsDialog(QDialog):
         layout.addWidget(self._preset_iv_row)
 
         sw_row = QHBoxLayout()
-        self.preset_swint_spin = QSpinBox()
-        self.preset_swint_spin.setRange(0, 3600)
-        self.preset_swint_spin.setSuffix(" s beep interval (0 = silent)")
-        self.preset_swint_spin.setValue(60)
-        self.preset_swpre_spin = QSpinBox()
-        self.preset_swpre_spin.setRange(0, 60)
-        self.preset_swpre_spin.setSuffix(" s pre-beep (0 = off)")
-        self.preset_swpre_spin.setValue(0)
-        sw_row.addWidget(self.preset_swint_spin)
-        sw_row.addWidget(self.preset_swpre_spin)
+        self.preset_swwork_spin = QSpinBox()
+        self.preset_swwork_spin.setRange(5, 3600)
+        self.preset_swwork_spin.setSuffix(" s work")
+        self.preset_swwork_spin.setValue(45)
+        self.preset_swrest_spin = QSpinBox()
+        self.preset_swrest_spin.setRange(0, 3600)
+        self.preset_swrest_spin.setSuffix(" s rest")
+        self.preset_swrest_spin.setValue(15)
+        sw_row.addWidget(self.preset_swwork_spin)
+        sw_row.addWidget(self.preset_swrest_spin)
         self._preset_sw_row = QWidget()
         self._preset_sw_row.setLayout(sw_row)
         self._preset_sw_row.hide()
@@ -421,8 +421,9 @@ class SettingsDialog(QDialog):
                     f'{p["name"]}  —  {p["work"]}/{p["rest"]} ×{rounds}'
                 )
             elif p.get("type") == "stopwatch":
-                note = f'every {p["interval"]}s' if p["interval"] > 0 else "silent"
-                self.preset_list.addItem(f'{p["name"]}  —  stopwatch, {note}')
+                self.preset_list.addItem(
+                    f'{p["name"]}  —  {p["work"]}/{p["rest"]} ↑'
+                )
             else:
                 self.preset_list.addItem(f'{p["name"]}  —  {fmt_seconds(p["duration"])}')
 
@@ -445,8 +446,8 @@ class SettingsDialog(QDialog):
             self.preset_total_spin.setValue(max(1, round(p["total"] / 60)))
         elif p.get("type") == "stopwatch":
             self.preset_type_combo.setCurrentText("stopwatch")
-            self.preset_swint_spin.setValue(p["interval"])
-            self.preset_swpre_spin.setValue(p.get("alert_before", 0))
+            self.preset_swwork_spin.setValue(p["work"])
+            self.preset_swrest_spin.setValue(p["rest"])
         else:
             self.preset_type_combo.setCurrentText("countdown")
             self.preset_dur_spin.setValue(p["duration"])
@@ -465,13 +466,11 @@ class SettingsDialog(QDialog):
                 "total": self.preset_total_spin.value() * 60,
             }
         elif kind == "stopwatch":
-            interval = self.preset_swint_spin.value()
             new_preset = {
                 "name": name,
                 "type": "stopwatch",
-                "interval": interval,
-                # A silent preset has no beeps to pre-announce
-                "alert_before": self.preset_swpre_spin.value() if interval > 0 else 0,
+                "work": self.preset_swwork_spin.value(),
+                "rest": self.preset_swrest_spin.value(),
             }
         else:
             new_preset = {"name": name, "duration": self.preset_dur_spin.value()}
@@ -574,12 +573,6 @@ class SettingsDialog(QDialog):
             self.interval_rounds_spin.value(),
         ) != (c.interval_work, c.interval_rest, c.interval_rounds):
             c.active_preset = ""   # interval settings changed manually
-        if c.timer_mode == "stopwatch" and (
-            self.sound_interval_spin.value() != c.sound_interval
-            or self.sound_enabled_cb.isChecked() != c.sound_enabled
-            or self.sound_alert_before_spin.value() != c.sound_alert_before
-        ):
-            c.active_preset = ""   # stopwatch preset identity is its beep settings
         c.countdown_duration  = self.countdown_spin.value()
         c.auto_restart_countdown = self.auto_restart_countdown_cb.isChecked()
         c.interval_work   = self.interval_work_spin.value()

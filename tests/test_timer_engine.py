@@ -354,6 +354,93 @@ class TestInterval:
         assert r.display == pytest.approx(40, abs=0.1)
 
 
+class TestCyclingStopwatch:
+    @pytest.fixture
+    def engine(self, config, clock):
+        config.timer_mode = "stopwatch"
+        config.stopwatch_work = 45
+        config.stopwatch_rest = 15
+        config.sound_enabled = True
+        config.sound_interval = 60           # must NOT fire while cycling
+        config.alert_last_5_seconds = False
+        return TimerEngine(config, clock=clock)
+
+    def test_counts_upward_with_phase_info(self, engine, clock):
+        engine.toggle()
+        clock.advance(10)
+        r = engine.tick()
+        assert r.display == pytest.approx(10)       # count-up display
+        assert r.phase == "work" and r.round == 1
+        assert r.rounds == 0                        # endless
+        clock.advance(40)                           # elapsed 50 → rest of round 1
+        r = engine.tick()
+        assert r.display == pytest.approx(50)
+        assert r.phase == "rest" and r.round == 1
+
+    def test_round_increments_each_cycle(self, engine, clock):
+        engine.toggle()
+        clock.advance(61)                           # into round 2 work
+        r = engine.tick()
+        assert r.phase == "work" and r.round == 2
+
+    def test_boundary_beeps(self, engine, clock):
+        engine.toggle()
+        beeps = collect_beeps(engine, clock, 121)
+        doubles = [b for b in beeps if b.double]
+        longs = [b for b in beeps if not b.double and not b.short]
+        assert len(doubles) == 2                    # work→rest at 45s and 105s
+        assert len(longs) == 2                      # rest→work at 60s and 120s
+
+    def test_zero_rest_long_beeps_only(self, engine, clock):
+        engine.config.stopwatch_rest = 0
+        engine.reset()
+        engine.toggle()
+        beeps = collect_beeps(engine, clock, 100)
+        assert [b for b in beeps if b.double] == []
+        longs = [b for b in beeps if not b.double and not b.short]
+        assert len(longs) == 2                      # work ends at 45s and 90s
+
+    def test_no_periodic_interval_beeps_while_cycling(self, engine, clock):
+        engine.toggle()
+        beeps = collect_beeps(engine, clock, 44)    # before first boundary
+        assert beeps == []                          # sound_interval=60 stays quiet
+
+    def test_last5_shorts_before_each_boundary(self, engine, clock):
+        engine.config.alert_last_5_seconds = True
+        engine.reset()
+        engine.toggle()
+        beeps = collect_beeps(engine, clock, 44.5)  # work phase, 0.5s left
+        shorts = [b for b in beeps if b.short]
+        assert len(shorts) == 5                     # phase-remaining 5..1
+
+    def test_progress_tracks_phase_remaining(self, engine, clock):
+        engine.toggle()
+        clock.advance(40)                           # 5s left in 45s work
+        r = engine.tick()
+        assert r.progress == pytest.approx(5 / 45, abs=0.01)
+        clock.advance(10)                           # 10s left in 15s rest
+        r = engine.tick()
+        assert r.progress == pytest.approx(10 / 15, abs=0.01)
+
+    def test_pause_resume_does_not_replay_boundaries(self, engine, clock):
+        engine.toggle()
+        collect_beeps(engine, clock, 50)            # double at 45 consumed
+        engine.toggle()                             # pause in rest
+        engine.toggle()                             # resume
+        beeps = collect_beeps(engine, clock, 5)     # elapsed 55, next boundary 60
+        assert beeps == []
+
+    def test_plain_stopwatch_unchanged(self, config, clock):
+        config.timer_mode = "stopwatch"
+        config.stopwatch_work = 0
+        e = TimerEngine(config, clock=clock)
+        e.toggle()
+        clock.advance(10)
+        r = e.tick()
+        assert r.phase == "" and r.round == 0
+        assert r.progress == -1.0
+
+
 class TestProgress:
     def test_stopwatch_has_no_progress(self, engine, clock):
         engine.toggle()

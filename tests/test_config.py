@@ -97,40 +97,26 @@ class TestIntervalPresets:
 
 class TestStopwatchPresets:
     def test_valid_stopwatch_preset_accepted(self):
-        p = {"name": "beep each min", "type": "stopwatch", "interval": 60}
+        p = {"name": "45/15 up", "type": "stopwatch", "work": 45, "rest": 15}
         assert valid_presets([p]) == [p]
 
-    def test_zero_interval_allowed(self):
-        p = {"name": "silent", "type": "stopwatch", "interval": 0}
+    def test_zero_rest_allowed(self):
+        p = {"name": "laps", "type": "stopwatch", "work": 60, "rest": 0}
         assert valid_presets([p]) == [p]
 
     def test_malformed_stopwatch_presets_filtered(self):
         raw = [
-            {"name": "no interval", "type": "stopwatch"},
-            {"name": "neg", "type": "stopwatch", "interval": -5},
-            {"name": "bool", "type": "stopwatch", "interval": True},
-            {"name": "str", "type": "stopwatch", "interval": "60"},
-        ]
-        assert valid_presets(raw) == []
-
-    def test_alert_before_field_accepted(self):
-        p = {"name": "laps", "type": "stopwatch", "interval": 60, "alert_before": 5}
-        assert valid_presets([p]) == [p]
-
-    def test_alert_before_optional(self):
-        p = {"name": "laps", "type": "stopwatch", "interval": 60}
-        assert valid_presets([p]) == [p]
-
-    def test_malformed_alert_before_filtered(self):
-        raw = [
-            {"name": "neg", "type": "stopwatch", "interval": 60, "alert_before": -1},
-            {"name": "bool", "type": "stopwatch", "interval": 60, "alert_before": True},
-            {"name": "str", "type": "stopwatch", "interval": 60, "alert_before": "5"},
+            {"name": "no work", "type": "stopwatch"},
+            {"name": "zero work", "type": "stopwatch", "work": 0, "rest": 15},
+            {"name": "neg rest", "type": "stopwatch", "work": 45, "rest": -1},
+            {"name": "bool", "type": "stopwatch", "work": True, "rest": 0},
+            {"name": "str", "type": "stopwatch", "work": "45", "rest": 0},
+            {"name": "legacy shape", "type": "stopwatch", "interval": 60},
         ]
         assert valid_presets(raw) == []
 
     def test_all_three_kinds_coexist(self):
         cd = {"name": "5 min", "duration": 300}
         iv = {"name": "hiit", "type": "interval", "work": 45, "rest": 15, "total": 600}
-        sw = {"name": "laps", "type": "stopwatch", "interval": 60}
+        sw = {"name": "45/15 up", "type": "stopwatch", "work": 45, "rest": 15}
         assert valid_presets([cd, iv, sw]) == [cd, iv, sw]
