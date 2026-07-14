@@ -6,6 +6,7 @@ the returned TickResult; commands (toggle/reset/…) come from UI events.
 The injectable `clock` (defaults to time.monotonic) makes tests deterministic.
 """
 
+import math
 import time
 from dataclasses import dataclass, field
 
@@ -231,9 +232,9 @@ class TimerEngine:
                         beeps.append(Beep(double=True) if rest_start else Beep())
                         self._last_short_beep_sec = -1
                     # Last-5 shorts before each boundary, on the label grid
-                    if self.config.alert_last_5_seconds and phase_remaining < 6.0:
+                    if self.config.alert_last_5_seconds and phase_remaining <= 5.0:
                         state = "warn"
-                        sec = int(phase_remaining)
+                        sec = int(math.ceil(phase_remaining))
                         if sec != self._last_short_beep_sec and 1 <= sec <= 5:
                             self._last_short_beep_sec = sec
                             beeps.append(Beep(short=True))
@@ -254,10 +255,10 @@ class TimerEngine:
                         state = "run"
                 else:
                     state = "end"     # finished session parked at 00:00
-            elif self.running and remaining < 6.0 and self.config.alert_last_5_seconds:
-                # Floor matches the rendered label (fmt_seconds truncates), so
-                # the first short beep lands when the display flips to 5.
-                sec_display = int(display)
+            elif self.running and remaining <= 5.0 and self.config.alert_last_5_seconds:
+                # Ceil matches the countdown label (which ceils), so the first
+                # short lands exactly as the display flips to 5.
+                sec_display = int(math.ceil(remaining))
                 state = "warn"
                 if sec_display != self._last_short_beep_sec and 1 <= sec_display <= 5:
                     self._last_short_beep_sec = sec_display
@@ -267,7 +268,7 @@ class TimerEngine:
         else:
             remaining = self.remaining()
             display = max(0.0, remaining)
-            sec_display = int(display)   # floor: matches the rendered label
+            sec_display = int(math.ceil(display))   # matches the ceiled label
             if remaining <= 0:
                 state = "end"
                 if self.running:
@@ -281,16 +282,14 @@ class TimerEngine:
                         restarted = True
                     else:
                         self.running = False
-            elif self.running and remaining < 1.0:
-                state = "end"   # label already shows 00:00; beep comes at true zero
-            elif self.running and remaining < 6.0 and self.config.alert_last_5_seconds:
-                state = "warn"
+            elif self.running and remaining <= 5.0 and self.config.alert_last_5_seconds:
+                state = "end" if sec_display == 1 else "warn"
                 if sec_display != self._last_short_beep_sec and 1 <= sec_display <= 5:
                     self._last_short_beep_sec = sec_display
                     beeps.append(Beep(short=True))
             else:
                 state = "run" if self.running else "pause"
-                if state == "run" and warn and remaining > 6.0:
+                if state == "run" and warn and remaining > 5.0:
                     state = "warn"
 
         # Periodic interval beeps (not while a cycle structure provides beeps)
