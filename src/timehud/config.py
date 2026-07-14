@@ -65,6 +65,7 @@ class Config:
     # ── Theme ──────────────────────────────────────────────────────────────
     theme: str = "classic"   # built-in theme name; see timehud/themes.py
     progress_style: str = "line"   # countdown/interval progress: line | border | off
+    padding: int = 12        # space between window border and content, px
 
     # ──────────────────────────────────────────────────────────────────────
 
@@ -98,14 +99,15 @@ def valid_presets(presets: list) -> list:
       interval:  {"name": str, "type": "interval",
                   "work": int > 0, "rest": int >= 0, "total": int >= work}
       stopwatch: {"name": str, "type": "stopwatch",
-                  "interval": int >= 0 (beep every N s; 0 = silent)}
+                  "interval": int >= 0 (beep every N s; 0 = silent),
+                  "alert_before": int >= 0 optional (pre-beep N s earlier)}
     """
     out = []
     for p in presets:
         if not isinstance(p, dict) or not isinstance(p.get("name"), str):
             continue
         if p.get("type") == "stopwatch":
-            if _is_int(p.get("interval"), 0):
+            if _is_int(p.get("interval"), 0) and _is_int(p.get("alert_before", 0), 0):
                 out.append(p)
         elif p.get("type") == "interval":
             if (

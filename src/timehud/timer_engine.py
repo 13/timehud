@@ -6,7 +6,6 @@ the returned TickResult; commands (toggle/reset/…) come from UI events.
 The injectable `clock` (defaults to time.monotonic) makes tests deterministic.
 """
 
-import math
 import time
 from dataclasses import dataclass, field
 
@@ -195,8 +194,10 @@ class TimerEngine:
                         state = "run"
                 else:
                     state = "end"     # finished session parked at 00:00
-            elif self.running and remaining <= 6.0 and self.config.alert_last_5_seconds:
-                sec_display = int(math.ceil(display))
+            elif self.running and remaining < 6.0 and self.config.alert_last_5_seconds:
+                # Floor matches the rendered label (fmt_seconds truncates), so
+                # the first short beep lands when the display flips to 5.
+                sec_display = int(display)
                 state = "warn"
                 if sec_display != self._last_short_beep_sec and 1 <= sec_display <= 5:
                     self._last_short_beep_sec = sec_display
@@ -206,7 +207,7 @@ class TimerEngine:
         else:
             remaining = self.remaining()
             display = max(0.0, remaining)
-            sec_display = int(math.ceil(display))
+            sec_display = int(display)   # floor: matches the rendered label
             if remaining <= 0:
                 state = "end"
                 if self.running:
@@ -220,8 +221,8 @@ class TimerEngine:
                         restarted = True
                     else:
                         self.running = False
-            elif self.running and remaining <= 6.0 and self.config.alert_last_5_seconds:
-                state = "end" if sec_display == 1 else "warn"
+            elif self.running and remaining < 6.0 and self.config.alert_last_5_seconds:
+                state = "end" if sec_display == 0 else "warn"
                 if sec_display != self._last_short_beep_sec and 1 <= sec_display <= 5:
                     self._last_short_beep_sec = sec_display
                     beeps.append(Beep(short=True))

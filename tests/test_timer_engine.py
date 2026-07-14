@@ -188,6 +188,17 @@ class TestLastFiveSeconds:
         longs = [b for b in beeps if not b.short and not b.double]
         assert len(longs) == 1             # finish beep at 00:00
 
+    def test_first_short_fires_when_label_shows_five(self, engine, clock):
+        engine.toggle()
+        clock.advance(24.05)               # remaining 5.95 → label "00:05"
+        beeps = engine.tick().beeps
+        assert [b for b in beeps if b.short], "short beep must start at displayed 5"
+
+    def test_no_short_while_label_shows_six(self, engine, clock):
+        engine.toggle()
+        clock.advance(23.5)                # remaining 6.5 → label "00:06"
+        assert engine.tick().beeps == []
+
     def test_finish_beep_without_last5_flag(self, engine, clock):
         engine.config.alert_last_5_seconds = False
         engine.reset()
