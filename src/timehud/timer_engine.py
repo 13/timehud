@@ -289,7 +289,7 @@ class TimerEngine:
                     beeps.append(Beep(short=True))
             else:
                 state = "run" if self.running else "pause"
-                if state == "run" and warn and remaining > 6.0:
+                if state == "run" and warn and remaining > 5.0:
                     state = "warn"
 
         # Periodic interval beeps (not while a cycle structure provides beeps)
