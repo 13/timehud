@@ -344,9 +344,11 @@ class SettingsDialog(QDialog):
         form.addRow(self.alert_last_5_seconds_cb)
 
         self.sound_interval_spin = QSpinBox()
-        self.sound_interval_spin.setRange(5, 3600)
+        # 0 (= periodic beeps off) must round-trip: presets can set it
+        self.sound_interval_spin.setRange(0, 3600)
+        self.sound_interval_spin.setSpecialValueText("off")
         self.sound_interval_spin.setSuffix(" s")
-        self.sound_interval_spin.setToolTip("Play a beep every N seconds of active timer")
+        self.sound_interval_spin.setToolTip("Play a beep every N seconds of active timer (off = never)")
         form.addRow("Alert every:", self.sound_interval_spin)
 
         self.sound_alert_before_spin = QSpinBox()
