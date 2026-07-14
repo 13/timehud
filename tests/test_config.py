@@ -123,8 +123,8 @@ class TestStopwatchPresets:
 
 
 class TestPresetSoundRules:
-    def test_sound_fields_accepted_on_all_types(self):
-        snd = {"last5": True, "every": 60, "before": 5}
+    def test_sound_toggles_accepted_on_all_types(self):
+        snd = {"last5": True, "boundary": False, "halfway": True}
         presets = [
             {"name": "cd", "duration": 300, **snd},
             {"name": "iv", "type": "interval", "work": 45, "rest": 15, "total": 600, **snd},
@@ -136,23 +136,14 @@ class TestPresetSoundRules:
         p = {"name": "plain", "duration": 300}
         assert valid_presets([p]) == [p]
 
-    def test_zero_every_allowed(self):
-        p = {"name": "quiet", "duration": 300, "every": 0}
-        assert valid_presets([p]) == [p]
+    def test_legacy_every_before_keys_ignored(self):
+        p = {"name": "old", "duration": 300, "every": 60, "before": 5}
+        assert valid_presets([p]) == [p]   # keys tolerated, no longer validated
 
-    def test_boundary_field_accepted(self):
-        p = {"name": "sw", "type": "stopwatch", "work": 45, "rest": 15, "boundary": False}
-        assert valid_presets([p]) == [p]
-
-    def test_malformed_boundary_filtered(self):
-        p = {"name": "sw", "type": "stopwatch", "work": 45, "rest": 15, "boundary": "no"}
-        assert valid_presets([p]) == []
-
-    def test_malformed_sound_fields_filtered(self):
+    def test_malformed_toggles_filtered(self):
         raw = [
             {"name": "bad last5", "duration": 300, "last5": "yes"},
-            {"name": "bad every", "duration": 300, "every": -1},
-            {"name": "bool every", "duration": 300, "every": True},
-            {"name": "bad before", "duration": 300, "before": "5"},
+            {"name": "bad boundary", "duration": 300, "boundary": "no"},
+            {"name": "bad halfway", "duration": 300, "halfway": 1},
         ]
         assert valid_presets(raw) == []
