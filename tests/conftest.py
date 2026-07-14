@@ -1,6 +1,11 @@
+import os
+
 import pytest
 
 from timehud.config import Config
+
+# Overlay tests (pytest-qt) must never require a real display
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
 class FakeClock:

@@ -13,7 +13,7 @@ dependencies = ["PyQt6>=6.11.0"]
 
 [project.optional-dependencies]
 hotkeys = ["pynput>=1.8.1"]
-dev = ["pytest>=8", "ruff>=0.4"]
+dev = ["pytest>=8", "pytest-qt>=4.4", "ruff>=0.4"]
 
 [project.scripts]
 timehud = "timehud.main:main"
