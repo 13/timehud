@@ -20,6 +20,7 @@ Controls:
   Ctrl+Q      – quit
 """
 import datetime
+import math
 from collections.abc import Callable
 from dataclasses import asdict
 from PyQt6.QtCore import (
@@ -253,7 +254,7 @@ class OverlayWindow(QWidget):
         self.btn_mode.clicked.connect(self._toggle_mode)
         ctrl = QHBoxLayout()
         ctrl.setSpacing(6)
-        ctrl.setContentsMargins(0, 6, 0, 0)
+        ctrl.setContentsMargins(0, 4, 0, 0)   # 4 px below the mode label
         ctrl.addStretch()
         ctrl.addWidget(self.btn_start)
         ctrl.addWidget(self.btn_reset)
@@ -444,7 +445,13 @@ class OverlayWindow(QWidget):
             return
 
         result = self.engine.tick()
-        self.lbl_timer.setText(_fmt(result.display))
+        if self.config.timer_mode in ("countdown", "interval"):
+            # Countdown-style displays ceil: 00:05 shows through the whole
+            # fifth second and 00:00 appears exactly when time runs out
+            shown = math.ceil(result.display - 1e-9)
+        else:
+            shown = result.display
+        self.lbl_timer.setText(_fmt(shown))
 
         theme = get_theme(self.config.theme)
         colors = {
@@ -1121,13 +1128,13 @@ class OverlayWindow(QWidget):
         self.adjustSize()
 
     def _bottom_margin(self) -> int:
-        """Buttons sit 2 px above the border; without them, symmetric padding."""
+        """Buttons sit 4 px above the border; without them, symmetric padding."""
         cfg = self.config
         if not (cfg.show_timer and cfg.show_controls):
             return cfg.padding
         # Blend with the fold position so the margin animates with the row
         pos = self._controls_pos
-        return int(round(2 * pos + cfg.padding * (1 - pos)))
+        return int(round(4 * pos + cfg.padding * (1 - pos)))
 
     def _unfix_controls_height(self) -> None:
         """Undo the fold's fixed height so buttons size freely again."""
