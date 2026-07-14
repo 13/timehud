@@ -25,6 +25,7 @@ class Theme:
     color_timer_pause: str
     color_warn: str
     color_end: str
+    color_rest: str
     show_separator: bool
     clock_scale: float   # clock px = font_size * clock_scale
     timer_scale: float   # timer px = font_size * timer_scale
@@ -38,7 +39,7 @@ THEMES: dict[str, Theme] = {
         border_alpha=38, top_edge_alpha=0, radius=13,
         color_clock="#00FF88", clock_alpha=1.0,
         color_timer_run="#FFFFFF", color_timer_pause="#888888",
-        color_warn="#FF9900", color_end="#FF3333",
+        color_warn="#FF9900", color_end="#FF3333", color_rest="#4FA8FF",
         show_separator=True, clock_scale=1.0, timer_scale=1.25,
     ),
     "terminal": Theme(
@@ -48,7 +49,7 @@ THEMES: dict[str, Theme] = {
         border_alpha=26, top_edge_alpha=0, radius=14,
         color_clock="#4ADE80", clock_alpha=0.92,
         color_timer_run="#F4F6F5", color_timer_pause="#6E7672",
-        color_warn="#FBBF24", color_end="#FF3333",
+        color_warn="#FBBF24", color_end="#FF3333", color_rest="#60A5FA",
         show_separator=True, clock_scale=0.9, timer_scale=1.3,
     ),
     "glass": Theme(
@@ -58,7 +59,7 @@ THEMES: dict[str, Theme] = {
         border_alpha=36, top_edge_alpha=56, radius=18,
         color_clock="#E8EDEB", clock_alpha=0.68,
         color_timer_run="#FFFFFF", color_timer_pause="#8A9490",
-        color_warn="#FBBF24", color_end="#FF3333",
+        color_warn="#FBBF24", color_end="#FF3333", color_rest="#93C5FD",
         show_separator=False, clock_scale=0.8, timer_scale=1.4,
     ),
     "mono": Theme(
@@ -68,7 +69,7 @@ THEMES: dict[str, Theme] = {
         border_alpha=0, top_edge_alpha=0, radius=10,
         color_clock="#FFFFFF", clock_alpha=0.55,
         color_timer_run="#FFFFFF", color_timer_pause="#7A7A7A",
-        color_warn="#FBBF24", color_end="#FF3333",
+        color_warn="#FBBF24", color_end="#FF3333", color_rest="#B0BEC5",
         show_separator=False, clock_scale=0.62, timer_scale=1.5,
     ),
 }
