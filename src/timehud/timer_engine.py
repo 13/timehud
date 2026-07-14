@@ -143,7 +143,7 @@ class TimerEngine:
             if self._round >= self.config.interval_rounds:
                 self.running = False
                 self._cd_remaining = 0.0
-                return None, True
+                return Beep(), True   # long finish beep at session end
             if self.config.interval_rest > 0:
                 self._phase = "rest"
                 self._cd_remaining = float(self.config.interval_rest)
@@ -198,7 +198,7 @@ class TimerEngine:
             elif self.running and remaining <= 6.0 and self.config.alert_last_5_seconds:
                 sec_display = int(math.ceil(display))
                 state = "warn"
-                if sec_display != self._last_short_beep_sec and 2 <= sec_display <= 6:
+                if sec_display != self._last_short_beep_sec and 1 <= sec_display <= 5:
                     self._last_short_beep_sec = sec_display
                     beeps.append(Beep(short=True))
             else:
@@ -211,6 +211,7 @@ class TimerEngine:
                 state = "end"
                 if self.running:
                     finished = True
+                    beeps.append(Beep())   # long finish beep at 00:00
                     if self.config.auto_restart_countdown:
                         self._cd_remaining = float(self.config.countdown_duration)
                         self._start_mono = self._clock()
@@ -221,9 +222,9 @@ class TimerEngine:
                         self.running = False
             elif self.running and remaining <= 6.0 and self.config.alert_last_5_seconds:
                 state = "end" if sec_display == 1 else "warn"
-                if sec_display != self._last_short_beep_sec and 1 <= sec_display <= 6:
+                if sec_display != self._last_short_beep_sec and 1 <= sec_display <= 5:
                     self._last_short_beep_sec = sec_display
-                    beeps.append(Beep(short=sec_display != 1))
+                    beeps.append(Beep(short=True))
             else:
                 state = "run" if self.running else "pause"
                 if state == "run" and warn and remaining > 6.0:

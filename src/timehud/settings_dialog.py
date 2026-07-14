@@ -225,6 +225,13 @@ class SettingsDialog(QDialog):
         self.interval_rounds_spin.setRange(1, 99)
         form.addRow("Interval rounds:", self.interval_rounds_spin)
 
+        self.progress_style_combo = QComboBox()
+        self.progress_style_combo.addItems(["line", "border", "off"])
+        self.progress_style_combo.setToolTip(
+            "line = bar under the timer, border = progress traced around the window"
+        )
+        form.addRow("Progress bar:", self.progress_style_combo)
+
         return tab
 
     def _presets_tab(self) -> QWidget:
@@ -239,7 +246,7 @@ class SettingsDialog(QDialog):
         self.preset_name_edit = QLineEdit()
         self.preset_name_edit.setPlaceholderText("Name")
         self.preset_type_combo = QComboBox()
-        self.preset_type_combo.addItems(["countdown", "interval"])
+        self.preset_type_combo.addItems(["countdown", "interval", "stopwatch"])
         self.preset_type_combo.currentIndexChanged.connect(self._preset_type_changed)
         self.preset_dur_spin = QSpinBox()
         self.preset_dur_spin.setRange(1, 24 * 3600)
@@ -270,6 +277,17 @@ class SettingsDialog(QDialog):
         self._preset_iv_row.setLayout(iv_row)
         self._preset_iv_row.hide()
         layout.addWidget(self._preset_iv_row)
+
+        sw_row = QHBoxLayout()
+        self.preset_swint_spin = QSpinBox()
+        self.preset_swint_spin.setRange(0, 3600)
+        self.preset_swint_spin.setSuffix(" s beep interval (0 = silent)")
+        self.preset_swint_spin.setValue(60)
+        sw_row.addWidget(self.preset_swint_spin)
+        self._preset_sw_row = QWidget()
+        self._preset_sw_row.setLayout(sw_row)
+        self._preset_sw_row.hide()
+        layout.addWidget(self._preset_sw_row)
 
         btns = QHBoxLayout()
         add_btn = QPushButton("Add / Update")
@@ -384,13 +402,17 @@ class SettingsDialog(QDialog):
                 self.preset_list.addItem(
                     f'{p["name"]}  —  {p["work"]}/{p["rest"]} ×{rounds}'
                 )
+            elif p.get("type") == "stopwatch":
+                note = f'every {p["interval"]}s' if p["interval"] > 0 else "silent"
+                self.preset_list.addItem(f'{p["name"]}  —  stopwatch, {note}')
             else:
                 self.preset_list.addItem(f'{p["name"]}  —  {fmt_seconds(p["duration"])}')
 
     def _preset_type_changed(self) -> None:
-        is_interval = self.preset_type_combo.currentText() == "interval"
-        self.preset_dur_spin.setVisible(not is_interval)
-        self._preset_iv_row.setVisible(is_interval)
+        kind = self.preset_type_combo.currentText()
+        self.preset_dur_spin.setVisible(kind == "countdown")
+        self._preset_iv_row.setVisible(kind == "interval")
+        self._preset_sw_row.setVisible(kind == "stopwatch")
 
     def _preset_selected(self, row: int) -> None:
         presets = valid_presets(self.config.presets)
@@ -403,6 +425,9 @@ class SettingsDialog(QDialog):
             self.preset_work_spin.setValue(p["work"])
             self.preset_rest_spin.setValue(p["rest"])
             self.preset_total_spin.setValue(max(1, round(p["total"] / 60)))
+        elif p.get("type") == "stopwatch":
+            self.preset_type_combo.setCurrentText("stopwatch")
+            self.preset_swint_spin.setValue(p["interval"])
         else:
             self.preset_type_combo.setCurrentText("countdown")
             self.preset_dur_spin.setValue(p["duration"])
@@ -411,13 +436,20 @@ class SettingsDialog(QDialog):
         name = self.preset_name_edit.text().strip()
         if not name:
             return
-        if self.preset_type_combo.currentText() == "interval":
+        kind = self.preset_type_combo.currentText()
+        if kind == "interval":
             new_preset = {
                 "name": name,
                 "type": "interval",
                 "work": self.preset_work_spin.value(),
                 "rest": self.preset_rest_spin.value(),
                 "total": self.preset_total_spin.value() * 60,
+            }
+        elif kind == "stopwatch":
+            new_preset = {
+                "name": name,
+                "type": "stopwatch",
+                "interval": self.preset_swint_spin.value(),
             }
         else:
             new_preset = {"name": name, "duration": self.preset_dur_spin.value()}
@@ -494,6 +526,7 @@ class SettingsDialog(QDialog):
         self.interval_work_spin.valueChanged.connect(_emit_if_valid)
         self.interval_rest_spin.valueChanged.connect(_emit_if_valid)
         self.interval_rounds_spin.valueChanged.connect(_emit_if_valid)
+        self.progress_style_combo.currentIndexChanged.connect(_emit_if_valid)
         self.sound_alert_before_spin.valueChanged.connect(_emit_if_valid)
 
     def _apply_to_config(self):
@@ -515,11 +548,17 @@ class SettingsDialog(QDialog):
             self.interval_rounds_spin.value(),
         ) != (c.interval_work, c.interval_rest, c.interval_rounds):
             c.active_preset = ""   # interval settings changed manually
+        if c.timer_mode == "stopwatch" and (
+            self.sound_interval_spin.value() != c.sound_interval
+            or self.sound_enabled_cb.isChecked() != c.sound_enabled
+        ):
+            c.active_preset = ""   # stopwatch preset identity is its beep interval
         c.countdown_duration  = self.countdown_spin.value()
         c.auto_restart_countdown = self.auto_restart_countdown_cb.isChecked()
         c.interval_work   = self.interval_work_spin.value()
         c.interval_rest   = self.interval_rest_spin.value()
         c.interval_rounds = self.interval_rounds_spin.value()
+        c.progress_style  = self.progress_style_combo.currentText()
         c.sound_enabled  = self.sound_enabled_cb.isChecked()
         c.alert_last_5_seconds = self.alert_last_5_seconds_cb.isChecked()
         c.sound_interval = self.sound_interval_spin.value()
@@ -551,6 +590,8 @@ class SettingsDialog(QDialog):
         self.interval_work_spin.setValue(c.interval_work)
         self.interval_rest_spin.setValue(c.interval_rest)
         self.interval_rounds_spin.setValue(c.interval_rounds)
+        idx = self.progress_style_combo.findText(c.progress_style)
+        self.progress_style_combo.setCurrentIndex(max(0, idx))
 
         self.sound_enabled_cb.setChecked(c.sound_enabled)
         self.alert_last_5_seconds_cb.setChecked(c.alert_last_5_seconds)

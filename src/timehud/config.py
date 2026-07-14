@@ -64,6 +64,7 @@ class Config:
 
     # ── Theme ──────────────────────────────────────────────────────────────
     theme: str = "classic"   # built-in theme name; see timehud/themes.py
+    progress_style: str = "line"   # countdown/interval progress: line | border | off
 
     # ──────────────────────────────────────────────────────────────────────
 
@@ -92,16 +93,21 @@ def _is_int(value, minimum: int = 0) -> bool:
 def valid_presets(presets: list) -> list:
     """Filter out malformed preset entries (defensive against hand-edited config).
 
-    Two shapes:
+    Three shapes:
       countdown: {"name": str, "duration": int > 0}
       interval:  {"name": str, "type": "interval",
                   "work": int > 0, "rest": int >= 0, "total": int >= work}
+      stopwatch: {"name": str, "type": "stopwatch",
+                  "interval": int >= 0 (beep every N s; 0 = silent)}
     """
     out = []
     for p in presets:
         if not isinstance(p, dict) or not isinstance(p.get("name"), str):
             continue
-        if p.get("type") == "interval":
+        if p.get("type") == "stopwatch":
+            if _is_int(p.get("interval"), 0):
+                out.append(p)
+        elif p.get("type") == "interval":
             if (
                 _is_int(p.get("work"), 1)
                 and _is_int(p.get("rest"), 0)

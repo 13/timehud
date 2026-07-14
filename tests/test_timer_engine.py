@@ -177,13 +177,25 @@ class TestLastFiveSeconds:
         config.alert_last_5_seconds = True
         return TimerEngine(config, clock=clock)
 
-    def test_short_beeps_then_long(self, engine, clock):
+    def test_short_beeps_then_long_at_zero(self, engine, clock):
         engine.toggle()
         beeps = collect_beeps(engine, clock, 29.95)
         shorts = [b for b in beeps if b.short]
         longs = [b for b in beeps if not b.short and not b.double]
-        assert len(shorts) == 5            # displayed 6,5,4,3,2
-        assert len(longs) == 1             # displayed 1
+        assert len(shorts) == 5            # displayed 5,4,3,2,1
+        assert longs == []                 # long beep only at zero
+        beeps = collect_beeps(engine, clock, 0.2)   # cross zero
+        longs = [b for b in beeps if not b.short and not b.double]
+        assert len(longs) == 1             # finish beep at 00:00
+
+    def test_finish_beep_without_last5_flag(self, engine, clock):
+        engine.config.alert_last_5_seconds = False
+        engine.reset()
+        engine.toggle()
+        beeps = collect_beeps(engine, clock, 30.2)
+        assert [b for b in beeps if b.short] == []
+        longs = [b for b in beeps if not b.short and not b.double]
+        assert len(longs) == 1             # finish beep independent of last-5 flag
 
     def test_warn_then_end_state(self, engine, clock):
         engine.toggle()
@@ -304,8 +316,8 @@ class TestInterval:
         beeps = collect_beeps(engine, clock, 39.5)
         shorts = [b for b in beeps if b.short]
         longs = [b for b in beeps if not b.short and not b.double]
-        assert len(shorts) == 5      # displayed 6,5,4,3,2
-        assert longs == []           # no long at 1 inside a phase
+        assert len(shorts) == 5      # displayed 5,4,3,2,1
+        assert longs == []           # transition beep covers the zero mark
 
     def test_pause_resume_mid_phase(self, engine, clock):
         engine.toggle()

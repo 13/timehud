@@ -27,7 +27,7 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QAction, QActionGroup, QColor, QFont, QPainter, QPainterPath, QPen,
-    QCursor, QGuiApplication,
+    QCursor, QGuiApplication, QPolygonF,
 )
 from PyQt6.QtWidgets import (
     QApplication, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMenu,
@@ -133,6 +133,9 @@ class OverlayWindow(QWidget):
         # Track countdown duration to detect settings-driven changes
         self._last_cd_duration = config.countdown_duration
         self._interval_label = ""
+        # Border-style progress (painted in paintEvent)
+        self._border_fraction = -1.0
+        self._border_color = ""
         self._last_interval_cfg = (
             config.interval_work,
             config.interval_rest,
@@ -286,6 +289,10 @@ class OverlayWindow(QWidget):
         self.lbl_mode.setFont(make_font(max(10, fs // 3), bold=False))
         self.sep.setVisible(cfg.show_timer and theme.show_separator)
 
+    def _has_custom_pos(self) -> bool:
+        """True when the user dragged the overlay to a custom position."""
+        return self.config.custom_x >= 0 and self.config.custom_y >= 0
+
     # ══ Positioning ══════════════════════════════════════════════════════════
     def _position_window(self) -> None:
         self.adjustSize()
@@ -296,7 +303,7 @@ class OverlayWindow(QWidget):
             screen = QApplication.primaryScreen()
         scr  = screen.availableGeometry()
         # Use saved drag position if present
-        if self.config.custom_x >= 0 and self.config.custom_y >= 0:
+        if self._has_custom_pos():
             self.move(self.config.custom_x, self.config.custom_y)
             return
         presets = {
@@ -330,9 +337,13 @@ class OverlayWindow(QWidget):
         dw = new_sz.width() - old_sz.width()
         dh = new_sz.height() - old_sz.height()
 
-        # If using presets, _position_window handles it correctly on its own
-        # but calling it constantly might not be ideal. We can manually offset
-        # based on screen quadrants to preserve real "anchor" feeling anywhere.
+        # Preset positions re-anchor exactly (keeps top-center centered after
+        # size changes from mode/preset switches); quadrant anchoring below is
+        # only for freely dragged windows.
+        if not self._has_custom_pos():
+            self._position_window()
+            return
+
         screen = QGuiApplication.screenAt(self.geometry().center())
         if not screen:
             screen = QApplication.primaryScreen()
@@ -387,7 +398,14 @@ class OverlayWindow(QWidget):
             theme_bar_color = theme.color_warn
         elif result.phase == "rest":
             theme_bar_color = theme.color_rest
-        self.progress_bar.set_state(result.progress, theme_bar_color)
+        style = self.config.progress_style
+        line_fraction = result.progress if style == "line" else -1.0
+        self.progress_bar.set_state(line_fraction, theme_bar_color)
+        border_fraction = result.progress if style == "border" else -1.0
+        if (border_fraction, theme_bar_color) != (self._border_fraction, self._border_color):
+            self._border_fraction = border_fraction
+            self._border_color = theme_bar_color
+            self.update()
 
         if result.phase and not self.engine.is_idle():
             label = f"{result.phase.upper()} {result.round}/{result.rounds}"
@@ -481,13 +499,21 @@ class OverlayWindow(QWidget):
         self.config.save()
         self._update()
     def _apply_stopwatch(self) -> None:
+        self.config.active_preset = ""   # plain stopwatch, no preset
         self.engine.set_mode("stopwatch")
         self.btn_start.setText("▶")
         self._refresh_mode_label()
         self.config.save()
         self._update()
     def _apply_preset(self, preset: dict) -> None:
-        if preset.get("type") == "interval":
+        if preset.get("type") == "stopwatch":
+            self.config.timer_mode = "stopwatch"
+            if preset["interval"] > 0:
+                self.config.sound_interval = preset["interval"]
+                self.config.sound_enabled = True
+            else:
+                self.config.sound_enabled = False
+        elif preset.get("type") == "interval":
             self.config.timer_mode = "interval"
             self.config.interval_work = int(preset["work"])
             self.config.interval_rest = int(preset["rest"])
@@ -522,6 +548,9 @@ class OverlayWindow(QWidget):
                 "rest": cfg.interval_rest,
                 "total": (cfg.interval_work + cfg.interval_rest) * cfg.interval_rounds,
             }
+        elif self.config.timer_mode == "stopwatch":
+            interval = self.config.sound_interval if self.config.sound_enabled else 0
+            new_preset = {"name": name, "type": "stopwatch", "interval": interval}
         else:
             new_preset = {"name": name, "duration": int(self.config.countdown_duration)}
         # Same-name preset is overwritten (predictable rule per spec)
@@ -534,7 +563,10 @@ class OverlayWindow(QWidget):
     def _refresh_mode_label(self) -> None:
         self._interval_label = ""   # force live label re-sync on next tick
         if self.config.timer_mode == "stopwatch":
-            self.lbl_mode.setText("STOPWATCH")
+            if self.config.active_preset:
+                self.lbl_mode.setText(f"{self.config.active_preset.upper()} · STOPWATCH")
+            else:
+                self.lbl_mode.setText("STOPWATCH")
             self.btn_mode.setText("SW")
         elif self.config.timer_mode == "interval":
             cfg = self.config
@@ -571,6 +603,22 @@ class OverlayWindow(QWidget):
         if theme.top_edge_alpha > 0:
             p.setPen(QPen(QColor(255, 255, 255, theme.top_edge_alpha)))
             p.drawLine(r, 1, self.width() - r, 1)
+        if self._border_fraction > 0:
+            # Progress traced along the window outline (border style)
+            outline = QPainterPath()
+            outline.addRoundedRect(
+                1.0, 1.0, self.width() - 2.0, self.height() - 2.0, r, r
+            )
+            frac = min(1.0, self._border_fraction)
+            pen = QPen(QColor(self._border_color))
+            pen.setWidthF(2.0)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen)
+            steps = max(2, int(180 * frac))
+            points = [
+                outline.pointAtPercent((i / steps) * frac) for i in range(steps + 1)
+            ]
+            p.drawPolyline(QPolygonF(points))
     # ══ Mouse events ═════════════════════════════════════════════════════════
     def eventFilter(self, obj, event):
         if obj is self.lbl_clock:
@@ -583,7 +631,7 @@ class OverlayWindow(QWidget):
                     self._apply_styles()
                     self._apply_button_sizes()
                     self.adjustSize()
-                    if self.config.custom_x < 0:
+                    if not self._has_custom_pos():
                         self._position_window()
                     self.config.save()
                 return True
@@ -720,11 +768,18 @@ class OverlayWindow(QWidget):
                     label = (
                         f'{p["name"]} {p["work"]}/{p["rest"]} ×{interval_preset_rounds(p)}'
                     )
+                elif p.get("type") == "stopwatch":
+                    if p["interval"] > 0:
+                        label = f'{p["name"]} every {p["interval"]}s'
+                    else:
+                        label = f'{p["name"]} silent'
                 else:
                     label = f'{p["name"]} {_fmt(p["duration"])}'
                 a = preset_menu.addAction(label)
                 a.setCheckable(True)
-                preset_mode = "interval" if p.get("type") == "interval" else "countdown"
+                preset_mode = p.get("type", "countdown")
+                if preset_mode not in ("interval", "stopwatch"):
+                    preset_mode = "countdown"
                 a.setChecked(
                     self.config.timer_mode == preset_mode
                     and self.config.active_preset == p["name"]
@@ -732,7 +787,6 @@ class OverlayWindow(QWidget):
                 a.triggered.connect(lambda checked, p=p: self._apply_preset(p))
         preset_menu.addSeparator()
         act_save = preset_menu.addAction("Save current as preset…")
-        act_save.setEnabled(self.config.timer_mode in ("countdown", "interval"))
         act_save.triggered.connect(self._save_current_preset)
         act_manage = preset_menu.addAction("Manage presets…")
         act_manage.triggered.connect(lambda: self._open_settings(tab="presets"))
@@ -810,7 +864,7 @@ class OverlayWindow(QWidget):
         apply_theme(self.config, name)
         self._apply_styles()
         self.adjustSize()
-        if self.config.custom_x < 0:
+        if not self._has_custom_pos():
             self._position_window()
         self.config.save()
         self.update()      # repaint themed background
@@ -869,6 +923,8 @@ class OverlayWindow(QWidget):
             self.lbl_timer.setVisible(cfg.show_timer)
             if not cfg.show_timer:
                 self.progress_bar.hide()
+                self._border_fraction = -1.0
+                self.update()
             self.lbl_mode.setVisible(cfg.show_timer)
             self.ctrl_widget.setVisible(cfg.show_timer and cfg.show_controls)
             if cfg.show_timer and cfg.show_controls:
@@ -878,7 +934,7 @@ class OverlayWindow(QWidget):
 
             self.setWindowOpacity(cfg.opacity)
             self.adjustSize()
-            if cfg.custom_x < 0:
+            if not self._has_custom_pos():
                 self._position_window()
             self._refresh_mode_label()
 
