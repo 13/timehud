@@ -19,7 +19,6 @@ Controls:
   R           – reset timer
   Ctrl+Q      – quit
 """
-import copy
 import datetime
 from collections.abc import Callable
 from dataclasses import asdict
@@ -79,11 +78,13 @@ class _ProgressBar(QWidget):
 
     def set_state(self, fraction: float, color: str) -> None:
         qc = QColor(color)
+        # Visibility before the dedup return: update_ui may have hidden the
+        # bar while show_timer was off, with fraction/color unchanged.
+        self.setVisible(fraction >= 0.0)
         if fraction == self._fraction and qc == self._color:
             return
         self._fraction = fraction
         self._color = qc
-        self.setVisible(fraction >= 0.0)
         self.update()
 
     def paintEvent(self, _event) -> None:  # noqa: N802
@@ -814,7 +815,7 @@ class OverlayWindow(QWidget):
         # Import here to avoid circular deps / speed up startup
         from timehud.settings_dialog import SettingsDialog
 
-        snapshot = copy.deepcopy(asdict(self.config))
+        snapshot = asdict(self.config)   # asdict deep-copies nested containers
 
         dlg = SettingsDialog(self.config, parent=None)
         if tab is not None:
