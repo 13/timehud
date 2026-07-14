@@ -177,18 +177,16 @@ class TestLastFiveSeconds:
         config.alert_last_5_seconds = True
         return TimerEngine(config, clock=clock)
 
-    def test_short_beeps_then_long_at_display_zero(self, engine, clock):
+    def test_short_beeps_then_long_at_true_zero(self, engine, clock):
         engine.toggle()
-        beeps = collect_beeps(engine, clock, 28.95)   # label still shows 00:01
+        beeps = collect_beeps(engine, clock, 29.95)   # label shows 00:00, not done
         shorts = [b for b in beeps if b.short]
         longs = [b for b in beeps if not b.short and not b.double]
         assert len(shorts) == 5            # displayed 5,4,3,2,1
-        assert longs == []                 # no long yet
-        beeps = collect_beeps(engine, clock, 0.2)     # label flips to 00:00
+        assert longs == []                 # nothing during the displayed-zero second
+        beeps = collect_beeps(engine, clock, 0.2)     # cross true zero (30 s)
         longs = [b for b in beeps if not b.short and not b.double]
-        assert len(longs) == 1             # long exactly as display shows zero
-        beeps = collect_beeps(engine, clock, 1.2)     # cross true zero
-        assert beeps == []                 # finish itself stays silent
+        assert len(longs) == 1             # long beep exactly when time runs out
 
     def test_first_short_fires_when_label_shows_five(self, engine, clock):
         engine.toggle()

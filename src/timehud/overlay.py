@@ -27,7 +27,7 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QAction, QActionGroup, QColor, QFont, QPainter, QPainterPath, QPen,
-    QCursor, QGuiApplication, QPolygonF,
+    QCursor, QGuiApplication,
 )
 from PyQt6.QtWidgets import (
     QApplication, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMenu,
@@ -291,6 +291,9 @@ class OverlayWindow(QWidget):
         self.btn_start.setFixedWidth(btn_h + 6)
         self.btn_reset.setFixedWidth(btn_h + 6)
         self.btn_mode.setFixedWidth(btn_h + 14)
+        # Lift a stale fold constraint so resized buttons fit (live font changes)
+        if getattr(self, "ctrl_widget", None) is not None and self._controls_pos >= 1.0:
+            self._unfix_controls_height()
 
     def _apply_styles(self) -> None:
         """Apply theme + config fonts/colors to the labels. Idempotent."""
@@ -303,10 +306,10 @@ class OverlayWindow(QWidget):
         fs = cfg.font_size
         ff = theme.font_family or cfg.font_family or "Monospace"
 
-        # padding=12 reproduces the historical (16, 12, 16, 10) margins
+        # Symmetric: bottom distance equals top (unless padding_top overrides)
         pad = cfg.padding
         pad_top = cfg.padding_top if cfg.padding_top >= 0 else pad
-        self.layout().setContentsMargins(pad + 4, pad_top, pad + 4, max(0, pad - 2))
+        self.layout().setContentsMargins(pad + 4, pad_top, pad + 4, pad)
 
         def make_font(size: int, bold: bool = True) -> QFont:
             f = QFont(ff, -1)
@@ -668,21 +671,27 @@ class OverlayWindow(QWidget):
             p.setPen(QPen(QColor(255, 255, 255, theme.top_edge_alpha)))
             p.drawLine(r, 1, self.width() - r, 1)
         if self._border_display > 0:
-            # Progress traced along the window outline (border style)
+            # Progress traced along the window outline (border style). A dash
+            # pattern strokes exactly `frac` of the path perimeter — the pen
+            # follows the true rounded curve, so corners stay round and the
+            # stroke doesn't shimmer as the fraction changes.
             outline = QPainterPath()
             outline.addRoundedRect(
                 1.0, 1.0, self.width() - 2.0, self.height() - 2.0, r, r
             )
             frac = min(1.0, self._border_display)
             pen = QPen(QColor(self._border_color))
-            pen.setWidthF(2.0)
+            pen_w = 2.0
+            pen.setWidthF(pen_w)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            if frac < 1.0:
+                total = outline.length()
+                # Dash pattern units are multiples of the pen width
+                on = (total * frac) / pen_w
+                off = (total - total * frac) / pen_w + pen_w
+                pen.setDashPattern([on, off])
             p.setPen(pen)
-            steps = max(2, int(180 * frac))
-            points = [
-                outline.pointAtPercent((i / steps) * frac) for i in range(steps + 1)
-            ]
-            p.drawPolyline(QPolygonF(points))
+            p.drawPath(outline)
     # ══ Mouse events ═════════════════════════════════════════════════════════
     def eventFilter(self, obj, event):
         if obj is self.lbl_clock:
@@ -1061,9 +1070,21 @@ class OverlayWindow(QWidget):
         pos = float(value)
         self._controls_pos = pos
         self._controls_fx.setOpacity(pos)
-        natural = self.ctrl_widget.sizeHint().height()
-        self.ctrl_widget.setMaximumHeight(int(natural * pos))
+        if pos >= 1.0:
+            self._unfix_controls_height()
+        else:
+            # setFixedHeight (not setMaximumHeight): the layout's sizeHint only
+            # honors min/fixed constraints, so this is what makes the window
+            # actually shrink with the fold.
+            natural = self.ctrl_widget.sizeHint().height()
+            self.ctrl_widget.setFixedHeight(int(natural * pos))
+        self.layout().activate()
         self.adjustSize()
+
+    def _unfix_controls_height(self) -> None:
+        """Undo the fold's fixed height so buttons size freely again."""
+        self.ctrl_widget.setMinimumHeight(0)
+        self.ctrl_widget.setMaximumHeight(16777215)
 
     def _reset_controls_fold(self) -> None:
         """Instantly restore the unfolded state (settings toggled controls on)."""
@@ -1075,7 +1096,7 @@ class OverlayWindow(QWidget):
         self._controls_pos = 1.0
         if self._controls_fx is not None:
             self._controls_fx.setOpacity(1.0)
-        self.ctrl_widget.setMaximumHeight(16777215)
+        self._unfix_controls_height()
 
     def _pulse_timer_label(self) -> None:
         base = int(self.config.font_size * get_theme(self.config.theme).timer_scale)
