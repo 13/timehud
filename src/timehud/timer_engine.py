@@ -212,6 +212,7 @@ class TimerEngine:
                 state = "end"
                 if self.running:
                     finished = True
+                    beeps.append(Beep())   # long beep exactly when time runs out
                     if self.config.auto_restart_countdown:
                         self._cd_remaining = float(self.config.countdown_duration)
                         self._start_mono = self._clock()
@@ -221,12 +222,7 @@ class TimerEngine:
                     else:
                         self.running = False
             elif self.running and remaining < 1.0:
-                # Long beep the instant the label flips to 00:00, keeping the
-                # 1 s rhythm of the last-5 shorts (finish itself stays silent)
-                state = "end"
-                if self._last_short_beep_sec != 0:
-                    self._last_short_beep_sec = 0
-                    beeps.append(Beep())
+                state = "end"   # label already shows 00:00; beep comes at true zero
             elif self.running and remaining < 6.0 and self.config.alert_last_5_seconds:
                 state = "warn"
                 if sec_display != self._last_short_beep_sec and 1 <= sec_display <= 5:
