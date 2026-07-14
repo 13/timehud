@@ -307,6 +307,19 @@ class SettingsDialog(QDialog):
         self._preset_sw_row.hide()
         layout.addWidget(self._preset_sw_row)
 
+        snd_row = QHBoxLayout()
+        self.preset_last5_cb = QCheckBox("last-5 beeps")
+        self.preset_every_spin = QSpinBox()
+        self.preset_every_spin.setRange(0, 3600)
+        self.preset_every_spin.setSuffix(" s alert every (0 = off)")
+        self.preset_before_spin = QSpinBox()
+        self.preset_before_spin.setRange(0, 600)
+        self.preset_before_spin.setSuffix(" s pre-beep (0 = off)")
+        snd_row.addWidget(self.preset_last5_cb)
+        snd_row.addWidget(self.preset_every_spin)
+        snd_row.addWidget(self.preset_before_spin)
+        layout.addLayout(snd_row)
+
         btns = QHBoxLayout()
         add_btn = QPushButton("Add / Update")
         add_btn.clicked.connect(self._preset_add)
@@ -439,6 +452,10 @@ class SettingsDialog(QDialog):
             return
         p = presets[row]
         self.preset_name_edit.setText(p["name"])
+        c = self.config
+        self.preset_last5_cb.setChecked(p.get("last5", c.alert_last_5_seconds))
+        self.preset_every_spin.setValue(p.get("every", c.sound_interval))
+        self.preset_before_spin.setValue(p.get("before", c.sound_alert_before))
         if p.get("type") == "interval":
             self.preset_type_combo.setCurrentText("interval")
             self.preset_work_spin.setValue(p["work"])
@@ -474,6 +491,9 @@ class SettingsDialog(QDialog):
             }
         else:
             new_preset = {"name": name, "duration": self.preset_dur_spin.value()}
+        new_preset["last5"] = self.preset_last5_cb.isChecked()
+        new_preset["every"] = self.preset_every_spin.value()
+        new_preset["before"] = self.preset_before_spin.value()
         presets = [p for p in valid_presets(self.config.presets) if p["name"] != name]
         presets.append(new_preset)
         self.config.presets = presets
@@ -622,6 +642,9 @@ class SettingsDialog(QDialog):
         self.sound_file_edit.setText(c.sound_file)
 
         self._reload_preset_list()
+        self.preset_last5_cb.setChecked(c.alert_last_5_seconds)
+        self.preset_every_spin.setValue(c.sound_interval)
+        self.preset_before_spin.setValue(c.sound_alert_before)
 
         self._update_color_btn(self.btn_color_bg, c.color_bg)
         self._update_color_btn(self.btn_color_clock, c.color_clock)

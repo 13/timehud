@@ -102,11 +102,15 @@ class TimerEngine:
                 self._cd_remaining = float(self.config.interval_work)
             self._start_mono = self._clock()
             self.running = True
-            self._sound_beats = int(self.elapsed() / self.config.sound_interval)
-            self._sound_alert_before_beats = int(
-                (self.elapsed() + self.config.sound_alert_before)
-                / self.config.sound_interval
-            )
+            si = self.config.sound_interval
+            if si > 0:
+                self._sound_beats = int(self.elapsed() / si)
+                self._sound_alert_before_beats = int(
+                    (self.elapsed() + self.config.sound_alert_before) / si
+                )
+            else:   # 0 = periodic beeps off
+                self._sound_beats = 0
+                self._sound_alert_before_beats = 0
             if self._cycling():
                 self._cycle_beats = self._cycle_boundaries(self.elapsed())
 
@@ -195,6 +199,7 @@ class TimerEngine:
             and not self._cycling()
             and self.config.sound_enabled
             and self.config.sound_alert_before > 0
+            and self.config.sound_interval > 0
         ):
             ref = self.elapsed()
             next_beep = (int(ref / self.config.sound_interval) + 1) * self.config.sound_interval
@@ -294,6 +299,7 @@ class TimerEngine:
             and self.config.timer_mode != "interval"
             and not self._cycling()
             and self.config.sound_enabled
+            and self.config.sound_interval > 0
         ):
             ref = self.elapsed()
             if self.config.sound_alert_before > 0:
