@@ -19,8 +19,10 @@ Controls:
   R           – reset timer
   Ctrl+Q      – quit
 """
+import copy
 import datetime
 from collections.abc import Callable
+from dataclasses import asdict
 from PyQt6.QtCore import (
     Qt, QPoint, QTimer, QEvent, QVariantAnimation
 )
@@ -729,6 +731,9 @@ class OverlayWindow(QWidget):
     def _open_settings(self, tab: str | None = None) -> None:
         # Import here to avoid circular deps / speed up startup
         from timehud.settings_dialog import SettingsDialog
+
+        snapshot = copy.deepcopy(asdict(self.config))
+
         dlg = SettingsDialog(self.config, parent=None)
         if tab is not None:
             dlg.select_tab(tab)
@@ -765,7 +770,12 @@ class OverlayWindow(QWidget):
 
         if dlg.exec():
             update_ui()
-            self.config.save()
+        else:
+            # Cancel: live-applied changes are rolled back
+            for key, value in snapshot.items():
+                setattr(self.config, key, value)
+            update_ui()
+        self.config.save()
 
     def toggle_visibility(self) -> None:
         """Show or hide the overlay (used by global hotkeys)."""
