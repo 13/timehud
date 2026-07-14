@@ -3,7 +3,7 @@ import json
 import pytest
 
 import timehud.config as config_mod
-from timehud.config import Config, valid_presets
+from timehud.config import Config, interval_preset_rounds, valid_presets
 
 
 @pytest.fixture
@@ -51,3 +51,45 @@ class TestValidPresets:
 
     def test_bool_duration_rejected(self):
         assert valid_presets([{"name": "x", "duration": True}]) == []
+
+
+class TestIntervalPresets:
+    def test_valid_interval_preset_accepted(self):
+        p = {"name": "45/15 10min", "type": "interval", "work": 45, "rest": 15, "total": 600}
+        assert valid_presets([p]) == [p]
+
+    def test_zero_rest_allowed(self):
+        p = {"name": "30/0 20min", "type": "interval", "work": 30, "rest": 0, "total": 1200}
+        assert valid_presets([p]) == [p]
+
+    def test_malformed_interval_presets_filtered(self):
+        raw = [
+            {"name": "no total", "type": "interval", "work": 45, "rest": 15},
+            {"name": "zero work", "type": "interval", "work": 0, "rest": 15, "total": 600},
+            {"name": "neg rest", "type": "interval", "work": 45, "rest": -1, "total": 600},
+            {"name": "total lt work", "type": "interval", "work": 45, "rest": 15, "total": 30},
+            {"name": "bool work", "type": "interval", "work": True, "rest": 15, "total": 600},
+            {"name": "str total", "type": "interval", "work": 45, "rest": 15, "total": "600"},
+        ]
+        assert valid_presets(raw) == []
+
+    def test_mixed_list_keeps_both_kinds(self):
+        cd = {"name": "5 min", "duration": 300}
+        iv = {"name": "hiit", "type": "interval", "work": 45, "rest": 15, "total": 600}
+        assert valid_presets([cd, iv, {"junk": 1}]) == [cd, iv]
+
+    def test_rounds_from_total(self):
+        p = {"name": "x", "type": "interval", "work": 45, "rest": 15, "total": 600}
+        assert interval_preset_rounds(p) == 10        # 600 / 60
+
+    def test_rounds_zero_rest(self):
+        p = {"name": "x", "type": "interval", "work": 30, "rest": 0, "total": 1200}
+        assert interval_preset_rounds(p) == 40        # 1200 / 30
+
+    def test_rounds_at_least_one(self):
+        p = {"name": "x", "type": "interval", "work": 45, "rest": 15, "total": 45}
+        assert interval_preset_rounds(p) == 1
+
+    def test_rounds_truncates_partial_cycle(self):
+        p = {"name": "x", "type": "interval", "work": 45, "rest": 15, "total": 630}
+        assert interval_preset_rounds(p) == 10        # 630 // 60

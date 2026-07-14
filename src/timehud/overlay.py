@@ -23,7 +23,7 @@ import datetime
 from collections.abc import Callable
 from dataclasses import asdict
 from PyQt6.QtCore import (
-    Qt, QPoint, QTimer, QEvent, QVariantAnimation
+    Qt, QPoint, QTimer, QEvent, QEasingCurve, QVariantAnimation
 )
 from PyQt6.QtGui import (
     QAction, QActionGroup, QColor, QFont, QPainter, QPainterPath, QPen,
@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
     QApplication, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMenu,
     QPushButton, QVBoxLayout, QWidget,
 )
-from timehud.config import Config, valid_presets
+from timehud.config import Config, interval_preset_rounds, valid_presets
 from timehud.sound_manager import SoundManager
 from timehud.themes import THEMES, apply_theme, get_theme
 from timehud.timer_engine import TimerEngine, fmt_seconds
@@ -123,6 +123,7 @@ class OverlayWindow(QWidget):
         # Auto-hide controls
         self._controls_fx: QGraphicsOpacityEffect | None = None
         self._controls_anim: QVariantAnimation | None = None
+        self._controls_pos = 1.0   # 1.0 = fully unfolded, 0.0 = folded away
         self._hide_controls_timer = QTimer(self)
         self._hide_controls_timer.setSingleShot(True)
         self._hide_controls_timer.setInterval(2000)
@@ -485,9 +486,20 @@ class OverlayWindow(QWidget):
         self.config.save()
         self._update()
     def _apply_preset(self, preset: dict) -> None:
-        self.config.timer_mode = "countdown"
-        self.config.countdown_duration = int(preset["duration"])
-        self._last_cd_duration = self.config.countdown_duration
+        if preset.get("type") == "interval":
+            self.config.timer_mode = "interval"
+            self.config.interval_work = int(preset["work"])
+            self.config.interval_rest = int(preset["rest"])
+            self.config.interval_rounds = interval_preset_rounds(preset)
+            self._last_interval_cfg = (
+                self.config.interval_work,
+                self.config.interval_rest,
+                self.config.interval_rounds,
+            )
+        else:
+            self.config.timer_mode = "countdown"
+            self.config.countdown_duration = int(preset["duration"])
+            self._last_cd_duration = self.config.countdown_duration
         self.config.active_preset = preset["name"]
         self.engine.reset()
         self.btn_start.setText("▶")
@@ -500,9 +512,20 @@ class OverlayWindow(QWidget):
         name = name.strip()
         if not ok or not name:
             return
+        if self.config.timer_mode == "interval":
+            cfg = self.config
+            new_preset = {
+                "name": name,
+                "type": "interval",
+                "work": cfg.interval_work,
+                "rest": cfg.interval_rest,
+                "total": (cfg.interval_work + cfg.interval_rest) * cfg.interval_rounds,
+            }
+        else:
+            new_preset = {"name": name, "duration": int(self.config.countdown_duration)}
         # Same-name preset is overwritten (predictable rule per spec)
         presets = [p for p in valid_presets(self.config.presets) if p["name"] != name]
-        presets.append({"name": name, "duration": int(self.config.countdown_duration)})
+        presets.append(new_preset)
         self.config.presets = presets
         self.config.active_preset = name
         self._refresh_mode_label()
@@ -514,9 +537,11 @@ class OverlayWindow(QWidget):
             self.btn_mode.setText("SW")
         elif self.config.timer_mode == "interval":
             cfg = self.config
-            self.lbl_mode.setText(
-                f"INTERVAL {cfg.interval_work}s/{cfg.interval_rest}s ×{cfg.interval_rounds}"
-            )
+            base = f"{cfg.interval_work}s/{cfg.interval_rest}s ×{cfg.interval_rounds}"
+            if cfg.active_preset:
+                self.lbl_mode.setText(f"{cfg.active_preset.upper()} · {base}")
+            else:
+                self.lbl_mode.setText(f"INTERVAL {base}")
             self.btn_mode.setText("IV")
         else:
             dur = _fmt(self.config.countdown_duration)
@@ -688,16 +713,23 @@ class OverlayWindow(QWidget):
         if presets:
             preset_menu.addSeparator()
             for p in presets:
-                a = preset_menu.addAction(f'{p["name"]} {_fmt(p["duration"])}')
+                if p.get("type") == "interval":
+                    label = (
+                        f'{p["name"]} {p["work"]}/{p["rest"]} ×{interval_preset_rounds(p)}'
+                    )
+                else:
+                    label = f'{p["name"]} {_fmt(p["duration"])}'
+                a = preset_menu.addAction(label)
                 a.setCheckable(True)
+                preset_mode = "interval" if p.get("type") == "interval" else "countdown"
                 a.setChecked(
-                    self.config.timer_mode == "countdown"
+                    self.config.timer_mode == preset_mode
                     and self.config.active_preset == p["name"]
                 )
                 a.triggered.connect(lambda checked, p=p: self._apply_preset(p))
         preset_menu.addSeparator()
         act_save = preset_menu.addAction("Save current as preset…")
-        act_save.setEnabled(self.config.timer_mode == "countdown")
+        act_save.setEnabled(self.config.timer_mode in ("countdown", "interval"))
         act_save.triggered.connect(self._save_current_preset)
         act_manage = preset_menu.addAction("Manage presets…")
         act_manage.triggered.connect(lambda: self._open_settings(tab="presets"))
@@ -836,6 +868,8 @@ class OverlayWindow(QWidget):
                 self.progress_bar.hide()
             self.lbl_mode.setVisible(cfg.show_timer)
             self.ctrl_widget.setVisible(cfg.show_timer and cfg.show_controls)
+            if cfg.show_timer and cfg.show_controls:
+                self._reset_controls_fold()
 
             self._apply_button_sizes()
 
@@ -882,18 +916,40 @@ class OverlayWindow(QWidget):
         super().leaveEvent(event)
 
     def _fade_controls_to(self, target: float) -> None:
-        if self._controls_fx is None:
+        """Fold (0.0) or unfold (1.0) the control row, reclaiming its space."""
+        if self._controls_fx is None or self._controls_pos == target:
             return
         if self._controls_anim is not None:
             self._controls_anim.stop()
             self._controls_anim.deleteLater()
         anim = QVariantAnimation(self)
-        anim.setDuration(300)
-        anim.setStartValue(self._controls_fx.opacity())
+        anim.setDuration(400)
+        anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        anim.setStartValue(self._controls_pos)
         anim.setEndValue(target)
-        anim.valueChanged.connect(self._controls_fx.setOpacity)
+        anim.valueChanged.connect(self._controls_fold_step)
         anim.start()
         self._controls_anim = anim
+
+    def _controls_fold_step(self, value) -> None:
+        pos = float(value)
+        self._controls_pos = pos
+        self._controls_fx.setOpacity(pos)
+        natural = self.ctrl_widget.sizeHint().height()
+        self.ctrl_widget.setMaximumHeight(int(natural * pos))
+        self.adjustSize()
+
+    def _reset_controls_fold(self) -> None:
+        """Instantly restore the unfolded state (settings toggled controls on)."""
+        self._hide_controls_timer.stop()
+        if self._controls_anim is not None:
+            self._controls_anim.stop()
+            self._controls_anim.deleteLater()
+            self._controls_anim = None
+        self._controls_pos = 1.0
+        if self._controls_fx is not None:
+            self._controls_fx.setOpacity(1.0)
+        self.ctrl_widget.setMaximumHeight(16777215)
 
     def _pulse_timer_label(self) -> None:
         base = int(self.config.font_size * get_theme(self.config.theme).timer_scale)

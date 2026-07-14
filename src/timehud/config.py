@@ -85,16 +85,36 @@ class Config:
             return cls()
 
 
+def _is_int(value, minimum: int = 0) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+
+
 def valid_presets(presets: list) -> list:
-    """Filter out malformed preset entries (defensive against hand-edited config)."""
+    """Filter out malformed preset entries (defensive against hand-edited config).
+
+    Two shapes:
+      countdown: {"name": str, "duration": int > 0}
+      interval:  {"name": str, "type": "interval",
+                  "work": int > 0, "rest": int >= 0, "total": int >= work}
+    """
     out = []
     for p in presets:
-        if (
-            isinstance(p, dict)
-            and isinstance(p.get("name"), str)
-            and isinstance(p.get("duration"), int)
-            and not isinstance(p.get("duration"), bool)
-            and p["duration"] > 0
-        ):
+        if not isinstance(p, dict) or not isinstance(p.get("name"), str):
+            continue
+        if p.get("type") == "interval":
+            if (
+                _is_int(p.get("work"), 1)
+                and _is_int(p.get("rest"), 0)
+                and _is_int(p.get("total"), 1)
+                and p["total"] >= p["work"]
+            ):
+                out.append(p)
+        elif _is_int(p.get("duration"), 1):
             out.append(p)
     return out
+
+
+def interval_preset_rounds(preset: dict) -> int:
+    """Rounds that fit into the preset's total time (at least one)."""
+    cycle = preset["work"] + preset["rest"]
+    return max(1, preset["total"] // cycle)
