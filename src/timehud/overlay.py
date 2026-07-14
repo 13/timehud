@@ -577,10 +577,15 @@ class OverlayWindow(QWidget):
             self.config.save()
     def create_context_menu(self, include_window_actions: bool | None = None) -> QMenu:
         """Build and return the context menu (used by both overlay and tray)."""
+        menu = QMenu(self)
+        self._populate_context_menu(menu, include_window_actions)
+        return menu
+
+    def _populate_context_menu(
+        self, menu: QMenu, include_window_actions: bool | None = None
+    ) -> None:
         if include_window_actions is None:
             include_window_actions = self.config.show_tray_icon
-
-        menu = QMenu(self)
         menu.setStyleSheet(_MENU_STYLE)
         act_settings = menu.addAction("Settings…")
         # Lambda drops QAction.triggered's `checked` bool, which would
@@ -672,7 +677,7 @@ class OverlayWindow(QWidget):
             act_toggle.triggered.connect(self.toggle_visibility)
         act_quit = menu.addAction("Quit")
         act_quit.triggered.connect(self._quit_app)
-        return menu
+
     def contextMenuEvent(self, event) -> None:  # noqa: N802
         """Right-click context menu."""
         menu = self.create_context_menu()
