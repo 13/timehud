@@ -36,6 +36,11 @@ class Config:
     timer_mode: str = "stopwatch"
     countdown_duration: int = 300   # seconds (default 5 min)
 
+    # ── Interval mode ──────────────────────────────────────────────────────
+    interval_work: int = 40     # seconds of work per round
+    interval_rest: int = 20     # seconds of rest (0 = back-to-back rounds)
+    interval_rounds: int = 8
+
     # ── Sound ──────────────────────────────────────────────────────────────
     sound_enabled: bool = True
     sound_interval: int = 60   # play alert every N seconds of running time

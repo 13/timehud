@@ -21,6 +21,7 @@ Controls:
 """
 import datetime
 from collections.abc import Callable
+from dataclasses import asdict
 from PyQt6.QtCore import (
     Qt, QPoint, QTimer, QEvent, QVariantAnimation
 )
@@ -35,7 +36,10 @@ from PyQt6.QtWidgets import (
 from timehud.config import Config, valid_presets
 from timehud.sound_manager import SoundManager
 from timehud.themes import THEMES, apply_theme, get_theme
-from timehud.timer_engine import TimerEngine
+from timehud.timer_engine import TimerEngine, fmt_seconds
+
+_fmt = fmt_seconds
+
 # ── Palette ────────────────────────────────────────────────────────────────
 _SEP_COLOR = "rgba(255,255,255,35)"
 _BTN_STYLE = """
@@ -60,6 +64,43 @@ QMenu::item          { padding: 6px 22px; }
 QMenu::item:selected { background: #2E2E2E; color: #FFF; }
 QMenu::separator     { height: 1px; background: #333; margin: 3px 6px; }
 """
+
+
+class _ProgressBar(QWidget):
+    """Thin rounded bar showing remaining fraction of a countdown/phase."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._fraction = -1.0
+        self._color = QColor("#FFFFFF")
+        self.setFixedHeight(3)
+        self.hide()
+
+    def set_state(self, fraction: float, color: str) -> None:
+        qc = QColor(color)
+        # Visibility before the dedup return: update_ui may have hidden the
+        # bar while show_timer was off, with fraction/color unchanged.
+        self.setVisible(fraction >= 0.0)
+        if fraction == self._fraction and qc == self._color:
+            return
+        self._fraction = fraction
+        self._color = qc
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        if self._fraction < 0:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(255, 255, 255, 30))
+        p.drawRoundedRect(self.rect(), 1.5, 1.5)
+        w = int(self.width() * min(1.0, self._fraction))
+        if w > 0:
+            p.setBrush(self._color)
+            p.drawRoundedRect(0, 0, w, self.height(), 1.5, 1.5)
+
+
 class OverlayWindow(QWidget):
     """Transparent HUD overlay: clock + stopwatch / countdown."""
 
@@ -90,6 +131,12 @@ class OverlayWindow(QWidget):
         self._pulse_anim: QVariantAnimation | None = None
         # Track countdown duration to detect settings-driven changes
         self._last_cd_duration = config.countdown_duration
+        self._interval_label = ""
+        self._last_interval_cfg = (
+            config.interval_work,
+            config.interval_rest,
+            config.interval_rounds,
+        )
         # ── Drag state ────────────────────────────────────────────────────
         self._drag_offset: QPoint | None = None
         # ── Build ─────────────────────────────────────────────────────────
@@ -185,6 +232,8 @@ class OverlayWindow(QWidget):
         root.addWidget(sep)
         self.lbl_timer.setVisible(cfg.show_timer)
         root.addWidget(self.lbl_timer)
+        self.progress_bar = _ProgressBar()
+        root.addWidget(self.progress_bar)
         self.lbl_mode.setVisible(cfg.show_timer)
         root.addWidget(self.lbl_mode)
 
@@ -327,7 +376,25 @@ class OverlayWindow(QWidget):
         animate = result.state != "end" and not (
             self.config.timer_mode == "countdown" and result.display <= 6.5
         )
-        self._set_timer_color(colors[result.state], animate)
+        color = colors[result.state]
+        if result.phase == "rest" and result.state == "run":
+            color = theme.color_rest
+        self._set_timer_color(color, animate)
+
+        theme_bar_color = theme.color_clock
+        if result.state in ("warn", "end"):
+            theme_bar_color = theme.color_warn
+        elif result.phase == "rest":
+            theme_bar_color = theme.color_rest
+        self.progress_bar.set_state(result.progress, theme_bar_color)
+
+        if result.phase and not self.engine.is_idle():
+            label = f"{result.phase.upper()} {result.round}/{result.rounds}"
+            if label != self._interval_label:
+                self._interval_label = label
+                self.lbl_mode.setText(label)
+        else:
+            self._interval_label = ""
 
         if result.finished and not result.restarted:
             self.btn_start.setText("▶")
@@ -382,6 +449,7 @@ class OverlayWindow(QWidget):
         """Stop and zero the timer."""
         self.engine.reset()
         self.btn_start.setText("▶")
+        self._refresh_mode_label()
         self._update()
     def _sync_countdown_duration(self) -> None:
         """Resync engine remaining after countdown_duration changed in Settings."""
@@ -389,10 +457,23 @@ class OverlayWindow(QWidget):
             self._last_cd_duration = self.config.countdown_duration
             if not self.engine.running:
                 self.engine.adjust_countdown(0)   # stopped: reload from config
+    def _sync_interval_config(self) -> None:
+        """Reset the engine when interval settings change while stopped."""
+        cur = (
+            self.config.interval_work,
+            self.config.interval_rest,
+            self.config.interval_rounds,
+        )
+        if cur != self._last_interval_cfg:
+            self._last_interval_cfg = cur
+            if self.config.timer_mode == "interval" and not self.engine.running:
+                self.engine.reset()
+                self.btn_start.setText("▶")
     def _toggle_mode(self) -> None:
-        """Switch stopwatch ↔ countdown."""
-        new_mode = "countdown" if self.config.timer_mode == "stopwatch" else "stopwatch"
-        self.engine.set_mode(new_mode)
+        """Cycle stopwatch → countdown → interval."""
+        modes = ["stopwatch", "countdown", "interval"]
+        curr = modes.index(self.config.timer_mode) if self.config.timer_mode in modes else 0
+        self.engine.set_mode(modes[(curr + 1) % len(modes)])
         self.btn_start.setText("▶")
         self._refresh_mode_label()
         self.config.save()
@@ -427,9 +508,16 @@ class OverlayWindow(QWidget):
         self._refresh_mode_label()
         self.config.save()
     def _refresh_mode_label(self) -> None:
+        self._interval_label = ""   # force live label re-sync on next tick
         if self.config.timer_mode == "stopwatch":
             self.lbl_mode.setText("STOPWATCH")
             self.btn_mode.setText("SW")
+        elif self.config.timer_mode == "interval":
+            cfg = self.config
+            self.lbl_mode.setText(
+                f"INTERVAL {cfg.interval_work}s/{cfg.interval_rest}s ×{cfg.interval_rounds}"
+            )
+            self.btn_mode.setText("IV")
         else:
             dur = _fmt(self.config.countdown_duration)
             if self.config.active_preset:
@@ -509,7 +597,7 @@ class OverlayWindow(QWidget):
                         self._refresh_mode_label()
                         self._update()
                     else:
-                        modes = ["stopwatch", "countdown"]
+                        modes = ["stopwatch", "countdown", "interval"]
                         curr = modes.index(self.config.timer_mode) if self.config.timer_mode in modes else 0
                         new_mode = modes[(curr + (-1 if delta_wheel > 0 else 1)) % len(modes)]
                         if self.config.timer_mode != new_mode:
@@ -520,7 +608,7 @@ class OverlayWindow(QWidget):
                             self._update()
                 elif obj == self.lbl_timer:
                     delta = event.angleDelta().y()
-                    modes = ["stopwatch", "countdown"]
+                    modes = ["stopwatch", "countdown", "interval"]
                     curr = modes.index(self.config.timer_mode) if self.config.timer_mode in modes else 0
                     new_mode = modes[(curr + (-1 if delta > 0 else 1)) % len(modes)]
                     if self.config.timer_mode != new_mode:
@@ -574,10 +662,15 @@ class OverlayWindow(QWidget):
             self.config.save()
     def create_context_menu(self, include_window_actions: bool | None = None) -> QMenu:
         """Build and return the context menu (used by both overlay and tray)."""
+        menu = QMenu(self)
+        self._populate_context_menu(menu, include_window_actions)
+        return menu
+
+    def _populate_context_menu(
+        self, menu: QMenu, include_window_actions: bool | None = None
+    ) -> None:
         if include_window_actions is None:
             include_window_actions = self.config.show_tray_icon
-
-        menu = QMenu(self)
         menu.setStyleSheet(_MENU_STYLE)
         act_settings = menu.addAction("Settings…")
         # Lambda drops QAction.triggered's `checked` bool, which would
@@ -669,7 +762,7 @@ class OverlayWindow(QWidget):
             act_toggle.triggered.connect(self.toggle_visibility)
         act_quit = menu.addAction("Quit")
         act_quit.triggered.connect(self._quit_app)
-        return menu
+
     def contextMenuEvent(self, event) -> None:  # noqa: N802
         """Right-click context menu."""
         menu = self.create_context_menu()
@@ -721,6 +814,9 @@ class OverlayWindow(QWidget):
     def _open_settings(self, tab: str | None = None) -> None:
         # Import here to avoid circular deps / speed up startup
         from timehud.settings_dialog import SettingsDialog
+
+        snapshot = asdict(self.config)   # asdict deep-copies nested containers
+
         dlg = SettingsDialog(self.config, parent=None)
         if tab is not None:
             dlg.select_tab(tab)
@@ -731,10 +827,13 @@ class OverlayWindow(QWidget):
                 self.reset_timer()
 
             self._sync_countdown_duration()
+            self._sync_interval_config()
             self._apply_styles()
 
             self.lbl_clock.setVisible(cfg.show_clock)
             self.lbl_timer.setVisible(cfg.show_timer)
+            if not cfg.show_timer:
+                self.progress_bar.hide()
             self.lbl_mode.setVisible(cfg.show_timer)
             self.ctrl_widget.setVisible(cfg.show_timer and cfg.show_controls)
 
@@ -757,7 +856,12 @@ class OverlayWindow(QWidget):
 
         if dlg.exec():
             update_ui()
-            self.config.save()
+        else:
+            # Cancel: live-applied changes are rolled back
+            for key, value in snapshot.items():
+                setattr(self.config, key, value)
+            update_ui()
+        self.config.save()
 
     def toggle_visibility(self) -> None:
         """Show or hide the overlay (used by global hotkeys)."""
@@ -828,11 +932,3 @@ def _rgba(hex_color: str, alpha: float) -> str:
     h = hex_color.lstrip("#")
     r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
     return f"rgba({r},{g},{b},{int(alpha * 255)})"
-def _fmt(secs: float) -> str:
-    """Format seconds → HH:MM:SS (or MM:SS when < 1 h)."""
-    s = max(0, int(secs))
-    h, rem = divmod(s, 3600)
-    m, sec = divmod(rem, 60)
-    if h:
-        return f"{h:02d}:{m:02d}:{sec:02d}"
-    return f"{m:02d}:{sec:02d}"

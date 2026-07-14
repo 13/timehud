@@ -24,6 +24,20 @@ class TickResult:
     beeps: list = field(default_factory=list)
     finished: bool = False              # countdown hit zero on this tick
     restarted: bool = False             # auto_restart_countdown kicked in
+    phase: str = ""          # "work" | "rest" in interval mode, else ""
+    round: int = 0           # 1-based current round (interval mode)
+    rounds: int = 0          # configured rounds (interval mode)
+    progress: float = -1.0   # fraction of phase/countdown remaining; -1 = n/a
+
+
+def fmt_seconds(secs: float) -> str:
+    """Format seconds → MM:SS, or HH:MM:SS from one hour up."""
+    s = max(0, int(secs))
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    if h:
+        return f"{h:02d}:{m:02d}:{sec:02d}"
+    return f"{m:02d}:{sec:02d}"
 
 
 class TimerEngine:
@@ -37,6 +51,10 @@ class TimerEngine:
         self._sound_beats = 0
         self._sound_alert_before_beats = 0
         self._last_short_beep_sec = -1
+        self._phase = "work"
+        self._round = 1
+        if config.timer_mode == "interval":
+            self._cd_remaining = float(config.interval_work)
 
     # ── Queries ────────────────────────────────────────────────────────
     def elapsed(self) -> float:
@@ -57,6 +75,12 @@ class TimerEngine:
             return False
         if self.config.timer_mode == "stopwatch":
             return self._elapsed == 0.0
+        if self.config.timer_mode == "interval":
+            return (
+                self._phase == "work"
+                and self._round == 1
+                and self._cd_remaining == float(self.config.interval_work)
+            )
         return self._cd_remaining == float(self.config.countdown_duration)
 
     # ── Commands ───────────────────────────────────────────────────────
@@ -72,6 +96,10 @@ class TimerEngine:
         else:
             if self.config.timer_mode == "countdown" and self._cd_remaining <= 0:
                 self._cd_remaining = float(self.config.countdown_duration)
+            elif self.config.timer_mode == "interval" and self._cd_remaining <= 0:
+                self._phase = "work"
+                self._round = 1
+                self._cd_remaining = float(self.config.interval_work)
             self._start_mono = self._clock()
             self.running = True
             self._sound_beats = int(self.elapsed() / self.config.sound_interval)
@@ -87,6 +115,10 @@ class TimerEngine:
         self._sound_beats = 0
         self._sound_alert_before_beats = 0
         self._last_short_beep_sec = -1
+        self._phase = "work"
+        self._round = 1
+        if self.config.timer_mode == "interval":
+            self._cd_remaining = float(self.config.interval_work)
 
     def set_mode(self, mode: str) -> None:
         self.config.timer_mode = mode
@@ -100,6 +132,34 @@ class TimerEngine:
         else:
             self._cd_remaining = float(self.config.countdown_duration)
 
+    def _phase_duration(self) -> float:
+        if self._phase == "rest":
+            return float(self.config.interval_rest)
+        return float(self.config.interval_work)
+
+    def _advance_phase(self):
+        """Move to the next interval phase. Returns (beep | None, session_done)."""
+        if self._phase == "work":
+            if self._round >= self.config.interval_rounds:
+                self.running = False
+                self._cd_remaining = 0.0
+                return None, True
+            if self.config.interval_rest > 0:
+                self._phase = "rest"
+                self._cd_remaining = float(self.config.interval_rest)
+            else:
+                self._round += 1
+                self._cd_remaining = float(self.config.interval_work)
+            self._start_mono = self._clock()
+            self._last_short_beep_sec = -1
+            return (Beep(double=True) if self._phase == "rest" else Beep()), False
+        self._phase = "work"
+        self._round += 1
+        self._cd_remaining = float(self.config.interval_work)
+        self._start_mono = self._clock()
+        self._last_short_beep_sec = -1
+        return Beep(), False
+
     # ── Tick ───────────────────────────────────────────────────────────
     def tick(self) -> TickResult:
         beeps: list[Beep] = []
@@ -108,7 +168,7 @@ class TimerEngine:
 
         # Warn window: sound_alert_before seconds before the next interval beep
         warn = False
-        if self.running and self.config.sound_enabled and self.config.sound_alert_before > 0:
+        if self.running and self.config.timer_mode != "interval" and self.config.sound_enabled and self.config.sound_alert_before > 0:
             ref = self.elapsed()
             next_beep = (int(ref / self.config.sound_interval) + 1) * self.config.sound_interval
             warn = next_beep - self.config.sound_alert_before <= ref < next_beep
@@ -118,6 +178,31 @@ class TimerEngine:
             state = "run" if self.running else "pause"
             if state == "run" and warn:
                 state = "warn"
+        elif self.config.timer_mode == "interval":
+            remaining = self.remaining()
+            display = max(0.0, remaining)
+            if remaining <= 0:
+                if self.running:
+                    transition_beep, done = self._advance_phase()
+                    if transition_beep is not None:
+                        beeps.append(transition_beep)
+                    if done:
+                        finished = True
+                        state = "end"
+                    else:
+                        remaining = self.remaining()
+                        display = max(0.0, remaining)
+                        state = "run"
+                else:
+                    state = "end"     # finished session parked at 00:00
+            elif self.running and remaining <= 6.0 and self.config.alert_last_5_seconds:
+                sec_display = int(math.ceil(display))
+                state = "warn"
+                if sec_display != self._last_short_beep_sec and 2 <= sec_display <= 6:
+                    self._last_short_beep_sec = sec_display
+                    beeps.append(Beep(short=True))
+            else:
+                state = "run" if self.running else "pause"
         else:
             remaining = self.remaining()
             display = max(0.0, remaining)
@@ -145,7 +230,7 @@ class TimerEngine:
                     state = "warn"
 
         # Periodic interval beeps
-        if self.running and self.config.sound_enabled:
+        if self.running and self.config.timer_mode != "interval" and self.config.sound_enabled:
             ref = self.elapsed()
             if self.config.sound_alert_before > 0:
                 target = (
@@ -160,7 +245,20 @@ class TimerEngine:
                 self._sound_beats = beats
                 beeps.append(Beep())
 
+        progress = -1.0
+        if self.config.timer_mode == "countdown" and self.config.countdown_duration > 0:
+            progress = max(0.0, min(1.0, display / self.config.countdown_duration))
+        elif self.config.timer_mode == "interval":
+            dur = self._phase_duration()
+            if dur > 0:
+                progress = max(0.0, min(1.0, display / dur))
+
+        in_interval = self.config.timer_mode == "interval"
         return TickResult(
             display=display, state=state, beeps=beeps,
             finished=finished, restarted=restarted,
+            phase=self._phase if in_interval else "",
+            round=self._round if in_interval else 0,
+            rounds=self.config.interval_rounds if in_interval else 0,
+            progress=progress,
         )

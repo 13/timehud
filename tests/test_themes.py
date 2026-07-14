@@ -31,6 +31,7 @@ class TestClassicMatchesLegacyLook:
         assert t.color_timer_pause == "#888888"
         assert t.color_warn == "#FF9900"
         assert t.color_end == "#FF3333"
+        assert t.color_rest == "#4FA8FF"
         assert t.show_separator is True
         assert t.clock_scale == 1.0
         assert t.timer_scale == 1.25
@@ -60,3 +61,15 @@ class TestApplyTheme:
 
     def test_default_config_theme_is_classic(self):
         assert Config().theme == "classic"
+
+
+class TestColorRest:
+    def test_all_themes_have_color_rest(self):
+        expected = {
+            "classic": "#4FA8FF",
+            "terminal": "#60A5FA",
+            "glass": "#93C5FD",
+            "mono": "#B0BEC5",
+        }
+        for name, color in expected.items():
+            assert THEMES[name].color_rest == color

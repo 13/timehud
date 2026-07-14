@@ -32,6 +32,7 @@ if "--wayland" not in sys.argv:
     os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
 from PyQt6.QtWidgets import QApplication  # noqa: E402 (after env var)
+from PyQt6.QtWidgets import QMenu
 from PyQt6.QtWidgets import QSystemTrayIcon
 from PyQt6.QtGui import QIcon
 
@@ -143,7 +144,17 @@ def main() -> None:
                 tray_icon.setToolTip("TimeHUD")
                 tray_icon.activated.connect(_on_tray_activated)
 
-            tray_icon.setContextMenu(window.create_context_menu())
+            if tray_icon.contextMenu() is None:
+                tray_menu = QMenu()
+
+                def _rebuild_tray_menu() -> None:
+                    tray_menu.clear()
+                    window._populate_context_menu(tray_menu, include_window_actions=True)
+
+                tray_menu.aboutToShow.connect(_rebuild_tray_menu)
+                _rebuild_tray_menu()
+                tray_icon.setContextMenu(tray_menu)
+
             tray_icon.show()
         elif tray_icon is not None:
             tray_icon.hide()

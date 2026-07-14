@@ -16,6 +16,7 @@ import os
 
 from timehud.config import Config, valid_presets
 from timehud.themes import THEMES, apply_theme
+from timehud.timer_engine import fmt_seconds
 
 
 _DARK_STYLE = """
@@ -192,7 +193,7 @@ class SettingsDialog(QDialog):
         form.setContentsMargins(16, 16, 16, 16)
 
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["stopwatch", "countdown"])
+        self.mode_combo.addItems(["stopwatch", "countdown", "interval"])
         form.addRow("Default mode:", self.mode_combo)
 
         self.countdown_spin = QSpinBox()
@@ -209,6 +210,20 @@ class SettingsDialog(QDialog):
 
         self.auto_restart_countdown_cb = QCheckBox("Restart countdown automatically")
         form.addRow(self.auto_restart_countdown_cb)
+
+        self.interval_work_spin = QSpinBox()
+        self.interval_work_spin.setRange(5, 3600)
+        self.interval_work_spin.setSuffix(" s")
+        form.addRow("Interval work:", self.interval_work_spin)
+
+        self.interval_rest_spin = QSpinBox()
+        self.interval_rest_spin.setRange(0, 3600)
+        self.interval_rest_spin.setSuffix(" s")
+        form.addRow("Interval rest:", self.interval_rest_spin)
+
+        self.interval_rounds_spin = QSpinBox()
+        self.interval_rounds_spin.setRange(1, 99)
+        form.addRow("Interval rounds:", self.interval_rounds_spin)
 
         return tab
 
@@ -339,8 +354,7 @@ class SettingsDialog(QDialog):
     def _reload_preset_list(self) -> None:
         self.preset_list.clear()
         for p in valid_presets(self.config.presets):
-            m, s = divmod(p["duration"], 60)
-            self.preset_list.addItem(f'{p["name"]}  —  {m:02d}:{s:02d}')
+            self.preset_list.addItem(f'{p["name"]}  —  {fmt_seconds(p["duration"])}')
 
     def _preset_selected(self, row: int) -> None:
         presets = valid_presets(self.config.presets)
@@ -422,6 +436,9 @@ class SettingsDialog(QDialog):
         self.show_timer_cb.toggled.connect(_on_show_timer_toggled)
         self.mode_combo.currentIndexChanged.connect(_emit_if_valid)
         self.countdown_spin.valueChanged.connect(_emit_if_valid)
+        self.interval_work_spin.valueChanged.connect(_emit_if_valid)
+        self.interval_rest_spin.valueChanged.connect(_emit_if_valid)
+        self.interval_rounds_spin.valueChanged.connect(_emit_if_valid)
         self.sound_alert_before_spin.valueChanged.connect(_emit_if_valid)
 
     def _apply_to_config(self):
@@ -439,6 +456,9 @@ class SettingsDialog(QDialog):
             c.active_preset = ""   # duration changed manually → preset no longer applies
         c.countdown_duration  = self.countdown_spin.value()
         c.auto_restart_countdown = self.auto_restart_countdown_cb.isChecked()
+        c.interval_work   = self.interval_work_spin.value()
+        c.interval_rest   = self.interval_rest_spin.value()
+        c.interval_rounds = self.interval_rounds_spin.value()
         c.sound_enabled  = self.sound_enabled_cb.isChecked()
         c.alert_last_5_seconds = self.alert_last_5_seconds_cb.isChecked()
         c.sound_interval = self.sound_interval_spin.value()
@@ -467,6 +487,9 @@ class SettingsDialog(QDialog):
         self.countdown_spin.setValue(c.countdown_duration)
         self._update_cd_note(c.countdown_duration)
         self.auto_restart_countdown_cb.setChecked(c.auto_restart_countdown)
+        self.interval_work_spin.setValue(c.interval_work)
+        self.interval_rest_spin.setValue(c.interval_rest)
+        self.interval_rounds_spin.setValue(c.interval_rounds)
 
         self.sound_enabled_cb.setChecked(c.sound_enabled)
         self.alert_last_5_seconds_cb.setChecked(c.alert_last_5_seconds)
