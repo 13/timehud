@@ -35,7 +35,10 @@ from PyQt6.QtWidgets import (
 from timehud.config import Config, valid_presets
 from timehud.sound_manager import SoundManager
 from timehud.themes import THEMES, apply_theme, get_theme
-from timehud.timer_engine import TimerEngine
+from timehud.timer_engine import TimerEngine, fmt_seconds
+
+_fmt = fmt_seconds
+
 # ── Palette ────────────────────────────────────────────────────────────────
 _SEP_COLOR = "rgba(255,255,255,35)"
 _BTN_STYLE = """
@@ -828,11 +831,3 @@ def _rgba(hex_color: str, alpha: float) -> str:
     h = hex_color.lstrip("#")
     r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
     return f"rgba({r},{g},{b},{int(alpha * 255)})"
-def _fmt(secs: float) -> str:
-    """Format seconds → HH:MM:SS (or MM:SS when < 1 h)."""
-    s = max(0, int(secs))
-    h, rem = divmod(s, 3600)
-    m, sec = divmod(rem, 60)
-    if h:
-        return f"{h:02d}:{m:02d}:{sec:02d}"
-    return f"{m:02d}:{sec:02d}"

@@ -16,6 +16,7 @@ import os
 
 from timehud.config import Config, valid_presets
 from timehud.themes import THEMES, apply_theme
+from timehud.timer_engine import fmt_seconds
 
 
 _DARK_STYLE = """
@@ -339,8 +340,7 @@ class SettingsDialog(QDialog):
     def _reload_preset_list(self) -> None:
         self.preset_list.clear()
         for p in valid_presets(self.config.presets):
-            m, s = divmod(p["duration"], 60)
-            self.preset_list.addItem(f'{p["name"]}  —  {m:02d}:{s:02d}')
+            self.preset_list.addItem(f'{p["name"]}  —  {fmt_seconds(p["duration"])}')
 
     def _preset_selected(self, row: int) -> None:
         presets = valid_presets(self.config.presets)

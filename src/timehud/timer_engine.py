@@ -26,6 +26,16 @@ class TickResult:
     restarted: bool = False             # auto_restart_countdown kicked in
 
 
+def fmt_seconds(secs: float) -> str:
+    """Format seconds → MM:SS, or HH:MM:SS from one hour up."""
+    s = max(0, int(secs))
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    if h:
+        return f"{h:02d}:{m:02d}:{sec:02d}"
+    return f"{m:02d}:{sec:02d}"
+
+
 class TimerEngine:
     def __init__(self, config, clock=time.monotonic) -> None:
         self.config = config

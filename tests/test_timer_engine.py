@@ -1,6 +1,6 @@
 import pytest
 
-from timehud.timer_engine import TimerEngine
+from timehud.timer_engine import TimerEngine, fmt_seconds
 
 
 @pytest.fixture
@@ -230,3 +230,22 @@ class TestIsIdle:
         clock.advance(3)
         e.toggle()
         assert e.is_idle() is False
+
+
+class TestFmtSeconds:
+    def test_under_a_minute(self):
+        assert fmt_seconds(59) == "00:59"
+
+    def test_minutes(self):
+        assert fmt_seconds(61) == "01:01"
+        assert fmt_seconds(300) == "05:00"
+
+    def test_hour_boundary(self):
+        assert fmt_seconds(3599) == "59:59"
+        assert fmt_seconds(3600) == "01:00:00"
+
+    def test_large(self):
+        assert fmt_seconds(86399) == "23:59:59"
+
+    def test_negative_clamps_to_zero(self):
+        assert fmt_seconds(-3) == "00:00"
