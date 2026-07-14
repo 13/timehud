@@ -67,12 +67,18 @@ QMenu::separator     { height: 1px; background: #333; margin: 3px 6px; }
 
 
 class _ProgressBar(QWidget):
-    """Thin rounded bar showing remaining fraction of a countdown/phase."""
+    """Thin rounded bar showing remaining fraction of a countdown/phase.
+
+    Successive tick fractions are interpolated over ~one tick period so the
+    fill moves continuously instead of stepping at 10 fps.
+    """
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self._fraction = -1.0
+        self._fraction = -1.0          # latest target from the engine
+        self._display_fraction = -1.0  # what paintEvent draws (animated)
         self._color = QColor("#FFFFFF")
+        self._anim: QVariantAnimation | None = None
         self.setFixedHeight(3)
         self.hide()
 
@@ -83,19 +89,39 @@ class _ProgressBar(QWidget):
         self.setVisible(fraction >= 0.0)
         if fraction == self._fraction and qc == self._color:
             return
+        previous = self._display_fraction
         self._fraction = fraction
         self._color = qc
+        if self._anim is not None:
+            self._anim.stop()
+            self._anim.deleteLater()
+            self._anim = None
+        # Snap on hide/reset/large jumps; glide between adjacent ticks
+        if fraction < 0 or previous < 0 or abs(fraction - previous) > 0.2:
+            self._display_fraction = fraction
+            self.update()
+            return
+        anim = QVariantAnimation(self)
+        anim.setDuration(120)
+        anim.setStartValue(previous)
+        anim.setEndValue(fraction)
+        anim.valueChanged.connect(self._on_anim_step)
+        anim.start()
+        self._anim = anim
+
+    def _on_anim_step(self, value) -> None:
+        self._display_fraction = float(value)
         self.update()
 
     def paintEvent(self, _event) -> None:  # noqa: N802
-        if self._fraction < 0:
+        if self._display_fraction < 0:
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(255, 255, 255, 30))
         p.drawRoundedRect(self.rect(), 1.5, 1.5)
-        w = int(self.width() * min(1.0, self._fraction))
+        w = int(self.width() * min(1.0, self._display_fraction))
         if w > 0:
             p.setBrush(self._color)
             p.drawRoundedRect(0, 0, w, self.height(), 1.5, 1.5)
@@ -134,8 +160,10 @@ class OverlayWindow(QWidget):
         self._last_cd_duration = config.countdown_duration
         self._interval_label = ""
         # Border-style progress (painted in paintEvent)
-        self._border_fraction = -1.0
+        self._border_fraction = -1.0        # latest target from the engine
+        self._border_display = -1.0         # what paintEvent draws (animated)
         self._border_color = ""
+        self._border_anim: QVariantAnimation | None = None
         self._last_interval_cfg = (
             config.interval_work,
             config.interval_rest,
@@ -181,7 +209,7 @@ class OverlayWindow(QWidget):
         root = self.layout()
         if root is None:
             root = QVBoxLayout(self)
-        root.setContentsMargins(16, 12, 16, 10)
+        # Margins come from config.padding via _apply_styles (called below)
         root.setSpacing(0)
         cfg = self.config
         # ── Clock row ─────────────────────────────────────────────────────
@@ -275,6 +303,10 @@ class OverlayWindow(QWidget):
         fs = cfg.font_size
         ff = theme.font_family or cfg.font_family or "Monospace"
 
+        # padding=12 reproduces the historical (16, 12, 16, 10) margins
+        pad = cfg.padding
+        self.layout().setContentsMargins(pad + 4, pad, pad + 4, max(0, pad - 2))
+
         def make_font(size: int, bold: bool = True) -> QFont:
             f = QFont(ff, -1)
             f.setPixelSize(size)
@@ -288,6 +320,33 @@ class OverlayWindow(QWidget):
         self.lbl_timer.setFont(make_font(int(fs * theme.timer_scale)))
         self.lbl_mode.setFont(make_font(max(10, fs // 3), bold=False))
         self.sep.setVisible(cfg.show_timer and theme.show_separator)
+
+    def _set_border_progress(self, fraction: float, color: str) -> None:
+        """Update border progress, gliding between adjacent tick fractions."""
+        if (fraction, color) == (self._border_fraction, self._border_color):
+            return
+        previous = self._border_display
+        self._border_fraction = fraction
+        self._border_color = color
+        if self._border_anim is not None:
+            self._border_anim.stop()
+            self._border_anim.deleteLater()
+            self._border_anim = None
+        if fraction < 0 or previous < 0 or abs(fraction - previous) > 0.2:
+            self._border_display = fraction
+            self.update()
+            return
+        anim = QVariantAnimation(self)
+        anim.setDuration(120)
+        anim.setStartValue(previous)
+        anim.setEndValue(fraction)
+        anim.valueChanged.connect(self._on_border_step)
+        anim.start()
+        self._border_anim = anim
+
+    def _on_border_step(self, value) -> None:
+        self._border_display = float(value)
+        self.update()
 
     def _has_custom_pos(self) -> bool:
         """True when the user dragged the overlay to a custom position."""
@@ -402,10 +461,7 @@ class OverlayWindow(QWidget):
         line_fraction = result.progress if style == "line" else -1.0
         self.progress_bar.set_state(line_fraction, theme_bar_color)
         border_fraction = result.progress if style == "border" else -1.0
-        if (border_fraction, theme_bar_color) != (self._border_fraction, self._border_color):
-            self._border_fraction = border_fraction
-            self._border_color = theme_bar_color
-            self.update()
+        self._set_border_progress(border_fraction, theme_bar_color)
 
         if result.phase and not self.engine.is_idle():
             label = f"{result.phase.upper()} {result.round}/{result.rounds}"
@@ -513,6 +569,7 @@ class OverlayWindow(QWidget):
                 self.config.sound_enabled = True
             else:
                 self.config.sound_enabled = False
+            self.config.sound_alert_before = preset.get("alert_before", 0)
         elif preset.get("type") == "interval":
             self.config.timer_mode = "interval"
             self.config.interval_work = int(preset["work"])
@@ -550,7 +607,13 @@ class OverlayWindow(QWidget):
             }
         elif self.config.timer_mode == "stopwatch":
             interval = self.config.sound_interval if self.config.sound_enabled else 0
-            new_preset = {"name": name, "type": "stopwatch", "interval": interval}
+            new_preset = {
+                "name": name,
+                "type": "stopwatch",
+                "interval": interval,
+                # A silent preset has no beeps to pre-announce
+                "alert_before": self.config.sound_alert_before if interval > 0 else 0,
+            }
         else:
             new_preset = {"name": name, "duration": int(self.config.countdown_duration)}
         # Same-name preset is overwritten (predictable rule per spec)
@@ -603,13 +666,13 @@ class OverlayWindow(QWidget):
         if theme.top_edge_alpha > 0:
             p.setPen(QPen(QColor(255, 255, 255, theme.top_edge_alpha)))
             p.drawLine(r, 1, self.width() - r, 1)
-        if self._border_fraction > 0:
+        if self._border_display > 0:
             # Progress traced along the window outline (border style)
             outline = QPainterPath()
             outline.addRoundedRect(
                 1.0, 1.0, self.width() - 2.0, self.height() - 2.0, r, r
             )
-            frac = min(1.0, self._border_fraction)
+            frac = min(1.0, self._border_display)
             pen = QPen(QColor(self._border_color))
             pen.setWidthF(2.0)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
@@ -771,6 +834,8 @@ class OverlayWindow(QWidget):
                 elif p.get("type") == "stopwatch":
                     if p["interval"] > 0:
                         label = f'{p["name"]} every {p["interval"]}s'
+                        if p.get("alert_before", 0) > 0:
+                            label += f' (−{p["alert_before"]}s pre-beep)'
                     else:
                         label = f'{p["name"]} silent'
                 else:
@@ -923,7 +988,8 @@ class OverlayWindow(QWidget):
             self.lbl_timer.setVisible(cfg.show_timer)
             if not cfg.show_timer:
                 self.progress_bar.hide()
-                self._border_fraction = -1.0
+                # Stops any in-flight border animation and snaps to hidden
+                self._set_border_progress(-1.0, self._border_color)
                 self.update()
             self.lbl_mode.setVisible(cfg.show_timer)
             self.ctrl_widget.setVisible(cfg.show_timer and cfg.show_controls)

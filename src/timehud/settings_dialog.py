@@ -136,6 +136,12 @@ class SettingsDialog(QDialog):
         self.font_size_spin.setSuffix(" px")
         form.addRow("Font size:", self.font_size_spin)
 
+        self.padding_spin = QSpinBox()
+        self.padding_spin.setRange(2, 40)
+        self.padding_spin.setSuffix(" px")
+        self.padding_spin.setToolTip("Space between the window border and the text")
+        form.addRow("Padding:", self.padding_spin)
+
         # Font family
         self.font_family_edit = QLineEdit()
         self.font_family_edit.setPlaceholderText("e.g. Monospace, JetBrains Mono")
@@ -283,7 +289,12 @@ class SettingsDialog(QDialog):
         self.preset_swint_spin.setRange(0, 3600)
         self.preset_swint_spin.setSuffix(" s beep interval (0 = silent)")
         self.preset_swint_spin.setValue(60)
+        self.preset_swpre_spin = QSpinBox()
+        self.preset_swpre_spin.setRange(0, 60)
+        self.preset_swpre_spin.setSuffix(" s pre-beep (0 = off)")
+        self.preset_swpre_spin.setValue(0)
         sw_row.addWidget(self.preset_swint_spin)
+        sw_row.addWidget(self.preset_swpre_spin)
         self._preset_sw_row = QWidget()
         self._preset_sw_row.setLayout(sw_row)
         self._preset_sw_row.hide()
@@ -428,6 +439,7 @@ class SettingsDialog(QDialog):
         elif p.get("type") == "stopwatch":
             self.preset_type_combo.setCurrentText("stopwatch")
             self.preset_swint_spin.setValue(p["interval"])
+            self.preset_swpre_spin.setValue(p.get("alert_before", 0))
         else:
             self.preset_type_combo.setCurrentText("countdown")
             self.preset_dur_spin.setValue(p["duration"])
@@ -446,10 +458,13 @@ class SettingsDialog(QDialog):
                 "total": self.preset_total_spin.value() * 60,
             }
         elif kind == "stopwatch":
+            interval = self.preset_swint_spin.value()
             new_preset = {
                 "name": name,
                 "type": "stopwatch",
-                "interval": self.preset_swint_spin.value(),
+                "interval": interval,
+                # A silent preset has no beeps to pre-announce
+                "alert_before": self.preset_swpre_spin.value() if interval > 0 else 0,
             }
         else:
             new_preset = {"name": name, "duration": self.preset_dur_spin.value()}
@@ -515,6 +530,7 @@ class SettingsDialog(QDialog):
         self.theme_combo.currentIndexChanged.connect(_on_theme_changed)
         self.position_combo.currentIndexChanged.connect(_emit_if_valid)
         self.font_size_spin.valueChanged.connect(_emit_if_valid)
+        self.padding_spin.valueChanged.connect(_emit_if_valid)
         self.font_family_edit.textChanged.connect(_emit_if_valid)
         self.opacity_slider.valueChanged.connect(_emit_if_valid)
         self.show_tray_icon_cb.toggled.connect(_emit_if_valid)
@@ -533,6 +549,7 @@ class SettingsDialog(QDialog):
         c = self.config
         c.position    = self.position_combo.currentText()
         c.font_size   = self.font_size_spin.value()
+        c.padding     = self.padding_spin.value()
         c.font_family = self.font_family_edit.text() or "Monospace"
         c.opacity     = self.opacity_slider.value() / 100.0
         c.show_tray_icon = self.show_tray_icon_cb.isChecked()
@@ -551,8 +568,9 @@ class SettingsDialog(QDialog):
         if c.timer_mode == "stopwatch" and (
             self.sound_interval_spin.value() != c.sound_interval
             or self.sound_enabled_cb.isChecked() != c.sound_enabled
+            or self.sound_alert_before_spin.value() != c.sound_alert_before
         ):
-            c.active_preset = ""   # stopwatch preset identity is its beep interval
+            c.active_preset = ""   # stopwatch preset identity is its beep settings
         c.countdown_duration  = self.countdown_spin.value()
         c.auto_restart_countdown = self.auto_restart_countdown_cb.isChecked()
         c.interval_work   = self.interval_work_spin.value()
@@ -575,6 +593,7 @@ class SettingsDialog(QDialog):
         self.position_combo.setCurrentIndex(max(0, idx))
 
         self.font_size_spin.setValue(c.font_size)
+        self.padding_spin.setValue(c.padding)
         self.font_family_edit.setText(c.font_family)
         self.opacity_slider.setValue(int(c.opacity * 100))
         self.show_tray_icon_cb.setChecked(c.show_tray_icon)

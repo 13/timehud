@@ -113,6 +113,22 @@ class TestStopwatchPresets:
         ]
         assert valid_presets(raw) == []
 
+    def test_alert_before_field_accepted(self):
+        p = {"name": "laps", "type": "stopwatch", "interval": 60, "alert_before": 5}
+        assert valid_presets([p]) == [p]
+
+    def test_alert_before_optional(self):
+        p = {"name": "laps", "type": "stopwatch", "interval": 60}
+        assert valid_presets([p]) == [p]
+
+    def test_malformed_alert_before_filtered(self):
+        raw = [
+            {"name": "neg", "type": "stopwatch", "interval": 60, "alert_before": -1},
+            {"name": "bool", "type": "stopwatch", "interval": 60, "alert_before": True},
+            {"name": "str", "type": "stopwatch", "interval": 60, "alert_before": "5"},
+        ]
+        assert valid_presets(raw) == []
+
     def test_all_three_kinds_coexist(self):
         cd = {"name": "5 min", "duration": 300}
         iv = {"name": "hiit", "type": "interval", "work": 45, "rest": 15, "total": 600}
