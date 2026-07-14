@@ -458,11 +458,13 @@ class SettingsDialog(QDialog):
                 "total": self.preset_total_spin.value() * 60,
             }
         elif kind == "stopwatch":
+            interval = self.preset_swint_spin.value()
             new_preset = {
                 "name": name,
                 "type": "stopwatch",
-                "interval": self.preset_swint_spin.value(),
-                "alert_before": self.preset_swpre_spin.value(),
+                "interval": interval,
+                # A silent preset has no beeps to pre-announce
+                "alert_before": self.preset_swpre_spin.value() if interval > 0 else 0,
             }
         else:
             new_preset = {"name": name, "duration": self.preset_dur_spin.value()}

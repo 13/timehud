@@ -611,7 +611,8 @@ class OverlayWindow(QWidget):
                 "name": name,
                 "type": "stopwatch",
                 "interval": interval,
-                "alert_before": self.config.sound_alert_before,
+                # A silent preset has no beeps to pre-announce
+                "alert_before": self.config.sound_alert_before if interval > 0 else 0,
             }
         else:
             new_preset = {"name": name, "duration": int(self.config.countdown_duration)}
@@ -987,8 +988,8 @@ class OverlayWindow(QWidget):
             self.lbl_timer.setVisible(cfg.show_timer)
             if not cfg.show_timer:
                 self.progress_bar.hide()
-                self._border_fraction = -1.0
-                self._border_display = -1.0
+                # Stops any in-flight border animation and snaps to hidden
+                self._set_border_progress(-1.0, self._border_color)
                 self.update()
             self.lbl_mode.setVisible(cfg.show_timer)
             self.ctrl_widget.setVisible(cfg.show_timer and cfg.show_controls)
