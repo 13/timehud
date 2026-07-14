@@ -66,6 +66,7 @@ class Config:
     theme: str = "classic"   # built-in theme name; see timehud/themes.py
     progress_style: str = "line"   # countdown/interval progress: line | border | off
     padding: int = 12        # space between window border and content, px
+    padding_top: int = -1    # top padding override, px; -1 = same as padding
 
     # ──────────────────────────────────────────────────────────────────────
 
