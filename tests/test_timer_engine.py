@@ -232,6 +232,134 @@ class TestIsIdle:
         assert e.is_idle() is False
 
 
+class TestInterval:
+    @pytest.fixture
+    def engine(self, config, clock):
+        config.timer_mode = "interval"
+        config.interval_work = 40
+        config.interval_rest = 20
+        config.interval_rounds = 3
+        config.sound_enabled = True
+        config.sound_interval = 60           # must NOT fire in interval mode
+        config.alert_last_5_seconds = False
+        return TimerEngine(config, clock=clock)
+
+    def test_idle_start(self, engine):
+        assert engine.is_idle() is True
+        r = engine.tick()
+        assert r.phase == "work" and r.round == 1 and r.rounds == 3
+        assert r.display == pytest.approx(40)
+
+    def test_work_to_rest_transition(self, engine, clock):
+        engine.toggle()
+        clock.advance(40.05)
+        r = engine.tick()
+        assert r.phase == "rest" and r.round == 1
+        assert [b for b in r.beeps if b.double], "work->rest must double-beep"
+        assert r.display == pytest.approx(20, abs=0.1)
+
+    def test_rest_to_work_advances_round(self, engine, clock):
+        engine.toggle()
+        clock.advance(40.05)
+        engine.tick()
+        clock.advance(20.05)
+        r = engine.tick()
+        assert r.phase == "work" and r.round == 2
+        assert [b for b in r.beeps if not b.short and not b.double]
+
+    def test_session_finish_skips_last_rest(self, engine, clock):
+        engine.toggle()
+        # 3 rounds: W R W R W -> end (no trailing rest)
+        for _ in range(2):
+            clock.advance(40.05)
+            engine.tick()   # work ends
+            clock.advance(20.05)
+            engine.tick()   # rest ends
+        clock.advance(40.05)
+        r = engine.tick()
+        assert r.finished is True and r.state == "end"
+        assert engine.running is False
+        # parked at zero afterwards
+        r2 = engine.tick()
+        assert r2.state == "end" and r2.display == 0.0
+
+    def test_zero_rest_back_to_back(self, engine, clock):
+        engine.config.interval_rest = 0
+        engine.reset()
+        engine.toggle()
+        clock.advance(40.05)
+        r = engine.tick()
+        assert r.phase == "work" and r.round == 2
+        assert [b for b in r.beeps if not b.double and not b.short]
+
+    def test_no_periodic_beeps_in_interval(self, engine, clock):
+        engine.toggle()
+        beeps = collect_beeps(engine, clock, 39)   # crosses nothing, sound_interval=60 would... stay silent
+        assert beeps == []
+
+    def test_last5_shorts_no_long(self, engine, clock):
+        engine.config.alert_last_5_seconds = True
+        engine.reset()
+        engine.toggle()
+        beeps = collect_beeps(engine, clock, 39.5)
+        shorts = [b for b in beeps if b.short]
+        longs = [b for b in beeps if not b.short and not b.double]
+        assert len(shorts) == 5      # displayed 6,5,4,3,2
+        assert longs == []           # no long at 1 inside a phase
+
+    def test_pause_resume_mid_phase(self, engine, clock):
+        engine.toggle()
+        clock.advance(10)
+        engine.toggle()
+        clock.advance(500)
+        assert engine.remaining() == pytest.approx(30)
+        assert engine.is_idle() is False
+
+    def test_restart_after_finish(self, engine, clock):
+        engine.toggle()
+        for _ in range(2):
+            clock.advance(40.05)
+            engine.tick()
+            clock.advance(20.05)
+            engine.tick()
+        clock.advance(40.05)
+        engine.tick()      # finished
+        engine.toggle()                           # start again from round 1
+        r = engine.tick()
+        assert engine.running is True
+        assert r.phase == "work" and r.round == 1
+        assert r.display == pytest.approx(40, abs=0.1)
+
+
+class TestProgress:
+    def test_stopwatch_has_no_progress(self, engine, clock):
+        engine.toggle()
+        clock.advance(5)
+        assert engine.tick().progress == -1.0
+
+    def test_countdown_progress(self, config, clock):
+        config.timer_mode = "countdown"
+        config.countdown_duration = 100
+        e = TimerEngine(config, clock=clock)
+        e.toggle()
+        clock.advance(25)
+        assert e.tick().progress == pytest.approx(0.75)
+
+    def test_interval_progress_per_phase(self, config, clock):
+        config.timer_mode = "interval"
+        config.interval_work = 40
+        config.interval_rest = 20
+        config.interval_rounds = 2
+        e = TimerEngine(config, clock=clock)
+        e.toggle()
+        clock.advance(30)
+        assert e.tick().progress == pytest.approx(0.25)   # 10/40 left
+        clock.advance(10.05)
+        e.tick()                                          # into rest
+        clock.advance(5)
+        assert e.tick().progress == pytest.approx(15 / 20, abs=0.01)
+
+
 class TestFmtSeconds:
     def test_under_a_minute(self):
         assert fmt_seconds(59) == "00:59"
