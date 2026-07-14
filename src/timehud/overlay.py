@@ -65,6 +65,41 @@ QMenu::item          { padding: 6px 22px; }
 QMenu::item:selected { background: #2E2E2E; color: #FFF; }
 QMenu::separator     { height: 1px; background: #333; margin: 3px 6px; }
 """
+
+
+class _ProgressBar(QWidget):
+    """Thin rounded bar showing remaining fraction of a countdown/phase."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._fraction = -1.0
+        self._color = QColor("#FFFFFF")
+        self.setFixedHeight(3)
+        self.hide()
+
+    def set_state(self, fraction: float, color: str) -> None:
+        qc = QColor(color)
+        if fraction == self._fraction and qc == self._color:
+            return
+        self._fraction = fraction
+        self._color = qc
+        self.setVisible(fraction >= 0.0)
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        if self._fraction < 0:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(255, 255, 255, 30))
+        p.drawRoundedRect(self.rect(), 1.5, 1.5)
+        w = int(self.width() * min(1.0, self._fraction))
+        if w > 0:
+            p.setBrush(self._color)
+            p.drawRoundedRect(0, 0, w, self.height(), 1.5, 1.5)
+
+
 class OverlayWindow(QWidget):
     """Transparent HUD overlay: clock + stopwatch / countdown."""
 
@@ -196,6 +231,8 @@ class OverlayWindow(QWidget):
         root.addWidget(sep)
         self.lbl_timer.setVisible(cfg.show_timer)
         root.addWidget(self.lbl_timer)
+        self.progress_bar = _ProgressBar()
+        root.addWidget(self.progress_bar)
         self.lbl_mode.setVisible(cfg.show_timer)
         root.addWidget(self.lbl_mode)
 
@@ -342,6 +379,13 @@ class OverlayWindow(QWidget):
         if result.phase == "rest" and result.state == "run":
             color = theme.color_rest
         self._set_timer_color(color, animate)
+
+        theme_bar_color = theme.color_clock
+        if result.state in ("warn", "end"):
+            theme_bar_color = theme.color_warn
+        elif result.phase == "rest":
+            theme_bar_color = theme.color_rest
+        self.progress_bar.set_state(result.progress, theme_bar_color)
 
         if result.phase and not self.engine.is_idle():
             label = f"{result.phase.upper()} {result.round}/{result.rounds}"
@@ -787,6 +831,8 @@ class OverlayWindow(QWidget):
 
             self.lbl_clock.setVisible(cfg.show_clock)
             self.lbl_timer.setVisible(cfg.show_timer)
+            if not cfg.show_timer:
+                self.progress_bar.hide()
             self.lbl_mode.setVisible(cfg.show_timer)
             self.ctrl_widget.setVisible(cfg.show_timer and cfg.show_controls)
 
