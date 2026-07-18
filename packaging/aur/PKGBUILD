@@ -1,6 +1,6 @@
 # Maintainer: Ben Egger <eggerben@gmail.com>
 pkgname=timehud
-pkgver=0.7.0
+pkgver=0.8.0
 pkgrel=1
 pkgdesc="Transparent HUD overlay with clock, countdown, interval and cycling stopwatch timers"
 arch=('any')
@@ -10,7 +10,7 @@ depends=('python-pyqt6')
 optdepends=('python-pynput: global hotkeys (Ctrl+Shift+Space etc.)')
 makedepends=('python-build' 'python-installer' 'python-wheel' 'python-setuptools')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('240e15d35b498a85f0d331f087b2f6f86fdbd6a2eae91df77c1faf1085303861')
+sha256sums=('10a8118bfb603d6ab4a68482bd5c8d29bb9c29fc3fc88dbfafd8cb3f27d6ed15')
 
 build() {
     cd "$pkgname-$pkgver"
