@@ -1,5 +1,6 @@
-# <img src="src/timehud/timehud.svg" width="30" height="30" /> TimeHUD
+<img src="src/timehud/timehud.svg" width="64" align="left">
 
+# TimeHUD
 
 A lightweight, transparent HUD overlay for Linux — shows a system clock and
 stopwatch / countdown timer above fullscreen apps (YouTube, Netflix, etc.).
