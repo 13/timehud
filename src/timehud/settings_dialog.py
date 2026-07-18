@@ -8,10 +8,10 @@ from PyQt6.QtWidgets import (
     QLabel, QComboBox, QSpinBox, QCheckBox,
     QLineEdit, QPushButton, QFileDialog,
     QTabWidget, QWidget, QSlider, QColorDialog,
-    QListWidget
+    QListWidget, QFontComboBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QFont
 import os
 
 from timehud.config import Config, interval_preset_rounds, valid_presets
@@ -149,9 +149,14 @@ class SettingsDialog(QDialog):
         self.padding_top_spin.setToolTip("Top padding override; 'same as padding' follows the value above")
         form.addRow("Top padding:", self.padding_top_spin)
 
-        # Font family
-        self.font_family_edit = QLineEdit()
-        self.font_family_edit.setPlaceholderText("e.g. Monospace, JetBrains Mono")
+        self.row_spacing_spin = QSpinBox()
+        self.row_spacing_spin.setRange(0, 40)
+        self.row_spacing_spin.setSuffix(" px")
+        self.row_spacing_spin.setToolTip("Uniform gap between clock, timer, mode label and controls")
+        form.addRow("Row spacing:", self.row_spacing_spin)
+
+        # Font family — lists every installed font
+        self.font_family_edit = QFontComboBox()
         form.addRow("Font family:", self.font_family_edit)
 
         # Opacity
@@ -552,7 +557,7 @@ class SettingsDialog(QDialog):
                 self._update_color_btn(self.btn_color_clock, self.config.color_clock)
                 self._update_color_btn(self.btn_color_timer_run, self.config.color_timer_run)
                 self._update_color_btn(self.btn_color_timer_pause, self.config.color_timer_pause)
-                self.font_family_edit.setText(self.config.font_family)
+                self.font_family_edit.setCurrentFont(QFont(self.config.font_family))
                 self.config_changed.emit()
 
         self.theme_combo.currentIndexChanged.connect(_on_theme_changed)
@@ -560,7 +565,8 @@ class SettingsDialog(QDialog):
         self.font_size_spin.valueChanged.connect(_emit_if_valid)
         self.padding_spin.valueChanged.connect(_emit_if_valid)
         self.padding_top_spin.valueChanged.connect(_emit_if_valid)
-        self.font_family_edit.textChanged.connect(_emit_if_valid)
+        self.row_spacing_spin.valueChanged.connect(_emit_if_valid)
+        self.font_family_edit.currentFontChanged.connect(_emit_if_valid)
         self.opacity_slider.valueChanged.connect(_emit_if_valid)
         self.show_tray_icon_cb.toggled.connect(_emit_if_valid)
         self.show_controls_cb.toggled.connect(_emit_if_valid)
@@ -580,7 +586,8 @@ class SettingsDialog(QDialog):
         c.font_size   = self.font_size_spin.value()
         c.padding     = self.padding_spin.value()
         c.padding_top = self.padding_top_spin.value()
-        c.font_family = self.font_family_edit.text() or "Monospace"
+        c.row_spacing = self.row_spacing_spin.value()
+        c.font_family = self.font_family_edit.currentFont().family() or "Monospace"
         c.opacity     = self.opacity_slider.value() / 100.0
         c.show_tray_icon = self.show_tray_icon_cb.isChecked()
         c.show_controls  = self.show_controls_cb.isChecked()
@@ -619,7 +626,8 @@ class SettingsDialog(QDialog):
         self.font_size_spin.setValue(c.font_size)
         self.padding_spin.setValue(c.padding)
         self.padding_top_spin.setValue(c.padding_top)
-        self.font_family_edit.setText(c.font_family)
+        self.row_spacing_spin.setValue(c.row_spacing)
+        self.font_family_edit.setCurrentFont(QFont(c.font_family))
         self.opacity_slider.setValue(int(c.opacity * 100))
         self.show_tray_icon_cb.setChecked(c.show_tray_icon)
         self.show_controls_cb.setChecked(c.show_controls)

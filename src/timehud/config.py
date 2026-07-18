@@ -73,6 +73,7 @@ class Config:
     progress_style: str = "line"   # countdown/interval progress: line | border | off
     padding: int = 12        # space between window border and content, px
     padding_top: int = -1    # top padding override, px; -1 = same as padding
+    row_spacing: int = 6     # uniform vertical gap between clock/timer/mode rows, px
 
     # ──────────────────────────────────────────────────────────────────────
 

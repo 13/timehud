@@ -47,7 +47,7 @@ class TestGeometry:
         w._fade_controls_to(0.0)
         qtbot.waitUntil(lambda: w._controls_pos == 0.0, timeout=2000)
         assert w.height() < h_full - 10
-        assert w.layout().contentsMargins().bottom() == w.config.padding
+        assert w.layout().contentsMargins().bottom() == w._row_gap()
         w._fade_controls_to(1.0)
         qtbot.waitUntil(lambda: w._controls_pos == 1.0, timeout=2000)
         assert w.height() == h_full

@@ -110,6 +110,7 @@ Right-click → **Settings** or edit `~/.config/timehud/config.json`:
   "interval_rest": 20,
   "interval_rounds": 8,
   "progress_style": "line",
+  "row_spacing": 6,
   "show_clock": true,
   "show_timer": true,
   "sound_enabled": true,

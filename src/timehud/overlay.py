@@ -50,8 +50,8 @@ QPushButton {
     background: rgba(255,255,255,18);
     color: #CCCCCC;
     border: 1px solid rgba(255,255,255,35);
-    border-radius: 5px;
-    font-size: 13px;
+    border-radius: 4px;
+    font-size: 10px;
     font-weight: bold;
 }
 QPushButton:hover  { background: rgba(255,255,255,38); color:#FFF; }
@@ -153,7 +153,7 @@ class OverlayWindow(QWidget):
         # ── Separator ─────────────────────────────────────────────────────
         sep = QLabel()
         sep.setFixedHeight(1)
-        sep.setStyleSheet(f"background:{_SEP_COLOR}; margin: 5px 0px;")
+        sep.setStyleSheet(f"background:{_SEP_COLOR}; margin: 3px 0px;")
         # ── Timer display ─────────────────────────────────────────────────
         self.lbl_timer = QLabel("00:00")
         self.lbl_timer.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -185,7 +185,10 @@ class OverlayWindow(QWidget):
         self.btn_mode.clicked.connect(self._toggle_mode)
         ctrl = QHBoxLayout()
         ctrl.setSpacing(6)
-        ctrl.setContentsMargins(0, 4, 0, 0)   # 4 px below the mode label
+        # Row spacing sets the base gap; +2 px fixed compensates the mode
+        # label's ink sitting low in its box vs the button's flush top, so the
+        # visible mode↔buttons gap matches the timer↔mode gap at any spacing.
+        ctrl.setContentsMargins(0, 2, 0, 0)
         ctrl.addStretch()
         ctrl.addWidget(self.btn_start)
         ctrl.addWidget(self.btn_reset)
@@ -219,12 +222,12 @@ class OverlayWindow(QWidget):
 
     def _apply_button_sizes(self) -> None:
         """Size control buttons relative to the configured font size."""
-        btn_h = max(24, self.config.font_size - 4)
+        btn_h = max(16, self.config.font_size - 15)
         for btn in (self.btn_start, self.btn_reset, self.btn_mode):
             btn.setFixedHeight(btn_h)
-        self.btn_start.setFixedWidth(btn_h + 6)
-        self.btn_reset.setFixedWidth(btn_h + 6)
-        self.btn_mode.setFixedWidth(btn_h + 14)
+        self.btn_start.setFixedWidth(btn_h + 3)
+        self.btn_reset.setFixedWidth(btn_h + 3)
+        self.btn_mode.setFixedWidth(btn_h + 8)
         # Lift a stale fold constraint so resized buttons fit (live font changes)
         if getattr(self, "ctrl_widget", None) is not None and self._controls_pos >= 1.0:
             self._unfix_controls_height()
@@ -250,18 +253,36 @@ class OverlayWindow(QWidget):
             f.setBold(bold)
             return tabular(f)
 
-        self.lbl_clock.setFont(make_font(int(fs * theme.clock_scale)))
+        # Crop every row's box to the glyph line height (ascent+descent, i.e.
+        # no font leading dead space) using the SAME rule, and drive all the
+        # inter-row spacing from one constant, so clock↔timer, timer↔mode and
+        # the space under the mode label are the same uniform gap.
+        gap = self._row_gap()
+        self.layout().setSpacing(gap)
+
+        # Crop to the actual glyph *ink* height (tightBoundingRect), not the
+        # font line box: digits/caps leave the ascent gap and full descent
+        # empty, and that dead space differs per font size — which otherwise
+        # makes clock↔timer look wider than timer↔mode even with equal spacing.
+        def ink_height(f: QFont) -> int:
+            return QFontMetrics(f).tightBoundingRect("8").height()
+
+        clock_font = make_font(int(fs * theme.clock_scale))
+        self.lbl_clock.setFont(clock_font)
+        self.lbl_clock.setFixedHeight(ink_height(clock_font))
         self.lbl_clock.setStyleSheet(
             f"color:{rgba(cfg.color_clock, theme.clock_alpha)}; background:transparent;"
         )
         timer_font = make_font(int(fs * theme.timer_scale))
         self.lbl_timer.setFont(timer_font)
-        # Fixed height with pulse headroom: the last-seconds pulse grows the
-        # font 6% and must not reflow the labels underneath
-        fm = QFontMetrics(timer_font)
-        self.lbl_timer.setFixedHeight(int(fm.height() * 1.08))
+        # +4 px (2 px each side) headroom so the 4% last-seconds pulse never
+        # clips or reflows the labels underneath. The extra sits symmetrically,
+        # so both adjacent gaps grow equally and stay uniform.
+        self.lbl_timer.setFixedHeight(ink_height(timer_font) + 4)
         # Bigger + semibold so WORK/REST round info is readable from distance
-        self.lbl_mode.setFont(make_font(max(11, int(fs * 0.42)), bold=True))
+        mode_font = make_font(max(11, int(fs * 0.42)), bold=True)
+        self.lbl_mode.setFont(mode_font)
+        self.lbl_mode.setFixedHeight(ink_height(mode_font))
         self._set_mode_label_color(None)
         self.sep.setVisible(cfg.show_timer and theme.show_separator)
 
@@ -964,14 +985,22 @@ class OverlayWindow(QWidget):
         self.layout().activate()
         self.adjustSize()
 
+    def _row_gap(self) -> int:
+        """Uniform vertical gap between the clock, timer and mode rows (and,
+        with the controls hidden, below the mode label to the border).
+        User-settable via Settings → Display → Row spacing."""
+        return self.config.row_spacing
+
     def _bottom_margin(self) -> int:
-        """Buttons sit 8 px above the border; without them, symmetric padding."""
+        """Buttons sit 8 px above the border; without them, the gap below the
+        mode label matches the uniform inter-row gap."""
         cfg = self.config
+        base = self._row_gap()   # same gap under the mode label as between rows
         if not (cfg.show_timer and cfg.show_controls):
-            return cfg.padding
+            return base
         # Blend with the fold position so the margin animates with the row
         pos = self._controls_pos
-        return int(round(8 * pos + cfg.padding * (1 - pos)))
+        return int(round(8 * pos + base * (1 - pos)))
 
     def _unfix_controls_height(self) -> None:
         """Undo the fold's fixed height so buttons size freely again."""
@@ -998,7 +1027,7 @@ class OverlayWindow(QWidget):
         anim = QVariantAnimation(self)
         anim.setDuration(180)
         anim.setStartValue(base)
-        anim.setKeyValueAt(0.5, int(base * 1.06))
+        anim.setKeyValueAt(0.5, int(base * 1.04))
         anim.setEndValue(base)
         anim.valueChanged.connect(self._set_timer_px)
         anim.start()

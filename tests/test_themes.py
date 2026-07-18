@@ -32,7 +32,7 @@ class TestClassicMatchesLegacyLook:
         assert t.color_warn == "#FF9900"
         assert t.color_end == "#FF3333"
         assert t.color_rest == "#4FA8FF"
-        assert t.show_separator is True
+        assert t.show_separator is False
         assert t.clock_scale == 1.0
         assert t.timer_scale == 1.25
         assert t.font_family == ""

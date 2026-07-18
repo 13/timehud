@@ -4,7 +4,8 @@ set -euo pipefail
 APPDIR="${1:-app}"
 APP_NAME="${APP_NAME:-timehud}"
 DESKTOP_FILE="$APPDIR/usr/share/applications/${APP_NAME}.desktop"
-ICON_DIR="$APPDIR/usr/share/icons/hicolor/256x256/apps"
+HICOLOR="$APPDIR/usr/share/icons/hicolor"
+ICON_DIR="$HICOLOR/256x256/apps"
 
 mkdir -p "$ICON_DIR"
 mkdir -p "$APPDIR/usr/share/applications"
@@ -27,12 +28,18 @@ cp "$APPDIR/timehud.desktop" "$DESKTOP_FILE"
 sed -i 's/^Exec=.*/Exec=AppRun/' "$DESKTOP_FILE"
 sed -i 's/^Icon=.*/Icon=timehud/' "$DESKTOP_FILE"
 
+# Scalable source of truth for desktop themes.
+mkdir -p "$HICOLOR/scalable/apps"
+cp "$APPDIR/timehud.svg" "$HICOLOR/scalable/apps/timehud.svg"
 cp "$APPDIR/timehud.svg" "$ICON_DIR/timehud.svg"
 
 if command -v rsvg-convert >/dev/null 2>&1; then
-  rsvg-convert -w 256 -h 256 \
-    "$APPDIR/timehud.svg" \
-    -o "$ICON_DIR/timehud.png"
+  # Rasterize the full hicolor size set so docks/panels get a crisp match.
+  for s in 16 24 32 48 64 128 256; do
+    d="$HICOLOR/${s}x${s}/apps"
+    mkdir -p "$d"
+    rsvg-convert -w "$s" -h "$s" "$APPDIR/timehud.svg" -o "$d/timehud.png"
+  done
 fi
 
 # Keep icon at AppDir root so .DirIcon can point to it.

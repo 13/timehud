@@ -40,7 +40,7 @@ THEMES: dict[str, Theme] = {
         color_clock="#00FF88", clock_alpha=1.0,
         color_timer_run="#FFFFFF", color_timer_pause="#888888",
         color_warn="#FF9900", color_end="#FF3333", color_rest="#4FA8FF",
-        show_separator=True, clock_scale=1.0, timer_scale=1.25,
+        show_separator=False, clock_scale=1.0, timer_scale=1.25,
     ),
     "terminal": Theme(
         name="terminal", label="Terminal",
