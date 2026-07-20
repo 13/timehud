@@ -77,6 +77,36 @@ class TestGeometry:
         assert w.lbl_mode.y() == mode_y
 
 
+class TestResizeAnchor:
+    """A dragged (custom-position) window must keep its anchor on resize."""
+
+    # scr center at (1000, 500); band comfortably covers by-eye centering.
+    def test_centered_window_keeps_center(self):
+        # window grew by 80px wide, was horizontally centered before the grow
+        # (new center = scr center + dw/2 = 1000 + 40)
+        dx, dy = OverlayWindow._resize_anchor_delta(1040, 100, 1000, 500, 80, 0)
+        assert dx == -40          # shift left half the growth -> re-centered
+        assert dy == 0
+
+    def test_right_window_keeps_right_edge(self):
+        dx, dy = OverlayWindow._resize_anchor_delta(1800, 100, 1000, 500, 60, 0)
+        assert dx == -60          # full growth -> right edge fixed
+
+    def test_left_window_keeps_left_edge(self):
+        dx, dy = OverlayWindow._resize_anchor_delta(200, 100, 1000, 500, 60, 0)
+        assert dx == 0            # left edge fixed
+
+    def test_center_detection_survives_large_growth(self):
+        # a big mode-change grow (dw=200) on a centered window must still
+        # read as centered, not misclassified as right-anchored
+        dx, _ = OverlayWindow._resize_anchor_delta(1100, 100, 1000, 500, 200, 0)
+        assert dx == -100
+
+    def test_bottom_window_keeps_bottom_edge(self):
+        _, dy = OverlayWindow._resize_anchor_delta(1000, 900, 1000, 500, 0, 40)
+        assert dy == -40
+
+
 class TestPresets:
     def test_countdown_preset(self, overlay):
         w = overlay()

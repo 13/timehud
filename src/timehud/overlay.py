@@ -346,24 +346,56 @@ class OverlayWindow(QWidget):
         else:
             self.move(new_pos)
 
+    # Half a window is treated as "centered" on an axis when its pre-resize
+    # center sits within this many px of the screen center (covers by-eye
+    # drags and the center snap in mouseMoveEvent).
+    _CENTER_BAND = 24
+
+    @staticmethod
+    def _resize_anchor_delta(cx, cy, scr_cx, scr_cy, dw, dh):
+        """Move delta that keeps a dragged window's anchor fixed on resize.
+
+        `cx/cy` are the window center *after* the grow (Qt keeps the top-left
+        corner), so the pre-resize center is `cx - dw/2`. Per axis: centered
+        windows keep their center, otherwise the near edge stays put.
+        """
+        old_cx = cx - dw / 2
+        old_cy = cy - dh / 2
+
+        if abs(old_cx - scr_cx) <= OverlayWindow._CENTER_BAND:
+            dx = -round(dw / 2)          # keep center fixed
+        elif old_cx > scr_cx:
+            dx = -dw                     # keep right edge fixed
+        else:
+            dx = 0                       # keep left edge fixed
+
+        if abs(old_cy - scr_cy) <= OverlayWindow._CENTER_BAND:
+            dy = -round(dh / 2)
+        elif old_cy > scr_cy:
+            dy = -dh
+        else:
+            dy = 0
+
+        return dx, dy
+
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
-        
+
         if not self.isVisible():
             return
-            
+
         old_sz = event.oldSize()
         new_sz = event.size()
-        
+
         if not old_sz.isValid() or old_sz == new_sz:
             return
-            
+
         dw = new_sz.width() - old_sz.width()
         dh = new_sz.height() - old_sz.height()
 
         # Preset positions re-anchor exactly (keeps top-center centered after
-        # size changes from mode/preset switches); quadrant anchoring below is
-        # only for freely dragged windows.
+        # size changes from mode/preset switches); the anchoring below is only
+        # for freely dragged windows.
         if not self._has_custom_pos():
             self._position_window()
             return
@@ -371,21 +403,13 @@ class OverlayWindow(QWidget):
         screen = QGuiApplication.screenAt(self.geometry().center())
         if not screen:
             screen = QApplication.primaryScreen()
-            
+
         scr = screen.availableGeometry()
-        cx = self.geometry().center().x()
-        cy = self.geometry().center().y()
-        
-        dx, dy = 0, 0
-        
-        # If in the right half of the screen, anchor to the right
-        if cx > scr.center().x():
-            dx = -dw
-            
-        # If in the bottom half of the screen, anchor to the bottom
-        if cy > scr.center().y():
-            dy = -dh
-            
+        center = self.geometry().center()
+        dx, dy = self._resize_anchor_delta(
+            center.x(), center.y(), scr.center().x(), scr.center().y(), dw, dh
+        )
+
         if dx != 0 or dy != 0:
             self.move(self.pos() + QPoint(dx, dy))
 
@@ -787,11 +811,15 @@ class OverlayWindow(QWidget):
                 new_pos.setX(scr.left() + self.config.margin)
             elif abs(new_pos.x() + w - scr.right()) < snap:
                 new_pos.setX(scr.right() - w - self.config.margin)
+            elif abs(new_pos.x() + w // 2 - scr.center().x()) < snap:
+                new_pos.setX(scr.center().x() - w // 2)   # horizontal center
 
             if abs(new_pos.y() - scr.top()) < snap:
                 new_pos.setY(scr.top() + self.config.margin)
             elif abs(new_pos.y() + h - scr.bottom()) < snap:
                 new_pos.setY(scr.bottom() - h - self.config.margin)
+            elif abs(new_pos.y() + h // 2 - scr.center().y()) < snap:
+                new_pos.setY(scr.center().y() - h // 2)   # vertical center
 
             self.move(new_pos)
             event.accept()
