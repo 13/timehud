@@ -3,21 +3,33 @@ settings_dialog.py – Modal settings window for TimeHUD.
 Opens from the right-click context menu on the overlay.
 """
 
-from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QLabel, QComboBox, QSpinBox, QCheckBox,
-    QLineEdit, QPushButton, QFileDialog,
-    QTabWidget, QWidget, QSlider, QColorDialog,
-    QListWidget, QFontComboBox
-)
+import os
+
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
-import os
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QColorDialog,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QFontComboBox,
+    QFormLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QPushButton,
+    QSlider,
+    QSpinBox,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from timehud.config import Config, interval_preset_rounds, valid_presets
 from timehud.themes import THEMES, apply_theme
 from timehud.timer_engine import fmt_seconds
-
 
 _DARK_STYLE = """
 QDialog, QWidget, QTabWidget::pane {

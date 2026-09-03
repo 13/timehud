@@ -31,14 +31,15 @@ import sys
 if "--wayland" not in sys.argv:
     os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
-from PyQt6.QtWidgets import QApplication  # noqa: E402 (after env var)
-from PyQt6.QtWidgets import QMenu
-from PyQt6.QtWidgets import QSystemTrayIcon
 from PyQt6.QtGui import QIcon
+from PyQt6.QtWidgets import (
+    QApplication,  # noqa: E402 (after env var)
+    QMenu,
+    QSystemTrayIcon,
+)
 
-from timehud.config import Config           # noqa: E402
-from timehud.overlay import OverlayWindow   # noqa: E402
-
+from timehud.config import Config  # noqa: E402
+from timehud.overlay import OverlayWindow  # noqa: E402
 
 # ── Global hotkeys ─────────────────────────────────────────────────────────
 

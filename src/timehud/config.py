@@ -5,7 +5,7 @@ Stored as JSON at ~/.config/timehud/config.json
 
 import json
 import os
-from dataclasses import dataclass, asdict, field
+from dataclasses import asdict, dataclass, field
 
 CONFIG_PATH = os.path.expanduser("~/.config/timehud/config.json")
 

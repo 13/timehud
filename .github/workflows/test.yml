@@ -21,7 +21,9 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/venv"
           echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
       # Qt's offscreen platform still needs these libraries without a display
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libegl1 libxkbcommon0 libfontconfig1 libglib2.0-0 libdbus-1-3
+      # libgl1 is present on GitHub's hosted images but not on the self-hosted
+      # runner, where PyQt6's QtGui import fails without it.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgl1 libegl1 libxkbcommon0 libfontconfig1 libglib2.0-0 libdbus-1-3
       - run: pip install -e ".[dev]"
       - run: ruff check src tests
       - run: pytest -q

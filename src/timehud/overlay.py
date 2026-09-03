@@ -23,17 +23,29 @@ import datetime
 import math
 from collections.abc import Callable
 from dataclasses import asdict
-from PyQt6.QtCore import (
-    Qt, QPoint, QTimer, QEvent, QEasingCurve, QVariantAnimation
-)
+
+from PyQt6.QtCore import QEasingCurve, QEvent, QPoint, Qt, QTimer, QVariantAnimation
 from PyQt6.QtGui import (
-    QColor, QFont, QFontMetrics, QPainter, QPainterPath,
-    QPen, QCursor, QGuiApplication,
+    QColor,
+    QCursor,
+    QFont,
+    QFontMetrics,
+    QGuiApplication,
+    QPainter,
+    QPainterPath,
+    QPen,
 )
 from PyQt6.QtWidgets import (
-    QApplication, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMenu,
-    QPushButton, QVBoxLayout, QWidget,
+    QApplication,
+    QGraphicsOpacityEffect,
+    QHBoxLayout,
+    QLabel,
+    QMenu,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
 )
+
 from timehud.config import Config, interval_preset_rounds, valid_presets
 from timehud.menus import populate_context_menu
 from timehud.sound_manager import SoundManager
@@ -711,7 +723,7 @@ class OverlayWindow(QWidget):
             p.setPen(pen)
             p.drawPath(outline)
     # ══ Mouse events ═════════════════════════════════════════════════════════
-    def eventFilter(self, obj, event):
+    def eventFilter(self, obj, event):  # noqa: N802
         if obj is self.lbl_clock:
             if event.type() == QEvent.Type.Wheel:
                 delta = event.angleDelta().y()
