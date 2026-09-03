@@ -74,6 +74,11 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         if: startsWith(github.ref, 'refs/tags/')
+        env:
+          # Node's global fetch ignores NODE_EXTRA_CA_CERTS, so the
+          # self-hosted Gitea instance's self-signed-CA cert can't be
+          # trusted that way; disable verification only off github.com.
+          NODE_TLS_REJECT_UNAUTHORIZED: ${{ github.server_url != 'https://github.com' && '0' || '1' }}
         with:
           name: Release ${{ env.VERSION }}
           tag_name: ${{ env.VERSION }}
