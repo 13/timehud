@@ -30,9 +30,15 @@ jobs:
             librsvg2-bin \
             file
       - name: Set up Python
+        if: github.server_url == 'https://github.com'
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+      - name: Use host Python (Gitea)
+        if: github.server_url != 'https://github.com'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
