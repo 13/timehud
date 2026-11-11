@@ -36,7 +36,7 @@ Module map (`src/`):
 - `config.rs` — `Config` + tolerant per-field JSON codec (wrong type falls back to that field's default; unknown keys preserved in `extra`). `config_path()` honors `XDG_CONFIG_HOME`.
 - `themes.rs` — six themes (classic, terminal, glass, mono, nord, amber); `apply_theme` stamps colors into config, structure is read live via `get_theme`.
 - `layout.rs`, `render.rs`, `text.rs`, `format.rs`, `anim.rs` — geometry/hit regions, tiny-skia drawing, fontdue text (bundled JetBrains Mono Bold + fontconfig fallback), time formatting, animations.
-- `hud.rs` — the poll loop, X event dispatch, persistence timing, `TIMEHUD_TRACE`.
+- `hud.rs` + `hud/` — the poll loop, X event dispatch, `TIMEHUD_TRACE`; `deadlines.rs` (tick/frame/save/raise/accept deadlines → poll timeout), `ipc_server.rs` (clients, non-blocking event queues, settings session).
 - `x11/` — `mod.rs` (connection, windows, present), `overlay.rs`, `popup.rs` (menus), `tray.rs`, `grabs.rs` (hotkey grabs).
 - `menu.rs` — context-menu model shared by window and tray.
 - `hotkey.rs` — combo parsing/formatting, egui key -> X keysym.
