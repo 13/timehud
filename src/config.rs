@@ -258,7 +258,7 @@ impl Config {
     /// A symlinked `path` is resolved first, so the link's target is
     /// replaced and the link itself kept. Creates the directory.
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
-        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let path = resolve_save_target(path);
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -281,6 +281,20 @@ impl Config {
 
     pub fn save(&self) -> std::io::Result<()> {
         self.save_to(&config_path())
+    }
+}
+
+/// Where a save to `path` should land: the canonical target, or for a
+/// dangling symlink the link's (possibly not-yet-existing) target, so the
+/// link survives the first save. Falls back to `path` itself.
+fn resolve_save_target(path: &Path) -> PathBuf {
+    if let Ok(p) = std::fs::canonicalize(path) {
+        return p;
+    }
+    match std::fs::read_link(path) {
+        Ok(target) if target.is_absolute() => target,
+        Ok(target) => path.parent().map_or(target.clone(), |d| d.join(&target)),
+        Err(_) => path.to_path_buf(),
     }
 }
 
@@ -529,6 +543,19 @@ mod tests {
         // No temp file left next to the link or the target.
         assert!(!link.with_extension("json.tmp").exists());
         assert!(!target.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn dangling_symlinked_config_keeps_link_on_first_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = cfg_in(&dir);
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        // Relative target that does not exist yet (fresh dotfiles checkout).
+        std::os::unix::fs::symlink("dotfiles/timehud.json", &link).unwrap();
+        let target = link.parent().unwrap().join("dotfiles/timehud.json");
+        Config::default().save_to(&link).unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+        assert!(target.is_file());
     }
 
     // ---- TestValidPresets ----
