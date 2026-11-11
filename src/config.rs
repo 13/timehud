@@ -254,7 +254,8 @@ impl Config {
         }
     }
 
-    /// Atomic: writes and syncs `<path>.tmp`, then renames over `path`.
+    /// Atomic: writes and syncs `<path>.tmp`, then renames over `path`,
+    /// keeping an existing file's permission bits.
     /// A symlinked `path` is resolved first, so the link's target is
     /// replaced and the link itself kept. Creates the directory.
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
@@ -264,8 +265,13 @@ impl Config {
         }
         let tmp = with_suffix(&path, ".tmp");
         let text = serde_json::to_string_pretty(&self.to_value()).map_err(std::io::Error::other)?;
+        // Keep the mode of the file being replaced (e.g. a deliberate 0600).
+        let mode = std::fs::metadata(&path).ok().map(|m| m.permissions());
         let written = (|| {
             let mut f = std::fs::File::create(&tmp)?;
+            if let Some(perms) = mode {
+                f.set_permissions(perms)?;
+            }
             f.write_all(text.as_bytes())?;
             f.sync_all()?;
             std::fs::rename(&tmp, &path)
@@ -813,6 +819,18 @@ mod tests {
         Config::default().save_to(&path).unwrap();
         assert!(path.exists());
         assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn save_preserves_existing_file_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = cfg_in(&dir);
+        Config::default().save_to(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        Config::default().save_to(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o600);
     }
 
     #[test]
