@@ -330,12 +330,14 @@ pub fn section(ui: &mut Ui, st: &mut PresetsState, cfg: &mut Config) {
                 let mut target = None;
                 let dragging = egui::DragAndDrop::has_payload_of_type::<Dragged>(ui.ctx());
                 for (i, (p, rules, raw)) in list.iter().enumerate() {
-                    let id = egui::Id::unique(("timehud-preset-row", i));
-                    let row = ui.dnd_drag_source(id, Dragged(i), |ui| {
+                    // One widget that senses both: with `dnd_drag_source` a
+                    // drag-only widget on top swallowed the row's clicks.
+                    let row = {
                         let (rect, r) = ui.allocate_exact_size(
                             Vec2::new(ui.available_width(), row_h),
-                            Sense::click(),
+                            Sense::click_and_drag(),
                         );
+                        r.dnd_set_drag_payload(Dragged(i));
                         let selected = selected == Some(*raw);
                         let painter = ui.painter();
                         if selected {
@@ -374,14 +376,14 @@ pub fn section(ui: &mut Ui, st: &mut PresetsState, cfg: &mut Config) {
                             FontId::monospace(13.0),
                             if selected { ACCENT } else { WEAK },
                         );
-                        r
-                    });
-                    if row.inner.clicked() {
+                        r.on_hover_cursor(egui::CursorIcon::Grab)
+                    };
+                    if row.clicked() {
                         st.selected = Some((*raw, p.name().to_string()));
                         st.editor = editor_from_preset(p, rules, cfg.alert_last_5_seconds);
                         st.message = None;
                     }
-                    let rect = row.response.rect;
+                    let rect = row.rect;
                     if dragging
                         && let Some(pos) = ui.ctx().pointer_hover_pos()
                         && pos.y >= rect.top() - 1.0
