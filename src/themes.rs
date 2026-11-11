@@ -2,7 +2,7 @@
 
 use crate::config::Config;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
 
 /// Parse `#RRGGBB` (case-insensitive).
