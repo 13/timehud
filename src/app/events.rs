@@ -51,6 +51,16 @@ pub enum Input {
     },
 }
 
+/// The overlay's pointer shape.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Cursor {
+    /// The parent's (the desktop's) cursor.
+    #[default]
+    Default,
+    /// Pointing hand over things that react to a click.
+    Hand,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
     Beep(Beep),
@@ -66,6 +76,8 @@ pub enum Effect {
     Resize,
     Redraw,
     SetClickThrough(bool),
+    /// Pointer shape over the overlay changed (see `cursor_for`).
+    SetCursor(Cursor),
     SetVisible(bool),
     SetTrayVisible(bool),
     OpenMenu {

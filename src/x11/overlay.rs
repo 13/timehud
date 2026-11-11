@@ -1,7 +1,7 @@
 //! The HUD's override-redirect ARGB overlay window and its input translation.
 
 use super::X;
-use crate::app::{Button, Input, Key};
+use crate::app::{Button, Cursor, Input, Key};
 use crate::layout::Rect;
 use std::collections::HashMap;
 use x11rb::NONE;
@@ -9,16 +9,48 @@ use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::shape::{self, SK, SO};
 use x11rb::protocol::xproto::{
-    ClipOrdering, ConfigureWindowAux, ConnectionExt as _, EventMask, KeyButMask, MapState,
-    StackMode,
+    ChangeWindowAttributesAux, ClipOrdering, ConfigureWindowAux, ConnectionExt as _, EventMask,
+    KeyButMask, MapState, StackMode,
 };
+
+/// A glyph cursor from the core "cursor" font (black on white, like Xlib's
+/// `XCreateFontCursor`). The font is closed again; the cursor keeps it.
+fn hand_cursor(x: &X) -> Option<u32> {
+    let font = x.conn.generate_id().ok()?;
+    x.conn.open_font(font, b"cursor").ok()?.check().ok()?;
+    let cursor = x.conn.generate_id().ok()?;
+    let made = x
+        .conn
+        .create_glyph_cursor(
+            cursor,
+            font,
+            font,
+            XC_HAND2,
+            XC_HAND2 + 1,
+            0,
+            0,
+            0,
+            0xffff,
+            0xffff,
+            0xffff,
+        )
+        .ok()
+        .and_then(|c| c.check().ok());
+    let _ = x.conn.close_font(font);
+    made.map(|()| cursor)
+}
 
 pub struct OverlayWin {
     pub id: u32,
     pub gc: u32,
     /// Button 1 pressed on the overlay and not yet released.
     left_held: bool,
+    /// The core-font hand cursor, created on first use (0 = failed).
+    hand: Option<u32>,
 }
+
+/// `XC_hand2` in the core "cursor" font; its mask is the next glyph.
+const XC_HAND2: u16 = 60;
 
 impl OverlayWin {
     /// Creates the (unmapped) overlay: override-redirect, ARGB, `WM_CLASS`
@@ -44,7 +76,22 @@ impl OverlayWin {
             id,
             gc,
             left_held: false,
+            hand: None,
         })
+    }
+
+    /// Sets the pointer shape over the overlay. `Default` is `None`, so the
+    /// root window's cursor shows through.
+    pub fn set_cursor(&mut self, x: &X, cursor: Cursor) {
+        let id = match cursor {
+            Cursor::Default => NONE,
+            Cursor::Hand => *self
+                .hand
+                .get_or_insert_with(|| hand_cursor(x).unwrap_or(NONE)),
+        };
+        let aux = ChangeWindowAttributesAux::new().cursor(id);
+        let _ = x.conn.change_window_attributes(self.id, &aux);
+        let _ = x.conn.flush();
     }
 
     pub fn set_geometry(&self, x: &X, px: i32, py: i32, w: i32, h: i32) {
@@ -305,6 +352,7 @@ mod tests {
             id: WIN,
             gc: 0,
             left_held: false,
+            hand: None,
         }
     }
 

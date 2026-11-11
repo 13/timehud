@@ -997,3 +997,59 @@ fn set_scale_relayouts_and_stays_in_the_work_area() {
         "off screen: {x},{y} {after:?}"
     );
 }
+
+#[test]
+fn cursor_is_a_hand_over_clickable_regions() {
+    for (hit, want) in [
+        (Hit::Timer, Cursor::Hand),
+        (Hit::Mode, Cursor::Hand),
+        (Hit::BtnStart, Cursor::Hand),
+        (Hit::BtnReset, Cursor::Hand),
+        (Hit::BtnMode, Cursor::Hand),
+        (Hit::Clock, Cursor::Default),
+        (Hit::Background, Cursor::Default),
+    ] {
+        assert_eq!(cursor_for(hit, false), want, "{hit:?}");
+        assert_eq!(cursor_for(hit, true), Cursor::Default, "{hit:?}");
+    }
+}
+
+#[test]
+fn motion_sets_the_cursor_only_when_it_changes() {
+    let mut h = mk(Config::default());
+    let region = |h: &Harness, which: Hit| {
+        let r = h
+            .app
+            .layout
+            .regions
+            .iter()
+            .find(|(x, _)| *x == which)
+            .unwrap()
+            .1;
+        (r.x + r.w / 2, r.y + r.h / 2)
+    };
+    let mv = |h: &mut Harness, (x, y): (i32, i32)| {
+        h.input(Input::Motion {
+            x,
+            y,
+            root_x: x,
+            root_y: y,
+        })
+    };
+    let set = |fx: &[Effect]| {
+        fx.iter()
+            .filter_map(|e| match e {
+                Effect::SetCursor(c) => Some(*c),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let timer = region(&h, Hit::Timer);
+    let clock = region(&h, Hit::Clock);
+    assert_eq!(set(&mv(&mut h, clock)), []); // already the default
+    assert_eq!(set(&mv(&mut h, timer)), [Cursor::Hand]);
+    assert_eq!(set(&mv(&mut h, (timer.0 + 1, timer.1))), []);
+    let mode = region(&h, Hit::Mode);
+    assert_eq!(set(&mv(&mut h, mode)), []); // still a hand
+    assert_eq!(set(&mv(&mut h, clock)), [Cursor::Default]);
+}

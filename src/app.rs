@@ -23,7 +23,7 @@ mod events;
 #[cfg(test)]
 mod tests;
 
-pub use events::{Button, Effect, Input, Key};
+pub use events::{Button, Cursor, Effect, Input, Key};
 
 /// Qt's default double-click interval.
 const DOUBLE_CLICK: f64 = 0.4;
@@ -89,6 +89,8 @@ pub struct App {
     drag: Option<Drag>,
     last_timer_press: Option<f64>,
     hover: Option<Hit>,
+    /// The cursor last set on the overlay window.
+    cursor: Cursor,
     visible: bool,
     // Geometry
     panel_pos: (i32, i32),
@@ -139,6 +141,17 @@ fn is_button(h: Hit) -> bool {
     matches!(h, Hit::BtnStart | Hit::BtnReset | Hit::BtnMode)
 }
 
+/// The pointer shape over `hit` (Python: PointingHandCursor on the timer,
+/// mode label and buttons). Click-through windows get no pointer events,
+/// so they keep the default.
+pub fn cursor_for(hit: Hit, click_through: bool) -> Cursor {
+    match hit {
+        _ if click_through => Cursor::Default,
+        Hit::Timer | Hit::Mode | Hit::BtnStart | Hit::BtnReset | Hit::BtnMode => Cursor::Hand,
+        Hit::Clock | Hit::Background => Cursor::Default,
+    }
+}
+
 impl App {
     pub fn new(
         cfg: Config,
@@ -178,6 +191,7 @@ impl App {
             drag: None,
             last_timer_press: None,
             hover: None,
+            cursor: Cursor::Default,
             visible: true,
             panel_pos: (0, 0),
             layout: Layout {
@@ -1008,10 +1022,18 @@ impl App {
                 fx.push(Effect::Move { x, y });
             }
         }
-        let hover = Some(self.layout.hit(x, y)).filter(|h| is_button(*h));
+        let hit = self.layout.hit(x, y);
+        let hover = Some(hit).filter(|h| is_button(*h));
         if hover != self.hover {
             self.hover = hover;
             fx.push(Effect::Redraw);
+        }
+        // Only on a change: X keeps the window's cursor until told otherwise.
+        // While dragging the panel the pointer keeps its shape.
+        let cursor = cursor_for(hit, self.cfg.click_through);
+        if cursor != self.cursor && self.drag.is_none() {
+            self.cursor = cursor;
+            fx.push(Effect::SetCursor(cursor));
         }
         fx
     }

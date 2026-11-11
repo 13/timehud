@@ -505,6 +505,7 @@ impl Hud {
                 Effect::Move { .. } => self.sync_geometry(),
                 Effect::Resize | Effect::Redraw => self.dirty = true,
                 Effect::SetClickThrough(on) => self.overlay.set_click_through(&self.x, on),
+                Effect::SetCursor(c) => self.overlay.set_cursor(&self.x, c),
                 Effect::SetVisible(v) => self.set_mapped(v),
                 Effect::SetTrayVisible(v) => {
                     if !self.no_tray {
