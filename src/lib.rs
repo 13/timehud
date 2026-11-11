@@ -6,5 +6,6 @@ pub mod format;
 pub mod layout;
 pub mod menu;
 pub mod render;
+pub mod sound;
 pub mod text;
 pub mod themes;
