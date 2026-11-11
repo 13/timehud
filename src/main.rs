@@ -78,7 +78,7 @@ fn run() -> anyhow::Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    let path = ipc::socket_path();
+    let path = ipc::socket_path()?;
     let control = match cli.command {
         Some(Cmd::Settings { tab }) => {
             settings::run_settings(tab)?;
@@ -112,9 +112,15 @@ fn run() -> anyhow::Result<ExitCode> {
 
     match ipc::bind_or_detect(&path)? {
         Bind::AlreadyRunning => {
-            ipc::send(&path, &Request::ToggleVisibility)?;
+            // The other instance may still be starting: give it a moment.
+            ipc::send_patiently(
+                &path,
+                &Request::ToggleVisibility,
+                std::time::Duration::from_secs(2),
+            )?;
         }
-        Bind::Server(listener) => {
+        // `_lock` stays held until the HUD exits.
+        Bind::Server(listener, _lock) => {
             let mut cfg = Config::load();
             if let Some(p) = cli.position {
                 cfg.position = p;

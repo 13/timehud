@@ -335,7 +335,7 @@ enum Startup {
 
 /// Connect, say hello and wait (2 s) for the HUD's `Config`.
 fn handshake() -> Startup {
-    let Ok(mut stream) = UnixStream::connect(socket_path()) else {
+    let Ok(mut stream) = socket_path().and_then(UnixStream::connect) else {
         return Startup::NotRunning;
     };
     let timeout = Some(Duration::from_secs(2));

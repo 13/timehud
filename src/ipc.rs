@@ -8,18 +8,48 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// `$XDG_RUNTIME_DIR/timehud.sock`, else `/tmp/timehud-<uid>.sock`.
-pub fn socket_path() -> PathBuf {
+/// `$XDG_RUNTIME_DIR/timehud.sock`, else `/tmp/timehud-<uid>/timehud.sock`
+/// in a private directory (created on demand; see [`private_dir`]).
+pub fn socket_path() -> io::Result<PathBuf> {
     match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(d) if !d.is_empty() => PathBuf::from(d).join("timehud.sock"),
+        Some(d) if !d.is_empty() => Ok(PathBuf::from(d).join("timehud.sock")),
         _ => {
-            use std::os::unix::fs::MetadataExt;
-            let uid = std::fs::metadata("/proc/self")
-                .map(|m| m.uid())
-                .unwrap_or(0);
-            PathBuf::from(format!("/tmp/timehud-{uid}.sock"))
+            let uid = nix::unistd::getuid().as_raw();
+            let dir = PathBuf::from(format!("/tmp/timehud-{uid}"));
+            private_dir(&dir, uid)?;
+            Ok(dir.join("timehud.sock"))
         }
     }
+}
+
+/// Makes sure `dir` is a real directory (not a symlink) owned by `uid` and
+/// accessible to nobody else, creating it with mode 0700 if missing. In a
+/// shared directory like `/tmp` another user could otherwise pre-create it
+/// and impersonate or hijack the HUD's socket.
+pub fn private_dir(dir: &Path, uid: u32) -> io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+    let meta = std::fs::symlink_metadata(dir)?;
+    let unsafe_dir = |why: &str| {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{}: {why}", dir.display()),
+        )
+    };
+    if !meta.file_type().is_dir() {
+        return Err(unsafe_dir("not a directory"));
+    }
+    if meta.uid() != uid {
+        return Err(unsafe_dir("owned by another user"));
+    }
+    if meta.mode() & 0o077 != 0 {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -48,14 +78,52 @@ pub enum Event {
 }
 
 pub enum Bind {
-    Server(UnixListener),
+    /// We are the instance: the listener, and the lock file that must stay
+    /// open (locked) for as long as the process serves the socket.
+    Server(UnixListener, Lock),
     AlreadyRunning,
 }
 
-/// Connect first: a live listener means another instance runs. A refused or
-/// missing socket is stale; remove it and bind (mode 0600).
+/// The held single-instance lock (unlocked on drop or process exit).
+pub type Lock = nix::fcntl::Flock<std::fs::File>;
+
+/// `<socket>.lock`, the single-instance lock next to the socket.
+fn lock_path(path: &Path) -> PathBuf {
+    let mut p = path.as_os_str().to_owned();
+    p.push(".lock");
+    PathBuf::from(p)
+}
+
+/// Takes the single-instance lock without blocking: an exclusive `flock` on
+/// `<socket>.lock`, released by the kernel when the process exits. `None`
+/// while another process holds it.
+fn try_lock(path: &Path) -> io::Result<Option<Lock>> {
+    use nix::fcntl::{Flock, FlockArg};
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(lock_path(path))?;
+    match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
+        Ok(lock) => Ok(Some(lock)),
+        Err((_, nix::errno::Errno::EWOULDBLOCK)) => Ok(None),
+        Err((_, e)) => Err(e.into()),
+    }
+}
+
+/// Single instance: whoever holds the `<socket>.lock` flock owns the socket,
+/// so two simultaneous starters cannot both decide the socket is stale (the
+/// loser would delete the winner's freshly bound socket). With the lock, a
+/// live listener still means another instance runs (one predating the lock);
+/// a refused or missing socket is stale: remove it and bind (mode 0600).
 pub fn bind_or_detect(path: &Path) -> io::Result<Bind> {
     use io::ErrorKind::*;
+    let Some(lock) = try_lock(path)? else {
+        return Ok(Bind::AlreadyRunning);
+    };
     match UnixStream::connect(path) {
         Ok(_) => return Ok(Bind::AlreadyRunning),
         // Not a socket / nobody listening / nothing there: stale.
@@ -71,11 +139,29 @@ pub fn bind_or_detect(path: &Path) -> io::Result<Bind> {
         Ok(l) => {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-            Ok(Bind::Server(l))
+            Ok(Bind::Server(l, lock))
         }
-        // Lost a race with another starter that bound first.
         Err(e) if e.kind() == AddrInUse => Ok(Bind::AlreadyRunning),
         Err(e) => Err(e),
+    }
+}
+
+/// [`send`], retrying for up to `patience` while nothing listens yet (an
+/// instance holding the lock may still be starting up).
+pub fn send_patiently(path: &Path, req: &Request, patience: Duration) -> io::Result<Event> {
+    let deadline = Instant::now() + patience;
+    loop {
+        match send(path, req) {
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+                ) && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            r => return r,
+        }
     }
 }
 
@@ -233,7 +319,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = sock(&d);
         std::fs::write(&p, b"junk").unwrap();
-        assert!(matches!(bind_or_detect(&p).unwrap(), Bind::Server(_)));
+        assert!(matches!(bind_or_detect(&p).unwrap(), Bind::Server(..)));
     }
 
     #[test]
@@ -242,7 +328,7 @@ mod tests {
         let p = sock(&d);
         drop(UnixListener::bind(&p).unwrap()); // leaves the file behind
         assert!(p.exists());
-        assert!(matches!(bind_or_detect(&p).unwrap(), Bind::Server(_)));
+        assert!(matches!(bind_or_detect(&p).unwrap(), Bind::Server(..)));
     }
 
     #[test]
@@ -250,7 +336,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let d = tempfile::tempdir().unwrap();
         let p = sock(&d);
-        assert!(matches!(bind_or_detect(&p).unwrap(), Bind::Server(_)));
+        assert!(matches!(bind_or_detect(&p).unwrap(), Bind::Server(..)));
         let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
     }
@@ -262,6 +348,92 @@ mod tests {
         let _l = UnixListener::bind(&p).unwrap();
         assert!(matches!(bind_or_detect(&p).unwrap(), Bind::AlreadyRunning));
         assert!(p.exists(), "live socket must not be removed");
+    }
+
+    #[test]
+    fn lock_holder_wins_and_its_socket_survives() {
+        let d = tempfile::tempdir().unwrap();
+        let p = sock(&d);
+        let Bind::Server(_l, lock) = bind_or_detect(&p).unwrap() else {
+            panic!("first starter must bind");
+        };
+        // A racing starter sees the lock, even before anything listens, and
+        // must not remove the socket.
+        assert!(matches!(bind_or_detect(&p).unwrap(), Bind::AlreadyRunning));
+        assert!(p.exists());
+        drop(_l);
+        assert!(matches!(bind_or_detect(&p).unwrap(), Bind::AlreadyRunning));
+        assert!(p.exists(), "socket of a lock holder is never stale");
+        // Once the holder is gone, the stale socket is replaced.
+        drop(lock);
+        assert!(matches!(bind_or_detect(&p).unwrap(), Bind::Server(..)));
+    }
+
+    #[test]
+    fn simultaneous_starters_bind_once() {
+        let d = tempfile::tempdir().unwrap();
+        let p = sock(&d);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let (p, b) = (p.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    b.wait();
+                    bind_or_detect(&p).unwrap()
+                })
+            })
+            .collect();
+        let binds: Vec<Bind> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        let servers = binds
+            .iter()
+            .filter(|b| matches!(b, Bind::Server(..)))
+            .count();
+        assert_eq!(servers, 1);
+        // The winner's socket is still the live one.
+        assert!(UnixStream::connect(&p).is_ok());
+    }
+
+    #[test]
+    fn private_dir_created_and_checked() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let uid = nix::unistd::getuid().as_raw();
+        let dir = d.path().join("timehud-x");
+        private_dir(&dir, uid).unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        // Ours but too open: tightened.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        private_dir(&dir, uid).unwrap();
+        assert_eq!(mode(&dir), 0o700);
+        // Someone else's: refused.
+        let e = private_dir(&dir, uid + 1).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::PermissionDenied);
+        // A symlink (even to our own dir) or a file: refused.
+        let link = d.path().join("link");
+        std::os::unix::fs::symlink(&dir, &link).unwrap();
+        assert!(private_dir(&link, uid).is_err());
+        let file = d.path().join("file");
+        std::fs::write(&file, b"").unwrap();
+        assert!(private_dir(&file, uid).is_err());
+    }
+
+    #[test]
+    fn send_patiently_waits_for_a_starting_server() {
+        let d = tempfile::tempdir().unwrap();
+        let p = sock(&d);
+        let p2 = p.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            let l = UnixListener::bind(&p2).unwrap();
+            let (mut s, _) = l.accept().unwrap();
+            let mut b = [0u8; 64];
+            let _ = s.read(&mut b).unwrap();
+            s.write_all(b"{\"event\":\"ok\"}\n").unwrap();
+        });
+        let r = send_patiently(&p, &Request::Toggle, Duration::from_secs(2));
+        assert_eq!(r.unwrap(), Event::Ok);
+        t.join().unwrap();
     }
 
     #[test]

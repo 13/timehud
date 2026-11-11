@@ -50,7 +50,9 @@ impl eframe::App for SavePreset {
                     if name.is_empty() {
                         return;
                     }
-                    match send(&socket_path(), &Request::SavePreset { name: name.into() }) {
+                    match socket_path()
+                        .and_then(|p| send(&p, &Request::SavePreset { name: name.into() }))
+                    {
                         Ok(Event::Error { message }) => {
                             self.error = Some(message);
                             return;
