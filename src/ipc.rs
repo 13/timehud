@@ -97,6 +97,17 @@ pub fn send(path: &Path, req: &Request) -> io::Result<Event> {
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
+/// Longest accepted request line (without the newline).
+const MAX_LINE: usize = 64 * 1024;
+/// Read chunk size, and chunks per `read_requests` call, so a chatty client
+/// cannot keep the single-threaded HUD loop busy (poll is level-triggered).
+const CHUNK: usize = 4096;
+const MAX_CHUNKS_PER_CALL: usize = 4;
+
+fn too_long() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "request line too long")
+}
+
 /// Nonblocking server-side connection with a line buffer.
 pub struct Conn {
     stream: UnixStream,
@@ -123,8 +134,11 @@ impl Conn {
     /// once the peer has closed and all buffered requests were delivered.
     pub fn read_requests(&mut self) -> io::Result<Vec<Request>> {
         use std::io::Read;
-        let mut chunk = [0u8; 4096];
-        while !self.eof {
+        let mut chunk = [0u8; CHUNK];
+        for _ in 0..MAX_CHUNKS_PER_CALL {
+            if self.eof {
+                break;
+            }
             match self.stream.read(&mut chunk) {
                 Ok(0) => self.eof = true,
                 Ok(n) => self.buf.extend_from_slice(&chunk[..n]),
@@ -137,6 +151,9 @@ impl Conn {
         while let Some(pos) = self.buf.iter().position(|&b| b == b'\n') {
             let line: Vec<u8> = self.buf.drain(..=pos).collect();
             let line = &line[..line.len() - 1];
+            if line.len() > MAX_LINE {
+                return Err(too_long());
+            }
             if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
@@ -144,6 +161,9 @@ impl Conn {
                 serde_json::from_slice(line)
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
             );
+        }
+        if self.buf.len() > MAX_LINE {
+            return Err(too_long());
         }
         if out.is_empty() && self.eof {
             return Err(io::ErrorKind::UnexpectedEof.into());
@@ -281,6 +301,28 @@ mod tests {
         );
         b.write_all(b"it\"}\n").unwrap();
         assert_eq!(c.read_requests().unwrap(), vec![Request::Quit]);
+    }
+
+    #[test]
+    fn conn_rejects_overlong_line_and_bounds_each_read() {
+        let (a, mut b) = UnixStream::pair().unwrap();
+        let mut c = Conn::new(a).unwrap();
+        b.write_all(&vec![b'x'; 100 * 1024]).unwrap();
+        // One call consumes at most a few chunks, not everything pending.
+        assert!(c.read_requests().unwrap().is_empty());
+        assert!(c.buf.len() <= MAX_CHUNKS_PER_CALL * CHUNK);
+        let mut err = None;
+        for _ in 0..64 {
+            if let Err(e) = c.read_requests() {
+                err = Some(e);
+                break;
+            }
+        }
+        assert_eq!(
+            err.expect("cap not enforced").kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert!(c.buf.len() <= MAX_LINE + MAX_CHUNKS_PER_CALL * CHUNK);
     }
 
     #[test]
