@@ -15,10 +15,13 @@ an X11 window, so it starts instantly and idles at ~0% CPU.
 
 ## Build and install
 
-Requires a Rust toolchain (edition 2024) and the X11 / ALSA / fontconfig / GL
-development libraries (Debian/Ubuntu: `build-essential pkg-config libx11-dev
-libxcb1-dev libxkbcommon-dev libasound2-dev libfontconfig1-dev
-libgl1-mesa-dev`).
+Requires a Rust toolchain (edition 2024), a C linker, `pkg-config` and the ALSA
+development headers (Debian/Ubuntu: `build-essential pkg-config
+libasound2-dev`). ALSA is the only library linked at build time; the X11
+connection is pure Rust, and the settings window loads libX11, libXcursor,
+libXi, libxkbcommon(-x11) and libGL/libEGL at runtime via `dlopen`, so those
+only need to be installed (not their `-dev` packages). `fc-match` (fontconfig)
+is used if present to resolve `font_family`; otherwise the bundled font is used.
 
 ```bash
 ./install.sh            # cargo build --release, installs to ~/.local
@@ -82,6 +85,7 @@ awful.key({ modkey, "Control" }, "h",     function() awful.spawn("timehud") end,
 |--------|--------|
 | Single click | Start / pause timer |
 | Double click | Reset timer to zero |
+| Middle click on timer or mode label | Next mode (Stopwatch → Countdown → Interval) |
 | Scroll wheel on timer or mode label | Toggle Stopwatch ↔ Countdown ↔ Interval mode |
 | Scroll wheel on the clock | Change font size |
 | Scroll wheel on the right of the countdown mode label | Adjust countdown duration (±1 min, far right ±1 s) |
@@ -89,31 +93,34 @@ awful.key({ modkey, "Control" }, "h",     function() awful.spawn("timehud") end,
 
 ### Right-click context menu
 
-- **Settings** – full settings window (a separate process, so the overlay stays
-  light and interactive)
-- **Presets** – one-click countdown, interval (work/rest for a total time,
-  e.g. 45/15 for 10 min) and stopwatch (work/rest cycles counting upward
-  forever) presets; save the current countdown as a preset or manage them in
-  Settings
+The same menu opens from the tray icon.
+
+- **Settings…** – full settings window (a separate process, so the overlay
+  stays light and interactive)
+- **Presets** – **Stopwatch** (plain stopwatch), then one-click countdown,
+  interval (work/rest for a total time, e.g. 45/15 for 10 min) and stopwatch
+  (work/rest cycles counting upward forever) presets; **Save current as
+  preset…** saves the current countdown, interval or cycling-stopwatch setup
+  (disabled for a plain stopwatch); **Manage presets…** opens Settings
 - **Theme** – switch between built-in looks
-- **Click-Through** – toggle mouse pass-through
-- **Opacity** – quick opacity change
-- **Position** – snap to screen corner
+- **Click-Through: ON/OFF** – toggle mouse pass-through *
+- **Opacity** – 30 / 50 / 70 / 85 / 95 / 100 %
+- **Position** – Top Left, Top Right, Bottom Left, Bottom Right, Top Center,
+  Bottom Center
+- **Show/Hide Overlay** *
 - **Quit**
 
-### Keyboard shortcuts (overlay window focused)
+\* Shown in the tray menu, and in the right-click menu only while the tray
+icon is enabled (so click-through can always be turned off again and a hidden
+overlay brought back).
 
-| Key | Action |
-|-----|--------|
-| Space | Start / pause timer |
-| R | Reset timer |
-| Escape | Hide overlay |
-| Ctrl+Q | Quit |
+### Keyboard control
 
-Clicking the overlay never takes keyboard focus away from the app below it
-(e.g. a fullscreen video or game), so these keys only apply when your window
-manager has given the overlay focus; use the global hotkeys below for
-reliable keyboard control.
+The overlay is an override-redirect window that never takes keyboard focus
+(so clicking it never steals focus from a fullscreen video or game), and it
+has no keyboard shortcuts of its own. For keyboard control, either bind the
+`timehud toggle` / `reset` / `show` / `hide` subcommands in your window
+manager (see [Command line](#command-line)) or set the global hotkeys below.
 
 ### Global hotkeys (off by default)
 
@@ -132,7 +139,12 @@ show/hide).
 
 Right-click → **Settings** or edit `~/.config/timehud/config.json`
 (`$XDG_CONFIG_HOME/timehud/config.json`). The file is compatible with the
-Python version of TimeHUD in both directions; unknown keys are preserved.
+Python version of TimeHUD in both directions; unknown keys are preserved
+by the Rust app. The Python app keeps only the keys it knows, so saving from
+it drops the Rust-only keys `clock_format`, `hotkey_toggle`, `hotkey_reset`,
+`hotkey_visibility` and `notify_on_finish` (they fall back to their defaults).
+The Python app also always uses `~/.config/timehud/config.json` and ignores
+`XDG_CONFIG_HOME`.
 
 ```json
 {
@@ -188,6 +200,15 @@ Python version of TimeHUD in both directions; unknown keys are preserved.
 `custom_x` / `custom_y` of `-1` mean "use `position`"; `padding_top` of `-1`
 means "same as `padding`"; `progress_style` is `line`, `border` or `off`.
 
+- `clock_format` – `24h` (`13:05:09`, default), `24h-short` (`13:05`) or
+  `12h` (`01:05:09 PM`); any other value behaves like `24h`.
+- `notify_on_finish` – when `true`, a desktop notification (via
+  `notify-send`, if installed) says "Countdown finished" or "Interval session
+  finished" when the timer runs out. Not sent when `auto_restart_countdown`
+  restarts the countdown.
+- `hotkey_toggle` / `hotkey_reset` / `hotkey_visibility` – global hotkeys,
+  empty = off (see [Global hotkeys](#global-hotkeys-off-by-default)).
+
 ### Position presets
 
 `top-left` · `top-right` · `bottom-left` · `bottom-right` · `top-center` · `bottom-center`
@@ -210,8 +231,11 @@ audio device can be opened, TimeHUD falls back to `paplay`, `aplay`, `ffplay`
 or `mpv` if one is installed.
 
 If `alert_last_5_seconds` is enabled, the timer plays short beeps at 5, 4, 3,
-2 and 1 seconds remaining and a long beep at 0; the timer text also flashes its
-warning color on those seconds.
+2 and 1 seconds remaining (before a countdown ends and before every interval or
+cycling-stopwatch phase end); the timer text also shows its warning color on
+those seconds. The long beep at 0 does not depend on it: a countdown always
+plays it when it runs out, while interval and cycling-stopwatch phase ends
+play it only if `phase_beeps` is on. All beeps require `sound_enabled`.
 
 ### Interval mode
 
