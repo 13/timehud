@@ -836,9 +836,10 @@ impl App {
         cfg.clamp_ranges();
         let old = std::mem::replace(&mut self.cfg, cfg);
         let mut fx = Vec::new();
-        // A manual duration change ends the preset, unless the edit already
-        // changed `active_preset` itself (e.g. Cancel restoring a snapshot).
-        if self.cfg.countdown_duration != old.countdown_duration
+        // A manual duration or mode change ends the preset, unless the edit
+        // already changed `active_preset` itself (e.g. Cancel restoring it).
+        if (self.cfg.countdown_duration != old.countdown_duration
+            || self.cfg.timer_mode != old.timer_mode)
             && self.cfg.active_preset == old.active_preset
         {
             self.cfg.active_preset.clear();

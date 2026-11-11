@@ -830,6 +830,7 @@ impl SettingsApp {
     fn timer(&mut self, ui: &mut Ui) {
         let cfg = &mut self.cfg;
         let before = (
+            cfg.timer_mode,
             cfg.countdown_duration,
             cfg.interval_work,
             cfg.interval_rest,
@@ -895,13 +896,14 @@ impl SettingsApp {
             });
         });
         let after = (
+            cfg.timer_mode,
             cfg.countdown_duration,
             cfg.interval_work,
             cfg.interval_rest,
             cfg.interval_rounds,
         );
         if after != before {
-            // Edited by hand: the active preset no longer applies.
+            // Mode or durations edited by hand: the preset no longer applies.
             cfg.active_preset.clear();
         }
     }

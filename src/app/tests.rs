@@ -765,6 +765,28 @@ fn save_preset_rejects_what_the_loader_would_drop() {
 }
 
 #[test]
+fn preview_mode_change_clears_preset() {
+    let mut h = mk(with_presets(vec![
+        json!({"name": "TEA", "type": "interval", "work": 40, "rest": 20, "total": 480}),
+    ]));
+    let now = h.now();
+    h.app.perform(&MenuAction::ApplyPreset(0), now);
+    assert_eq!(h.app.cfg.active_preset, "TEA");
+    let mut edited = h.app.cfg.clone();
+    edited.timer_mode = Mode::Countdown;
+    h.app.preview_config(edited, now);
+    assert_eq!(h.app.cfg.active_preset, "");
+    assert!(!h.app.mode_text().contains("TEA"), "{}", h.app.mode_text());
+    // A config that sets mode and preset together (Cancel restoring both)
+    // keeps its preset.
+    let mut restored = h.app.cfg.clone();
+    restored.timer_mode = Mode::Interval;
+    restored.active_preset = "TEA".into();
+    h.app.preview_config(restored, now);
+    assert_eq!(h.app.cfg.active_preset, "TEA");
+}
+
+#[test]
 fn preview_toggles_tray_and_resets_interval() {
     let mut h = mk(Config {
         timer_mode: Mode::Interval,
