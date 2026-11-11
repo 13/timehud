@@ -23,6 +23,7 @@ use chrono::Timelike;
 use nix::errno::Errno;
 use nix::poll::{PollFd, PollFlags, poll};
 use serde_json::Value;
+use std::collections::VecDeque;
 use std::io::{self, Read};
 use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -47,19 +48,60 @@ pub fn mark_start() {
     let _ = START.set(Instant::now());
 }
 
+/// Keys that together define where the HUD sits: if settings changed any of
+/// them, all of them come from settings (a preset pick must beat a drag).
+const POSITION_GROUP: [&str; 3] = ["position", "custom_x", "custom_y"];
+
 /// Applies onto `current` only the top-level keys the settings process
 /// changed between its previous message `prev` and `new`, so HUD-side edits
 /// made meanwhile (drag position, wheel font size, ...) survive.
+/// [`POSITION_GROUP`] is merged as one unit.
 pub fn merge_settings_changes(current: &Value, prev: &Value, new: &Value) -> Value {
     let mut out = current.clone();
     if let (Some(out_map), Some(new_map)) = (out.as_object_mut(), new.as_object()) {
+        let changed = |k: &str| new_map.get(k).is_some_and(|v| prev.get(k) != Some(v));
+        let group_changed = POSITION_GROUP.iter().any(|k| changed(k));
         for (k, v) in new_map {
-            if prev.get(k) != Some(v) {
+            if changed(k) || (group_changed && POSITION_GROUP.contains(&k.as_str())) {
                 out_map.insert(k.clone(), v.clone());
             }
         }
     }
     out
+}
+
+/// At most this many keep-on-top raises per second ([`RaiseLimiter`]).
+const MAX_RAISES_PER_SEC: usize = 4;
+
+/// Rate limit for keep-on-top raises, so a self-raising always-on-top
+/// client cannot drag the HUD into a tight raise loop.
+#[derive(Debug, Default)]
+pub struct RaiseLimiter {
+    /// Times of the recent raises, oldest first (at most `MAX_RAISES_PER_SEC`).
+    recent: VecDeque<f64>,
+}
+
+impl RaiseLimiter {
+    /// Records and allows a raise at `now` unless `MAX_RAISES_PER_SEC`
+    /// raises already happened within the last second.
+    pub fn try_raise(&mut self, now: f64) -> bool {
+        while self.recent.front().is_some_and(|&t| now - t >= 1.0) {
+            self.recent.pop_front();
+        }
+        if self.recent.len() >= MAX_RAISES_PER_SEC {
+            return false;
+        }
+        self.recent.push_back(now);
+        true
+    }
+
+    /// When the next raise can be allowed if the limit is reached now,
+    /// `None` while fewer raises than the limit were recorded.
+    pub fn next_allowed(&self) -> Option<f64> {
+        (self.recent.len() >= MAX_RAISES_PER_SEC)
+            .then(|| self.recent.front().map(|t| t + 1.0))
+            .flatten()
+    }
 }
 
 /// Hotkey bindings and messages for unparsable hotkey fields.
@@ -148,7 +190,15 @@ struct Hud {
     mapped: bool,
     dirty: bool,
     /// When the next animation frame is due (`App::next_frame`).
+    ///
+    /// Invariant: every `App` mutation goes through [`Hud::apply`] (which
+    /// pulls `frame_due` earlier when an animation starts) or is followed by
+    /// [`Hud::render`] (which recomputes it); otherwise a started animation
+    /// would not wake the poll loop until the next tick.
     frame_due: Option<f64>,
+    /// Another window went above ours; raise when `raises` allows.
+    raise_pending: bool,
+    raises: RaiseLimiter,
     /// The hotkey setup last applied (binds and parse errors).
     hotkeys: Option<HotkeySetup>,
     next_tick: f64,
@@ -252,6 +302,8 @@ impl Hud {
             mapped: true,
             dirty: false,
             frame_due: None,
+            raise_pending: false,
+            raises: RaiseLimiter::default(),
             hotkeys: None,
             next_tick: now,
             save_at: None,
@@ -348,10 +400,8 @@ impl Hud {
             own.extend(p.windows());
         }
         if self.mapped && restack_needed(ev, self.x.root, &own) {
-            self.overlay.raise(&self.x);
-            if let Some(p) = &self.popup {
-                p.raise(&self.x);
-            }
+            self.raise_pending = true;
+            self.raise_if_allowed(now);
         }
 
         // An open menu sees every event first and swallows pointer/keyboard input.
@@ -403,19 +453,17 @@ impl Hud {
         }
 
         if let Some(input) = translate(ev, self.overlay.id) {
+            // No SetInputFocus on click: like the Python app, the overlay
+            // never takes keyboard focus from the (fullscreen) app below.
             if let Input::Press {
-                button: button @ (Button::Left | Button::Middle),
+                button: Button::Left,
                 root_x,
                 root_y,
                 ..
             } = input
             {
-                // Lets Space/R/Escape/Ctrl+Q reach the overlay afterwards.
-                self.overlay.focus(&self.x);
-                if button == Button::Left {
-                    // A drag snaps to the monitor under the pointer.
-                    self.refresh_area(root_x, root_y);
-                }
+                // A drag snaps to the monitor under the pointer.
+                self.refresh_area(root_x, root_y);
             }
             let fx = self.app.handle(input, now);
             self.apply(fx);
@@ -518,6 +566,22 @@ impl Hud {
         }
     }
 
+    /// Performs a pending keep-on-top raise unless rate-limited (then
+    /// `timeout` wakes the loop when it is allowed).
+    fn raise_if_allowed(&mut self, now: f64) {
+        if !self.raise_pending || !self.mapped {
+            self.raise_pending = false;
+            return;
+        }
+        if self.raises.try_raise(now) {
+            self.raise_pending = false;
+            self.overlay.raise(&self.x);
+            if let Some(p) = &self.popup {
+                p.raise(&self.x);
+            }
+        }
+    }
+
     fn set_mapped(&mut self, on: bool) {
         self.mapped = on;
         if on {
@@ -610,6 +674,7 @@ impl Hud {
             self.sound.idle_release();
             self.next_idle = now + IDLE_RELEASE;
         }
+        self.raise_if_allowed(now);
         self.reap();
     }
 
@@ -643,6 +708,10 @@ impl Hud {
 
     fn timeout(&self, now: f64) -> u16 {
         let frame = self.frame_due.filter(|_| self.mapped);
+        let raise = self
+            .raises
+            .next_allowed()
+            .filter(|_| self.raise_pending && self.mapped);
         poll_timeout_ms(
             now,
             &[
@@ -650,6 +719,7 @@ impl Hud {
                 frame,
                 self.save_at,
                 Some(self.next_idle),
+                raise,
             ],
         )
     }
@@ -894,14 +964,53 @@ mod tests {
 
     #[test]
     fn merge_settings_wins_on_keys_it_changed() {
+        // Settings typed a custom_x: the whole position group comes from
+        // settings (its custom_y -1 too), overriding the HUD drag.
         let current = json!({"position": "top-right", "custom_x": 500, "custom_y": 20});
         let prev = json!({"position": "top-right", "custom_x": -1, "custom_y": -1});
-        // The settings side picked a preset position; its custom_* stay -1.
-        let new = json!({"position": "bottom-left", "custom_x": -1, "custom_y": -1});
+        let new = json!({"position": "top-right", "custom_x": 10, "custom_y": -1});
         assert_eq!(
             merge_settings_changes(&current, &prev, &new),
-            json!({"position": "bottom-left", "custom_x": 500, "custom_y": 20})
+            json!({"position": "top-right", "custom_x": 10, "custom_y": -1})
         );
+    }
+
+    #[test]
+    fn merge_takes_position_group_whole_from_settings() {
+        // The HUD was dragged (custom_*) while settings picked a preset
+        // position: the pick wins, including its unset custom_*.
+        let current =
+            json!({"position": "top-right", "custom_x": 500, "custom_y": 20, "font_size": 40});
+        let prev =
+            json!({"position": "top-right", "custom_x": -1, "custom_y": -1, "font_size": 30});
+        let new =
+            json!({"position": "bottom-left", "custom_x": -1, "custom_y": -1, "font_size": 30});
+        assert_eq!(
+            merge_settings_changes(&current, &prev, &new),
+            json!({"position": "bottom-left", "custom_x": -1, "custom_y": -1, "font_size": 40})
+        );
+        // Settings did not touch the group: the drag survives.
+        let new = json!({"position": "top-right", "custom_x": -1, "custom_y": -1, "font_size": 50});
+        assert_eq!(
+            merge_settings_changes(&current, &prev, &new),
+            json!({"position": "top-right", "custom_x": 500, "custom_y": 20, "font_size": 50})
+        );
+    }
+
+    #[test]
+    fn raise_limiter_allows_four_per_second_then_defers() {
+        let mut lim = RaiseLimiter::default();
+        assert_eq!(lim.next_allowed(), None);
+        for t in [10.0, 10.1, 10.2, 10.3] {
+            assert!(lim.try_raise(t), "raise at {t}");
+        }
+        assert!(!lim.try_raise(10.4));
+        assert!(!lim.try_raise(10.99));
+        // The oldest raise (10.0) leaves the 1 s window at 11.0.
+        assert_eq!(lim.next_allowed(), Some(11.0));
+        assert!(lim.try_raise(11.0));
+        assert!(!lim.try_raise(11.05));
+        assert_eq!(lim.next_allowed(), Some(11.1));
     }
 
     #[test]

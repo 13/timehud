@@ -561,7 +561,7 @@ impl App {
         if !r.beeps.is_empty() && countdown && r.display <= FINAL_SECONDS {
             self.pulse_start = Some(now);
         }
-        if r.finished && self.cfg.notify_on_finish {
+        if r.finished && !r.restarted && self.cfg.notify_on_finish {
             let text = if self.cfg.timer_mode == Mode::Interval {
                 "Interval session finished"
             } else {

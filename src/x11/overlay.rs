@@ -9,8 +9,7 @@ use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::shape::{self, SK, SO};
 use x11rb::protocol::xproto::{
-    ClipOrdering, ConfigureWindowAux, ConnectionExt as _, EventMask, InputFocus, KeyButMask,
-    StackMode,
+    ClipOrdering, ConfigureWindowAux, ConnectionExt as _, EventMask, KeyButMask, StackMode,
 };
 
 pub struct OverlayWin {
@@ -84,15 +83,6 @@ impl OverlayWin {
         let _ = x.conn.unmap_window(self.id);
         let _ = x.conn.flush();
     }
-
-    /// Takes keyboard focus (override-redirect windows never get it from the
-    /// WM); call on click so Space/R/Escape/Ctrl+Q reach the overlay.
-    pub fn focus(&self, x: &X) {
-        let _ = x
-            .conn
-            .set_input_focus(InputFocus::PARENT, self.id, x11rb::CURRENT_TIME);
-        let _ = x.conn.flush();
-    }
 }
 
 pub(super) fn raise_window(x: &X, win: u32) {
@@ -104,13 +94,18 @@ pub(super) fn raise_window(x: &X, win: u32) {
 
 /// True when another top-level window was mapped or restacked directly above
 /// one of `own` (the overlay and any popup windows), i.e. the overlay should
-/// be raised again (then any open popup above it). Requires the root
-/// `SubstructureNotify` selection made by [`X::connect`].
+/// be raised again (then any open popup above it). Override-redirect
+/// windows (screen lockers, other overlays, menus) are left alone so the two
+/// never fight in a raise loop. Requires the root `SubstructureNotify`
+/// selection made by [`X::connect`].
 pub fn restack_needed(ev: &Event, root: u32, own: &[u32]) -> bool {
     match ev {
-        Event::MapNotify(e) => e.event == root && !own.contains(&e.window),
+        Event::MapNotify(e) => e.event == root && !e.override_redirect && !own.contains(&e.window),
         Event::ConfigureNotify(e) => {
-            e.event == root && !own.contains(&e.window) && own.contains(&e.above_sibling)
+            e.event == root
+                && !e.override_redirect
+                && !own.contains(&e.window)
+                && own.contains(&e.above_sibling)
         }
         _ => false,
     }
@@ -390,6 +385,26 @@ mod tests {
         // Restacked somewhere below us, or our own restack.
         assert!(!restack_needed(&configure(0x77, 0x55), ROOT, &own));
         assert!(!restack_needed(&configure(WIN, 0x77), ROOT, &own));
+    }
+
+    #[test]
+    fn restack_ignores_override_redirect_windows() {
+        // Screen lockers and other overlays manage their own stacking:
+        // fighting them would be an endless raise loop.
+        let own = [WIN];
+        let map = Event::MapNotify(MapNotifyEvent {
+            response_type: 19,
+            sequence: 0,
+            event: ROOT,
+            window: 0x77,
+            override_redirect: true,
+        });
+        assert!(!restack_needed(&map, ROOT, &own));
+        let Event::ConfigureNotify(mut e) = configure(0x77, WIN) else {
+            unreachable!()
+        };
+        e.override_redirect = true;
+        assert!(!restack_needed(&Event::ConfigureNotify(e), ROOT, &own));
     }
 
     #[test]

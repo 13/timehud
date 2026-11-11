@@ -613,6 +613,29 @@ fn notify_on_finish_effect() {
 }
 
 #[test]
+fn notify_skipped_on_auto_restart() {
+    // Python parity: finish handling only when `finished && !restarted`.
+    let mut h = mk(Config {
+        notify_on_finish: true,
+        auto_restart_countdown: true,
+        ..countdown(2)
+    });
+    let now = h.now();
+    h.app.toggle_timer(now);
+    let mut notes = 0;
+    for _ in 0..70 {
+        h.advance(0.1);
+        notes += h
+            .tick()
+            .iter()
+            .filter(|e| matches!(e, Effect::Notify(_)))
+            .count();
+    }
+    assert!(h.app.engine.running(), "still cycling");
+    assert_eq!(notes, 0);
+}
+
+#[test]
 fn startup_clamps_offscreen_custom_pos() {
     // e.g. saved on a monitor that is no longer connected (-1 means "preset")
     let h = mk(Config {

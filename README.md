@@ -110,6 +110,11 @@ awful.key({ modkey, "Control" }, "h",     function() awful.spawn("timehud") end,
 | Escape | Hide overlay |
 | Ctrl+Q | Quit |
 
+Clicking the overlay never takes keyboard focus away from the app below it
+(e.g. a fullscreen video or game), so these keys only apply when your window
+manager has given the overlay focus; use the global hotkeys below for
+reliable keyboard control.
+
 ### Global hotkeys (off by default)
 
 No global hotkey is bound until you set one in Settings → Hotkeys (the fields
