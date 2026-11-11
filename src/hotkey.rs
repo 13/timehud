@@ -92,6 +92,68 @@ fn modifier_bit(name: &str) -> Option<u16> {
     }
 }
 
+/// Named keys: keysym, canonical name, other accepted spellings (egui's
+/// `Key::name()` among them). Matching is case-insensitive.
+const NAMED_KEYS: &[(u32, &str, &[&str])] = &[
+    (0x20, "Space", &[" "]),
+    (0xff0d, "Return", &["enter"]),
+    (0xff1b, "Escape", &["esc"]),
+    (0xff09, "Tab", &[]),
+    (0xff08, "BackSpace", &[]),
+    (0xffff, "Delete", &["del"]),
+    (0xff50, "Home", &[]),
+    (0xff51, "Left", &["arrowleft"]),
+    (0xff52, "Up", &["arrowup"]),
+    (0xff53, "Right", &["arrowright"]),
+    (0xff54, "Down", &["arrowdown"]),
+    (0xff55, "PageUp", &["prior"]),
+    (0xff56, "PageDown", &["next"]),
+    (0xff57, "End", &[]),
+    (0xff63, "Insert", &[]),
+    (0xff13, "Pause", &[]),
+    (0xff61, "Print", &["printscreen"]),
+    // Punctuation (Latin-1 keysyms equal the ASCII code). `+` has no
+    // single-character spelling: it separates the combo's parts.
+    (0x2d, "Minus", &["-"]),
+    (0x3d, "Equal", &["equals", "="]),
+    (0x2c, "Comma", &[","]),
+    (0x2e, "Period", &["."]),
+    (0x2f, "Slash", &["/"]),
+    (0x5c, "Backslash", &["\\"]),
+    (0x3b, "Semicolon", &[";"]),
+    (0x27, "Apostrophe", &["quote", "'"]),
+    (0x60, "Grave", &["backtick", "`"]),
+    (0x5b, "BracketLeft", &["openbracket", "["]),
+    (0x5d, "BracketRight", &["closebracket", "]"]),
+    (0x3a, "Colon", &[":"]),
+    (0x2b, "Plus", &[]),
+    (0x7c, "Bar", &["pipe", "|"]),
+    (0x3f, "Question", &["questionmark", "?"]),
+    (0x21, "Exclam", &["exclamationmark", "!"]),
+    (0x7b, "BraceLeft", &["opencurlybracket", "{"]),
+    (0x7d, "BraceRight", &["closecurlybracket", "}"]),
+    // XF86 media and browser keys.
+    (0x1008ff14, "AudioPlay", &["mediaplaypause"]),
+    (0x1008ff15, "AudioStop", &["mediastop"]),
+    (0x1008ff16, "AudioPrev", &["mediatrackprevious"]),
+    (0x1008ff17, "AudioNext", &["mediatracknext"]),
+    (0x1008ff12, "AudioMute", &["audiovolumemute"]),
+    (0x1008ff11, "AudioLowerVolume", &["audiovolumedown"]),
+    (0x1008ff13, "AudioRaiseVolume", &["audiovolumeup"]),
+    (0x1008ff19, "Mail", &["launchmail"]),
+    (0x1008ff18, "HomePage", &["browserhome"]),
+    (0x1008ff1b, "Search", &["browsersearch"]),
+    (0x1008ff26, "Back", &["browserback"]),
+    (0x1008ff27, "Forward", &["browserforward"]),
+    (0x1008ff28, "Stop", &["browserstop"]),
+    (0x1008ff29, "Refresh", &["browserrefresh"]),
+    (0x1008ff30, "Favorites", &["browserfavorites"]),
+];
+
+/// F1..F35 are consecutive keysyms from 0xffbe.
+const F1: u32 = 0xffbe;
+const MAX_F: u32 = 35;
+
 /// Case-insensitive key name to X11 keysym.
 fn keysym_for_name(name: &str) -> Option<u32> {
     let lower = name.to_ascii_lowercase();
@@ -102,56 +164,62 @@ fn keysym_for_name(name: &str) -> Option<u32> {
         return Some(u32::from(*b));
     }
     if let Some(n) = lower.strip_prefix('f')
+        && !n.is_empty()
         && n.bytes().all(|b| b.is_ascii_digit())
-        && let Ok(n @ 1..=12) = n.parse::<u32>()
+        && let Ok(n @ 1..=MAX_F) = n.parse::<u32>()
     {
-        return Some(0xffbd + n);
+        return Some(F1 + n - 1);
     }
-    Some(match lower.as_str() {
-        "space" => 0x20,
-        "return" | "enter" => 0xff0d,
-        "escape" | "esc" => 0xff1b,
-        "tab" => 0xff09,
-        "backspace" => 0xff08,
-        "delete" | "del" => 0xffff,
-        "home" => 0xff50,
-        "left" | "arrowleft" => 0xff51,
-        "up" | "arrowup" => 0xff52,
-        "right" | "arrowright" => 0xff53,
-        "down" | "arrowdown" => 0xff54,
-        "prior" | "pageup" => 0xff55,
-        "next" | "pagedown" => 0xff56,
-        "end" => 0xff57,
-        "insert" => 0xff63,
-        "pause" => 0xff13,
-        _ => return None,
-    })
+    NAMED_KEYS
+        .iter()
+        .find(|(_, canon, aliases)| {
+            canon.eq_ignore_ascii_case(&lower) || aliases.iter().any(|a| *a == lower)
+        })
+        .map(|(sym, _, _)| *sym)
 }
 
 /// X11 keysym to canonical key name.
 fn keysym_name(keysym: u32) -> Option<String> {
-    Some(match keysym {
-        0x61..=0x7a => char::from(keysym as u8).to_ascii_uppercase().to_string(),
-        0x30..=0x39 => char::from(keysym as u8).to_string(),
-        0xffbe..=0xffc9 => format!("F{}", keysym - 0xffbd),
-        0x20 => "Space".into(),
-        0xff0d => "Return".into(),
-        0xff1b => "Escape".into(),
-        0xff09 => "Tab".into(),
-        0xff08 => "BackSpace".into(),
-        0xffff => "Delete".into(),
-        0xff50 => "Home".into(),
-        0xff51 => "Left".into(),
-        0xff52 => "Up".into(),
-        0xff53 => "Right".into(),
-        0xff54 => "Down".into(),
-        0xff55 => "PageUp".into(),
-        0xff56 => "PageDown".into(),
-        0xff57 => "End".into(),
-        0xff63 => "Insert".into(),
-        0xff13 => "Pause".into(),
-        _ => return None,
-    })
+    match keysym {
+        0x61..=0x7a => Some(char::from(keysym as u8).to_ascii_uppercase().to_string()),
+        0x30..=0x39 => Some(char::from(keysym as u8).to_string()),
+        k if (F1..F1 + MAX_F).contains(&k) => Some(format!("F{}", k - F1 + 1)),
+        _ => NAMED_KEYS
+            .iter()
+            .find(|(sym, _, _)| *sym == keysym)
+            .map(|(_, canon, _)| (*canon).to_string()),
+    }
+}
+
+/// Whether an egui key name is a bare modifier (pressed on its own while
+/// a combo is being captured).
+pub fn is_modifier_key(key_name: &str) -> bool {
+    ["Shift", "Control", "Alt", "Super", "Meta"]
+        .iter()
+        .any(|m| {
+            key_name
+                .strip_prefix(m)
+                .is_some_and(|r| r.is_empty() || r == "Left" || r == "Right")
+        })
+}
+
+/// Indices (into `combos`) of entries whose combo another entry also uses;
+/// spelling differences ("ctrl+r" vs "Ctrl+R") do not matter, empty or
+/// invalid entries are ignored.
+pub fn duplicate_combos(combos: &[&str]) -> Vec<usize> {
+    let parsed: Vec<Option<Combo>> = combos
+        .iter()
+        .map(|c| parse_combo(c).ok().flatten())
+        .collect();
+    (0..parsed.len())
+        .filter(|&i| {
+            parsed[i].is_some()
+                && parsed
+                    .iter()
+                    .enumerate()
+                    .any(|(j, other)| j != i && *other == parsed[i])
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -262,6 +330,59 @@ mod tests {
             0x35
         );
         assert!(egui_to_combo("Banana", false, false, false, false).is_none());
+    }
+
+    #[test]
+    fn punctuation_function_and_media_keys() {
+        for (egui, sym, canon) in [
+            ("Minus", 0x2d, "Ctrl+Minus"),
+            ("Equals", 0x3d, "Ctrl+Equal"),
+            ("Comma", 0x2c, "Ctrl+Comma"),
+            ("Period", 0x2e, "Ctrl+Period"),
+            ("Slash", 0x2f, "Ctrl+Slash"),
+            ("Backslash", 0x5c, "Ctrl+Backslash"),
+            ("Semicolon", 0x3b, "Ctrl+Semicolon"),
+            ("Quote", 0x27, "Ctrl+Apostrophe"),
+            ("Backtick", 0x60, "Ctrl+Grave"),
+            ("OpenBracket", 0x5b, "Ctrl+BracketLeft"),
+            ("CloseBracket", 0x5d, "Ctrl+BracketRight"),
+            ("Plus", 0x2b, "Ctrl+Plus"),
+            ("Questionmark", 0x3f, "Ctrl+Question"),
+            ("F13", 0xffca, "Ctrl+F13"),
+            ("F24", 0xffd5, "Ctrl+F24"),
+            ("F35", 0xffe0, "Ctrl+F35"),
+            ("MediaPlayPause", 0x1008ff14, "Ctrl+AudioPlay"),
+            ("AudioVolumeUp", 0x1008ff13, "Ctrl+AudioRaiseVolume"),
+            ("BrowserBack", 0x1008ff26, "Ctrl+Back"),
+        ] {
+            let c = egui_to_combo(egui, true, false, false, false).unwrap();
+            assert_eq!(c.keysym, sym, "{egui}");
+            assert_eq!(format_combo(&c), canon);
+            // The canonical form parses back to the same combo.
+            assert_eq!(parse_combo(canon).unwrap(), Some(c), "{canon}");
+        }
+        assert_eq!(parse_combo("Alt+-").unwrap().unwrap().keysym, 0x2d);
+        assert!(parse_combo("F36").is_err());
+        assert!(egui_to_combo("ShiftLeft", true, false, false, false).is_none());
+    }
+
+    #[test]
+    fn modifier_keys() {
+        assert!(is_modifier_key("ShiftLeft"));
+        assert!(is_modifier_key("ControlRight"));
+        assert!(is_modifier_key("Alt"));
+        assert!(!is_modifier_key("A"));
+        assert!(!is_modifier_key("Space"));
+    }
+
+    #[test]
+    fn duplicates_ignore_spelling_and_empties() {
+        assert_eq!(
+            duplicate_combos(&["ctrl+shift+r", "", "Ctrl+Shift+R"]),
+            vec![0, 2]
+        );
+        assert!(duplicate_combos(&["", "", "F5"]).is_empty());
+        assert!(duplicate_combos(&["Ctrl+R", "Alt+R", "bogus+key"]).is_empty());
     }
 
     #[test]

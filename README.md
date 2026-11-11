@@ -126,7 +126,10 @@ manager (see [Command line](#command-line)) or set the global hotkeys below.
 
 No global hotkey is bound until you set one in Settings → Hotkeys (the fields
 suggest `Ctrl+Shift+Space` start/pause, `Ctrl+Shift+R` reset, `Ctrl+Shift+H`
-show/hide).
+show/hide). A combo needs Ctrl or Alt unless its key is a function key
+(F1–F35). Letters, digits, punctuation (`Minus`, `Comma`, `BracketLeft`, …),
+navigation keys and media keys (`AudioPlay`, `AudioRaiseVolume`, …) can be
+bound; Settings says when a key is unsupported or two actions share a combo.
 
 > **Warning:** these are exclusive X11 key grabs. While TimeHUD is running, a
 > grabbed combination no longer reaches any other application. If a combo is

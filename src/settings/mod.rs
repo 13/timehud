@@ -7,7 +7,7 @@ mod save_preset;
 pub use save_preset::run_save_preset;
 
 use crate::config::{Config, Mode, config_path};
-use crate::hotkey::{egui_to_combo, format_combo};
+use crate::hotkey::{duplicate_combos, egui_to_combo, format_combo, is_modifier_key};
 use crate::ipc::{Event, Request, socket_path};
 use crate::layout::POSITIONS;
 use crate::settings_session::adopt_hud_config;
@@ -470,7 +470,36 @@ fn rgb_to_hex(c: [u8; 3]) -> String {
     format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2])
 }
 
-/// A captured key press as a combo string, or None if the key is unusable.
+/// Why a key press during hotkey capture did not become the hotkey.
+#[derive(Clone, Debug, PartialEq)]
+enum CaptureNote {
+    /// No Ctrl/Alt (and not a function key).
+    NeedsModifier,
+    /// No X keysym known for this key.
+    Unsupported(String),
+}
+
+/// What a key press during capture does.
+#[derive(Clone, Debug, PartialEq)]
+enum Captured {
+    /// A lone modifier: keep waiting for the rest of the combo.
+    Pending,
+    Rejected(CaptureNote),
+    Combo(String),
+}
+
+fn capture_key(key: Key, physical: Option<Key>, m: egui::Modifiers) -> Captured {
+    if is_modifier_key(key.name()) {
+        Captured::Pending
+    } else if !capture_allowed(key, m) {
+        Captured::Rejected(CaptureNote::NeedsModifier)
+    } else if let Some(c) = combo_from_key(key, physical, m) {
+        Captured::Combo(c)
+    } else {
+        Captured::Rejected(CaptureNote::Unsupported(key.name().to_string()))
+    }
+}
+
 /// Whether a captured key press may become a global hotkey: it needs Ctrl or
 /// Alt (Super is not reported on Linux), except bare function keys. A plain
 /// letter or Space would be grabbed globally and stop reaching every app.
@@ -521,8 +550,8 @@ struct SettingsApp {
     /// The last other error the HUD reported, shown in the button bar.
     status: Option<String>,
     capturing: Option<usize>,
-    /// The last key pressed while capturing lacked Ctrl/Alt.
-    capture_needs_mod: bool,
+    /// Why the last key pressed while capturing was not taken.
+    capture_note: Option<CaptureNote>,
     fonts: Arc<OnceLock<Vec<String>>>,
     font_filter: String,
     picker: Option<&'static str>,
@@ -555,7 +584,7 @@ impl SettingsApp {
             hotkey_errors: Vec::new(),
             status: None,
             capturing: None,
-            capture_needs_mod: false,
+            capture_note: None,
             fonts,
             font_filter: String::new(),
             picker: file_picker(),
@@ -622,7 +651,7 @@ impl SettingsApp {
             return;
         };
         let mut result: Option<Option<String>> = None;
-        let mut needs_mod = false;
+        let mut note: Option<CaptureNote> = None;
         ctx.input_mut(|input| {
             let mods = input.modifiers;
             input.events.retain(|ev| {
@@ -639,10 +668,13 @@ impl SettingsApp {
                     } => {
                         if *key == Key::Escape && !modifiers.any() {
                             result = Some(None);
-                        } else if !capture_allowed(*key, *modifiers) {
-                            needs_mod = true; // keep capturing
-                        } else if let Some(c) = combo_from_key(*key, *physical_key, *modifiers) {
-                            result = Some(Some(c));
+                        } else {
+                            match capture_key(*key, *physical_key, *modifiers) {
+                                Captured::Pending => {}
+                                // Keep capturing, say why.
+                                Captured::Rejected(why) => note = Some(why),
+                                Captured::Combo(c) => result = Some(Some(c)),
+                            }
                         }
                         false
                     }
@@ -661,12 +693,12 @@ impl SettingsApp {
                 }
             });
         });
-        if needs_mod {
-            self.capture_needs_mod = true;
+        if note.is_some() {
+            self.capture_note = note;
         }
         if let Some(r) = result {
             self.capturing = None;
-            self.capture_needs_mod = false;
+            self.capture_note = None;
             if let Some(combo) = r {
                 let field = hotkey_field(&mut self.cfg, i);
                 if *field != combo {
@@ -1041,6 +1073,11 @@ impl SettingsApp {
             self.cfg.hotkey_reset.clone(),
             self.cfg.hotkey_visibility.clone(),
         );
+        let dup = duplicate_combos(&[
+            &self.cfg.hotkey_toggle,
+            &self.cfg.hotkey_reset,
+            &self.cfg.hotkey_visibility,
+        ]);
         card(ui, "Shortcuts", |ui| {
             form(ui, "hotkeys", |ui| {
                 for (i, (label, hint)) in HOTKEYS.iter().enumerate() {
@@ -1048,8 +1085,15 @@ impl SettingsApp {
                     ui.horizontal(|ui| {
                         let capturing = self.capturing == Some(i);
                         let value = hotkey_field(&mut self.cfg, i).clone();
-                        let text = if capturing && self.capture_needs_mod {
-                            RichText::new("Add Ctrl or Alt…").color(WARN)
+                        let text = if capturing && let Some(why) = &self.capture_note {
+                            match why {
+                                CaptureNote::NeedsModifier => {
+                                    RichText::new("Add Ctrl or Alt…").color(WARN)
+                                }
+                                CaptureNote::Unsupported(k) => {
+                                    RichText::new(format!("Unsupported key: {k}")).color(WARN)
+                                }
+                            }
                         } else if capturing {
                             RichText::new("Press keys…").color(ACCENT)
                         } else if value.is_empty() {
@@ -1066,9 +1110,13 @@ impl SettingsApp {
                         } else {
                             "Click, then press the key combination"
                         });
+                        if dup.contains(&i) {
+                            ui.label(RichText::new("duplicate").size(12.0).color(ERROR))
+                                .on_hover_text("Another action uses the same combo");
+                        }
                         if r.clicked() {
                             self.capturing = if capturing { None } else { Some(i) };
-                            self.capture_needs_mod = false;
+                            self.capture_note = None;
                             r.surrender_focus();
                         }
                         if !value.is_empty()
@@ -1084,6 +1132,20 @@ impl SettingsApp {
                     ui.end_row();
                 }
             });
+            if !dup.is_empty() {
+                ui.add_space(4.0);
+                let names: Vec<&str> = dup.iter().map(|&i| HOTKEYS[i].0).collect();
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!(
+                            "{} share one combo; only one of them can work.",
+                            names.join(" and ")
+                        ))
+                        .color(ERROR),
+                    )
+                    .wrap(),
+                );
+            }
             if !self.hotkey_errors.is_empty() {
                 ui.add_space(4.0);
                 Frame::new()
@@ -1504,6 +1566,29 @@ mod tests {
         assert_eq!(clock_format_label("24h-short"), "24-hour  13:05");
         // Unknown values behave like 24h (format::clock_text).
         assert_eq!(clock_format_label("bogus"), clock_format_label("24h"));
+    }
+
+    #[test]
+    fn capture_classifies_key_presses() {
+        use egui::Modifiers;
+        let ctrl = Modifiers::CTRL;
+        assert_eq!(capture_key(Key::ControlLeft, None, ctrl), Captured::Pending);
+        assert_eq!(
+            capture_key(Key::A, None, Modifiers::NONE),
+            Captured::Rejected(CaptureNote::NeedsModifier)
+        );
+        assert_eq!(
+            capture_key(Key::Minus, None, ctrl),
+            Captured::Combo("Ctrl+Minus".into())
+        );
+        assert_eq!(
+            capture_key(Key::F20, None, Modifiers::NONE),
+            Captured::Combo("F20".into())
+        );
+        assert_eq!(
+            capture_key(Key::LaunchApp1, None, ctrl),
+            Captured::Rejected(CaptureNote::Unsupported("LaunchApp1".into()))
+        );
     }
 
     #[test]
