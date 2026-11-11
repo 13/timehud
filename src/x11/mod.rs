@@ -7,6 +7,7 @@
 pub mod grabs;
 pub mod overlay;
 pub mod popup;
+pub mod tray;
 
 use crate::layout::Rect;
 use anyhow::{Context, bail};
@@ -31,6 +32,10 @@ x11rb::atom_manager! {
         _NET_WORKAREA,
         _NET_CURRENT_DESKTOP,
         _COMPTON_SHADOW,
+        MANAGER,
+        _NET_SYSTEM_TRAY_OPCODE,
+        _NET_SYSTEM_TRAY_VISUAL,
+        _XEMBED_INFO,
     }
 }
 
