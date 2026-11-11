@@ -189,6 +189,7 @@ const ITEM_PAD_Y: f32 = 6.0;
 const SEP_MARGIN_Y: f32 = 3.0;
 const SEP_MARGIN_X: f32 = 6.0;
 const CHEVRON_GAP: f32 = 12.0;
+const TIP_PAD_X: f32 = 10.0;
 
 pub struct MenuLayout {
     pub w: i32,
@@ -280,6 +281,55 @@ fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Pat
     b.cubic_to(x, y + r - k, x + r - k, y, x + r, y);
     b.close();
     b.finish()
+}
+
+/// Size of a one-line tooltip in the menu's look.
+pub fn tooltip_size(text: &str, fonts: &mut FontSet, scale: f32) -> (i32, i32) {
+    let px = font_px(scale);
+    let border = sc(BORDER, scale).max(1);
+    let w = fonts.measure(text, px, false).ceil() as i32 + 2 * sc(TIP_PAD_X, scale) + 2 * border;
+    let h = (px * 1.2).round() as i32 + 2 * sc(ITEM_PAD_Y, scale) + 2 * border;
+    (w, h)
+}
+
+/// A one-line tooltip: the menu's panel, border and text colours.
+pub fn render_tooltip(text: &str, fonts: &mut FontSet, scale: f32) -> tiny_skia::Pixmap {
+    let (w, h) = tooltip_size(text, fonts, scale);
+    let mut pm = tiny_skia::Pixmap::new(w.max(1) as u32, h.max(1) as u32).expect("tooltip pixmap");
+    let id = tiny_skia::Transform::identity();
+    let border = sc(BORDER, scale).max(1) as f32;
+    let (wf, hf) = (w as f32, h as f32);
+    if let Some(p) = rounded_rect(0.0, 0.0, wf, hf, RADIUS * scale) {
+        let fill = paint(rgba(0x1A1A1A, 245));
+        pm.fill_path(&p, &fill, tiny_skia::FillRule::Winding, id, None);
+    }
+    if let Some(p) = rounded_rect(
+        border / 2.0,
+        border / 2.0,
+        wf - border,
+        hf - border,
+        RADIUS * scale - border / 2.0,
+    ) {
+        let stroke = tiny_skia::Stroke {
+            width: border,
+            ..Default::default()
+        };
+        pm.stroke_path(&p, &paint(rgba(0x333333, 255)), &stroke, id, None);
+    }
+    let px = font_px(scale);
+    let baseline = (hf + fonts.ink_height(px)) / 2.0;
+    let x = border + sc(TIP_PAD_X, scale) as f32;
+    fonts.draw(
+        &mut pm,
+        text,
+        x,
+        baseline,
+        px,
+        rgba(0xCCCCCC, 255),
+        false,
+        0.0,
+    );
+    pm
 }
 
 pub fn render_menu(

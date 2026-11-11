@@ -1,5 +1,50 @@
 //! Platform-neutral input events and the effects the controller asks for.
 use crate::engine::Beep;
+use serde::{Deserialize, Serialize};
+
+/// A snapshot of the timer for `timehud status` and the tray tooltip.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Status {
+    /// `stopwatch`, `countdown` or `interval`.
+    pub mode: String,
+    /// `running`, `paused` or `idle` (stopped at the start).
+    pub state: String,
+    /// The time as the HUD shows it, e.g. `04:12`.
+    pub display: String,
+    /// The mode label, e.g. `COUNTDOWN`, `WORK 2/8` or `TEA`.
+    pub label: String,
+    /// The active preset's name, empty for none.
+    pub preset: String,
+    /// Whether the overlay is shown.
+    pub visible: bool,
+}
+
+impl Status {
+    /// One line for scripts: mode, state, display, then the preset (which
+    /// may contain spaces) if any.
+    pub fn line(&self) -> String {
+        let mut s = format!("{} {} {}", self.mode, self.state, self.display);
+        if !self.preset.is_empty() {
+            s.push(' ');
+            s.push_str(&self.preset);
+        }
+        s
+    }
+
+    /// The tray tooltip, e.g. `TimeHUD \u{2014} Countdown 04:12 (running) \u{b7} Tea`.
+    pub fn tooltip(&self) -> String {
+        let mut mode = self.mode.clone();
+        if let Some(first) = mode.get_mut(..1) {
+            first.make_ascii_uppercase();
+        }
+        let mut s = format!("TimeHUD \u{2014} {mode} {} ({})", self.display, self.state);
+        if !self.preset.is_empty() {
+            s.push_str(" \u{b7} ");
+            s.push_str(&self.preset);
+        }
+        s
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Button {

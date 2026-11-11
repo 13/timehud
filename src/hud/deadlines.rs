@@ -30,6 +30,8 @@ pub struct Deadlines {
     pub raise: Option<f64>,
     /// End of the `accept` back-off pause.
     pub accept: Option<f64>,
+    /// When the tray tooltip shows (pointer resting on the icon).
+    pub tooltip: Option<f64>,
 }
 
 impl Deadlines {
@@ -41,6 +43,7 @@ impl Deadlines {
             idle: now + IDLE_RELEASE,
             raise: None,
             accept: None,
+            tooltip: None,
         }
     }
 
@@ -91,6 +94,15 @@ impl Deadlines {
         self.accept.is_none()
     }
 
+    /// Whether the tooltip delay ran out; clears it if so.
+    pub fn tooltip_due(&mut self, now: f64) -> bool {
+        let due = self.tooltip.is_some_and(|t| now >= t);
+        if due {
+            self.tooltip = None;
+        }
+        due
+    }
+
     /// Poll timeout in ms until the earliest deadline; the frame only
     /// counts while the overlay is `mapped`.
     pub fn timeout_ms(&self, now: f64, mapped: bool) -> u16 {
@@ -103,6 +115,7 @@ impl Deadlines {
                 Some(self.idle),
                 self.raise,
                 self.accept,
+                self.tooltip,
             ],
         )
     }
@@ -118,6 +131,19 @@ fn poll_timeout_ms(now: f64, deadlines: &[Option<f64>]) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tooltip_deadline_wakes_the_loop_once() {
+        let mut d = Deadlines::new(0.0);
+        d.tick = 5.0;
+        d.idle = 5.0;
+        d.tooltip = Some(0.6);
+        assert_eq!(d.timeout_ms(0.0, false), 600);
+        assert!(!d.tooltip_due(0.5));
+        assert!(d.tooltip_due(0.6));
+        assert!(!d.tooltip_due(0.7), "fires once");
+        assert_eq!(d.timeout_ms(0.7, false), 1000);
+    }
 
     #[test]
     fn poll_timeout_picks_earliest_and_rounds_up() {

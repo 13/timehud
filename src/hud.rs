@@ -20,6 +20,7 @@ use crate::themes::get_theme;
 use crate::x11::grabs::{Grabs, HotkeyAction};
 use crate::x11::overlay::{OverlayWin, StackWatch, covered_now, restack_needed};
 use crate::x11::popup::{MenuPopup, PopupOutcome};
+use crate::x11::tooltip::{TOOLTIP_DELAY, Tooltip};
 use crate::x11::tray::{Tray, TrayEvent};
 use crate::x11::{Canvas, Screens, X};
 use chrono::Timelike;
@@ -125,6 +126,9 @@ struct Hud {
     menu_fonts: Option<FontSet>,
     popup: Option<MenuPopup>,
     tray: Option<Tray>,
+    /// The tray icon under the pointer (root coordinates), if any.
+    tray_hover: Option<Rect>,
+    tooltip: Option<Tooltip>,
     grabs: Grabs,
     sound: Sound,
     listener: UnixListener,
@@ -245,6 +249,8 @@ impl Hud {
             menu_fonts: None,
             popup: None,
             tray: None,
+            tray_hover: None,
+            tooltip: None,
             grabs: Grabs::default(),
             sound: Sound::new(),
             listener,
@@ -353,6 +359,7 @@ impl Hud {
             return;
         }
         let mut own = vec![self.overlay.id];
+        own.extend(self.tooltip.as_ref().map(Tooltip::window));
         if let Some(p) = &self.popup {
             own.extend(p.windows());
         }
@@ -424,7 +431,17 @@ impl Hud {
         }
 
         if let Some(tray) = self.tray.as_mut() {
-            match tray.handle(&self.x, ev) {
+            let event = tray.handle(&self.x, ev);
+            if event.is_some() {
+                // Any click or crossing ends a pending or shown tooltip.
+                self.hide_tooltip();
+            }
+            match event {
+                Some(TrayEvent::Enter { icon }) => {
+                    self.tray_hover = Some(icon);
+                    self.deadlines.tooltip = Some(now + TOOLTIP_DELAY);
+                }
+                Some(TrayEvent::Leave) => {}
                 Some(TrayEvent::Activate) => {
                     let fx = self.app.toggle_visibility();
                     self.apply(fx);
@@ -435,6 +452,18 @@ impl Hud {
         }
 
         match ev {
+            Event::Expose(e)
+                if e.count == 0
+                    && self
+                        .tooltip
+                        .as_ref()
+                        .is_some_and(|t| t.window() == e.window) =>
+            {
+                if let Some(t) = &self.tooltip {
+                    let fonts = self.menu_fonts.get_or_insert_with(FontSet::bundled);
+                    t.redraw(&self.x, fonts);
+                }
+            }
             Event::Expose(e) if e.window == self.overlay.id && e.count == 0 => {
                 self.canvas.invalidate();
                 self.dirty = true;
@@ -605,7 +634,47 @@ impl Hud {
         }
     }
 
+    /// Shows the tray tooltip if the pointer still rests on the icon.
+    fn show_tooltip(&mut self) {
+        let Some(icon) = self.tray_hover else {
+            return;
+        };
+        if self.tooltip.is_some() || self.popup.is_some() {
+            return;
+        }
+        let text = self.app.status().tooltip();
+        let area = self
+            .screens
+            .work_area_at(icon.x + icon.w / 2, icon.y + icon.h / 2);
+        let fonts = self.menu_fonts.get_or_insert_with(FontSet::bundled);
+        match Tooltip::open(&self.x, &text, icon, area, fonts) {
+            Ok(t) => self.tooltip = Some(t),
+            Err(e) => eprintln!("timehud: tooltip: {e:#}"),
+        }
+    }
+
+    /// Closes the tooltip and forgets the hover (pointer left, click, ...).
+    fn hide_tooltip(&mut self) {
+        self.tray_hover = None;
+        self.deadlines.tooltip = None;
+        if let Some(t) = self.tooltip.take() {
+            t.close(&self.x);
+        }
+    }
+
+    /// Keeps a shown tooltip's text current (runs after every tick).
+    fn refresh_tooltip(&mut self) {
+        if let Some(t) = self.tooltip.as_mut() {
+            let text = self.app.status().tooltip();
+            let fonts = self.menu_fonts.get_or_insert_with(FontSet::bundled);
+            t.set_text(&self.x, &text, fonts);
+        }
+    }
+
     fn set_tray(&mut self, on: bool) {
+        if !on {
+            self.hide_tooltip();
+        }
         match (&mut self.tray, on) {
             (Some(t), _) => t.set_visible(&self.x, on),
             (None, true) => match Tray::new(&self.x) {
@@ -676,6 +745,10 @@ impl Hud {
             let fx = self.app.tick(now, wall);
             self.deadlines.tick = now + self.app.next_wakeup(now, wall_frac(&wall));
             self.apply(fx);
+            self.refresh_tooltip();
+        }
+        if self.deadlines.tooltip_due(now) {
+            self.show_tooltip();
         }
         if self.deadlines.save_due(now) {
             self.save();

@@ -1053,3 +1053,39 @@ fn motion_sets_the_cursor_only_when_it_changes() {
     assert_eq!(set(&mv(&mut h, mode)), []); // still a hand
     assert_eq!(set(&mv(&mut h, clock)), [Cursor::Default]);
 }
+
+#[test]
+fn status_reports_mode_state_display_and_preset() {
+    let mut h = mk(with_presets(vec![json!({"name": "Tea", "duration": 180})]));
+    let s = h.app.status();
+    assert_eq!(
+        (s.mode.as_str(), s.state.as_str(), s.display.as_str()),
+        ("stopwatch", "idle", "00:00")
+    );
+    assert!(s.visible && s.preset.is_empty());
+    let now = h.now();
+    h.app.perform(&MenuAction::ApplyPreset(0), now);
+    h.app.toggle_timer(now);
+    h.advance(2.0);
+    h.tick(); // the display is as of the last tick
+    let s = h.app.status();
+    assert_eq!(s.line(), "countdown running 02:58 Tea");
+    assert_eq!(s.label, "TEA  \u{b7}  03:00");
+    assert_eq!(
+        s.tooltip(),
+        "TimeHUD \u{2014} Countdown 02:58 (running) \u{b7} Tea"
+    );
+    h.app.toggle_timer(h.now());
+    assert_eq!(h.app.status().state, "paused");
+}
+
+#[test]
+fn status_of_a_hidden_timer_still_counts() {
+    let mut h = mk(Config {
+        show_timer: false,
+        ..Config::default()
+    });
+    h.app.toggle_timer(h.now());
+    h.advance(3.0);
+    assert_eq!(h.app.status().display, "00:03");
+}

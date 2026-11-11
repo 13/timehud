@@ -12,6 +12,30 @@ pub enum Mode {
     Interval,
 }
 
+impl Mode {
+    pub const ALL: [Mode; 3] = [Mode::Stopwatch, Mode::Countdown, Mode::Interval];
+
+    /// The config/CLI spelling: `stopwatch`, `countdown`, `interval`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Mode::Stopwatch => "stopwatch",
+            Mode::Countdown => "countdown",
+            Mode::Interval => "interval",
+        }
+    }
+}
+
+impl std::str::FromStr for Mode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Mode, String> {
+        Mode::ALL
+            .into_iter()
+            .find(|m| m.name().eq_ignore_ascii_case(s.trim()))
+            .ok_or_else(|| format!("unknown mode '{s}' (stopwatch, countdown or interval)"))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     pub position: String,

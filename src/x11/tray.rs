@@ -8,6 +8,7 @@
 //! there is no halo against the unknown tray background.
 
 use super::X;
+use crate::layout::Rect;
 use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
 use x11rb::connection::{Connection, RequestConnection};
 use x11rb::protocol::Event;
@@ -110,12 +111,16 @@ impl SlotCache {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub enum TrayEvent {
     /// Left click.
     Activate,
     /// Right click, in root coordinates.
     Menu { root_x: i32, root_y: i32 },
+    /// The pointer entered the icon; its rectangle in root coordinates.
+    Enter { icon: Rect },
+    /// The pointer left the icon.
+    Leave,
 }
 
 struct Docked {
@@ -225,6 +230,21 @@ impl Tray {
                     self.repaint(x);
                 }
             }
+            Event::EnterNotify(e) => {
+                let d = self.docked.as_ref().filter(|d| d.win == e.event)?;
+                // The pointer's root and window positions give the icon's origin.
+                return Some(TrayEvent::Enter {
+                    icon: Rect {
+                        x: i32::from(e.root_x) - i32::from(e.event_x),
+                        y: i32::from(e.root_y) - i32::from(e.event_y),
+                        w: d.slot.0 as i32,
+                        h: d.slot.1 as i32,
+                    },
+                });
+            }
+            Event::LeaveNotify(e) if self.docked.as_ref().is_some_and(|d| d.win == e.event) => {
+                return Some(TrayEvent::Leave);
+            }
             Event::ButtonPress(e) if self.docked.as_ref().is_some_and(|d| d.win == e.event) => {
                 return match e.detail {
                     1 => Some(TrayEvent::Activate),
@@ -324,7 +344,9 @@ impl Tray {
         let events = EventMask::EXPOSURE
             | EventMask::STRUCTURE_NOTIFY
             | EventMask::BUTTON_PRESS
-            | EventMask::BUTTON_RELEASE;
+            | EventMask::BUTTON_RELEASE
+            | EventMask::ENTER_WINDOW
+            | EventMask::LEAVE_WINDOW;
         let mut own_colormap = None;
         let argb = if let Some(vis) = self.tray_visual(x) {
             let cmap = if vis == x.argb_visual {

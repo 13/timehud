@@ -7,6 +7,7 @@
 pub mod grabs;
 pub mod overlay;
 pub mod popup;
+pub mod tooltip;
 pub mod tray;
 
 use crate::layout::Rect;
@@ -30,6 +31,7 @@ x11rb::atom_manager! {
         _NET_WM_WINDOW_TYPE,
         _NET_WM_WINDOW_TYPE_NOTIFICATION,
         _NET_WM_WINDOW_TYPE_POPUP_MENU,
+        _NET_WM_WINDOW_TYPE_TOOLTIP,
         _NET_WORKAREA,
         _NET_CURRENT_DESKTOP,
         _COMPTON_SHADOW,

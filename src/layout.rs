@@ -100,9 +100,52 @@ pub fn clamp_into(x: i32, y: i32, w: i32, h: i32, area: Rect) -> (i32, i32) {
     (x.clamp(area.x, max_x), y.clamp(area.y, max_y))
 }
 
+/// Where a `w`×`h` tooltip for `anchor` goes: centred under it, or above
+/// it when there is no room below, `gap` px away, kept inside `area`.
+pub fn tooltip_pos(anchor: Rect, w: i32, h: i32, area: Rect, gap: i32) -> (i32, i32) {
+    let x = anchor.x + (anchor.w - w) / 2;
+    let below = anchor.y + anchor.h + gap;
+    let y = if below + h <= area.y + area.h {
+        below
+    } else {
+        anchor.y - gap - h
+    };
+    clamp_into(x, y, w, h, area)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tooltip_below_or_above_the_anchor_inside_the_area() {
+        // Work area below a 24 px top panel; icon in that panel.
+        let area = Rect {
+            x: 0,
+            y: 24,
+            w: 1920,
+            h: 1056,
+        };
+        let icon = Rect {
+            x: 1800,
+            y: 0,
+            w: 24,
+            h: 24,
+        };
+        assert_eq!(tooltip_pos(icon, 200, 30, area, 4), (1712, 28));
+        // Near the right edge: shifted left to stay inside.
+        let corner = Rect { x: 1900, ..icon };
+        assert_eq!(tooltip_pos(corner, 200, 30, area, 4), (1720, 28));
+        // Bottom panel: no room below, so above.
+        let area = Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1056,
+        };
+        let icon = Rect { y: 1056, ..icon };
+        assert_eq!(tooltip_pos(icon, 200, 30, area, 4), (1712, 1022));
+    }
 
     const AREA: Rect = Rect {
         x: 0,

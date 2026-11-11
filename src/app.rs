@@ -23,7 +23,7 @@ mod events;
 #[cfg(test)]
 mod tests;
 
-pub use events::{Button, Cursor, Effect, Input, Key};
+pub use events::{Button, Cursor, Effect, Input, Key, Status};
 
 /// Qt's default double-click interval.
 const DOUBLE_CLICK: f64 = 0.4;
@@ -240,6 +240,36 @@ impl App {
 
     pub fn timer_text(&self) -> &str {
         &self.timer
+    }
+
+    /// The timer's state for `timehud status` and the tray tooltip.
+    pub fn status(&self) -> Status {
+        let mode = self.cfg.timer_mode;
+        let state = if self.engine.running() {
+            "running"
+        } else if self.engine.is_idle(&self.cfg) {
+            "idle"
+        } else {
+            "paused"
+        };
+        // The label is refreshed every tick; a hidden timer is not.
+        let display = if self.cfg.show_timer {
+            self.timer.clone()
+        } else {
+            let secs = match mode {
+                Mode::Stopwatch => self.engine.elapsed(),
+                Mode::Countdown | Mode::Interval => self.engine.remaining().max(0.0),
+            };
+            fmt_seconds(shown_seconds(mode, secs))
+        };
+        Status {
+            mode: mode.name().into(),
+            state: state.into(),
+            display,
+            label: self.mode_text.clone(),
+            preset: self.cfg.active_preset.clone(),
+            visible: self.visible,
+        }
     }
 
     pub fn mode_text(&self) -> &str {
