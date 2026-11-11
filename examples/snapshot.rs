@@ -60,4 +60,46 @@ fn main() {
                 .unwrap();
         }
     }
+
+    snap_menu();
+}
+
+fn snap_menu() {
+    use timehud::menu::{MenuAction, MenuItem, layout_menu, render_menu};
+    let it = |label: &str, checked, enabled| MenuItem::Action {
+        label: label.into(),
+        action: MenuAction::Quit,
+        checked,
+        enabled,
+    };
+    let items = vec![
+        it("Settings…", None, true),
+        MenuItem::Separator,
+        MenuItem::Submenu {
+            label: "Presets".into(),
+            items: vec![],
+        },
+        it("Opacity 70%", Some(true), true),
+        it("Save current as preset…", None, false),
+        it("Click-Through: OFF", None, true),
+        MenuItem::Separator,
+        it("Quit", None, true),
+    ];
+    let mut fonts = FontSet::bundled();
+    for scale in [1.0, 2.0] {
+        let l = layout_menu(&items, &mut fonts, scale);
+        let pm = render_menu(&items, &l, Some(5), &THEMES[0], &mut fonts, scale);
+        let mut bg = tiny_skia::Pixmap::new(pm.width() + 20, pm.height() + 20).unwrap();
+        bg.fill(tiny_skia::Color::from_rgba8(90, 100, 120, 255));
+        bg.draw_pixmap(
+            10,
+            10,
+            pm.as_ref(),
+            &tiny_skia::PixmapPaint::default(),
+            tiny_skia::Transform::identity(),
+            None,
+        );
+        let name = if scale == 1.0 { "menu" } else { "menu-2x" };
+        bg.save_png(format!("target/snap-{name}.png")).unwrap();
+    }
 }
