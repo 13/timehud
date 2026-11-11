@@ -10,6 +10,7 @@ use crate::config::{Config, Mode, config_path};
 use crate::hotkey::{egui_to_combo, format_combo};
 use crate::ipc::{Event, Request, socket_path};
 use crate::layout::POSITIONS;
+use crate::settings_session::adopt_hud_config;
 use crate::themes::{THEMES, apply_theme, parse_hex};
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Frame, Key, Layout, Margin, RichText,
@@ -510,6 +511,9 @@ struct SettingsApp {
     cfg: Config,
     /// What the HUD last received from us.
     sent: Config,
+    /// HUD values as of the start or the last Apply, kept current by HUD
+    /// pushes for keys not edited here (`settings_session`).
+    base: Config,
     section: Section,
     presets: presets::PresetsState,
     hotkey_error: Option<String>,
@@ -542,6 +546,7 @@ impl SettingsApp {
             link: Link { stream, rx },
             presets: presets::PresetsState::new(&cfg),
             sent: cfg.clone(),
+            base: cfg.clone(),
             cfg,
             section,
             hotkey_error: None,
@@ -568,6 +573,7 @@ impl SettingsApp {
                 Incoming::Event(Event::Error { message }) => {
                     self.hotkey_error = Some(message);
                 }
+                Incoming::Event(Event::Config { config, .. }) => self.adopt(&config),
                 Incoming::Event(_) => {}
                 Incoming::Disconnected => {
                     // The HUD quit: nothing left to preview against.
@@ -584,6 +590,23 @@ impl SettingsApp {
             }
             self.picked = None;
         }
+    }
+
+    /// The HUD changed its config (menu, wheel, drag, ...): take its values
+    /// for every key not edited here, keeping the user's unsaved edits.
+    fn adopt(&mut self, hud: &serde_json::Value) {
+        let mut local = self.cfg.to_value();
+        let mut base = self.base.to_value();
+        let mut sent = self.sent.to_value();
+        for key in adopt_hud_config(&mut local, &mut base, hud) {
+            // Already the HUD's: no need to send it back.
+            if let (Some(m), Some(v)) = (sent.as_object_mut(), local.get(&key)) {
+                m.insert(key, v.clone());
+            }
+        }
+        self.cfg = Config::from_value(&local);
+        self.base = Config::from_value(&base);
+        self.sent = Config::from_value(&sent);
     }
 
     /// Feeds the next key press to the hotkey being captured.
@@ -1227,6 +1250,7 @@ impl eframe::App for SettingsApp {
                             config: self.cfg.to_value(),
                         });
                         self.sent = self.cfg.clone();
+                        self.base = self.cfg.clone();
                     }
                     if ui
                         .add(egui::Button::new("Cancel").min_size(Vec2::new(84.0, 30.0)))

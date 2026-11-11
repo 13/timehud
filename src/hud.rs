@@ -11,6 +11,7 @@ use crate::hotkey::{Combo, format_combo, parse_combo};
 use crate::ipc::{Conn, Event as IpcEvent, Request};
 use crate::layout::Rect;
 use crate::menu::{MenuAction, build_menu};
+use crate::settings_session::Session;
 use crate::sound::Sound;
 use crate::text::FontSet;
 use crate::themes::get_theme;
@@ -46,28 +47,6 @@ static START: OnceLock<Instant> = OnceLock::new();
 /// Call first thing in `main`.
 pub fn mark_start() {
     let _ = START.set(Instant::now());
-}
-
-/// Keys that together define where the HUD sits: if settings changed any of
-/// them, all of them come from settings (a preset pick must beat a drag).
-const POSITION_GROUP: [&str; 3] = ["position", "custom_x", "custom_y"];
-
-/// Applies onto `current` only the top-level keys the settings process
-/// changed between its previous message `prev` and `new`, so HUD-side edits
-/// made meanwhile (drag position, wheel font size, ...) survive.
-/// [`POSITION_GROUP`] is merged as one unit.
-pub fn merge_settings_changes(current: &Value, prev: &Value, new: &Value) -> Value {
-    let mut out = current.clone();
-    if let (Some(out_map), Some(new_map)) = (out.as_object_mut(), new.as_object()) {
-        let changed = |k: &str| new_map.get(k).is_some_and(|v| prev.get(k) != Some(v));
-        let group_changed = POSITION_GROUP.iter().any(|k| changed(k));
-        for (k, v) in new_map {
-            if changed(k) || (group_changed && POSITION_GROUP.contains(&k.as_str())) {
-                out_map.insert(k.clone(), v.clone());
-            }
-        }
-    }
-    out
 }
 
 /// At most this many keep-on-top raises per second ([`RaiseLimiter`]).
@@ -154,10 +133,7 @@ struct Client {
 /// The connected settings process.
 struct SettingsSession {
     conn_id: u64,
-    /// The config of its previous message (first: the one we sent it).
-    prev: Value,
-    /// What Cancel restores; `None` after Commit until the next Preview.
-    snapshot: Option<Config>,
+    session: Session,
 }
 
 struct Hud {
@@ -490,6 +466,10 @@ impl Hud {
     // ══ Effects ═════════════════════════════════════════════════════════════
 
     fn apply(&mut self, fx: Vec<Effect>) {
+        // Config changes come with a save: tell an open settings window.
+        let config_changed = fx
+            .iter()
+            .any(|e| matches!(e, Effect::SaveSoon | Effect::SaveNow));
         for effect in fx {
             match effect {
                 Effect::Beep(b) => self.sound.play(b, &self.app.cfg),
@@ -526,6 +506,9 @@ impl Hud {
                 }
                 Effect::Quit => self.quit = true,
             }
+        }
+        if config_changed {
+            self.push_config_to_settings();
         }
         // An action may need an earlier tick (e.g. the timer just started).
         let now = self.now();
@@ -859,8 +842,7 @@ impl Hud {
                 let config = self.app.cfg.to_value();
                 self.settings = Some(SettingsSession {
                     conn_id: id,
-                    prev: config.clone(),
-                    snapshot: Some(self.app.cfg.clone()),
+                    session: Session::new(&config),
                 });
                 return Some(IpcEvent::Config {
                     config,
@@ -886,17 +868,11 @@ impl Hud {
 
     /// Preview/Commit from the settings process: merge only what it changed.
     fn settings_apply(&mut self, config: Value, commit: bool) {
+        let current = self.app.cfg.to_value();
         let Some(s) = self.settings.as_mut() else {
             return;
         };
-        let merged = merge_settings_changes(&self.app.cfg.to_value(), &s.prev, &config);
-        s.prev = config;
-        if commit {
-            s.snapshot = None;
-        } else if s.snapshot.is_none() {
-            // First change after an Apply: that state is the new baseline.
-            s.snapshot = Some(self.app.cfg.clone());
-        }
+        let merged = s.session.apply(&current, config, commit);
         let mut fx = self
             .app
             .preview_config(Config::from_value(&merged), self.now());
@@ -905,16 +881,40 @@ impl Hud {
         }
         self.apply(fx);
         self.sync_hotkeys(false);
+        // preview_config may have adjusted it (e.g. cleared the preset).
+        self.push_config_to_settings();
     }
 
+    /// Cancel / window closed: restore what settings changed, nothing else.
     fn settings_cancel(&mut self) {
-        let Some(snapshot) = self.settings.as_mut().and_then(|s| s.snapshot.take()) else {
+        let current = self.app.cfg.to_value();
+        let Some(restored) = self
+            .settings
+            .as_mut()
+            .and_then(|s| s.session.cancel(&current))
+        else {
             return;
         };
-        let mut fx = self.app.preview_config(snapshot, self.now());
+        let mut fx = self
+            .app
+            .preview_config(Config::from_value(&restored), self.now());
+        // HUD-side saves may have written previewed values meanwhile.
         fx.push(Effect::SaveNow);
         self.apply(fx);
         self.sync_hotkeys(false);
+        self.push_config_to_settings();
+    }
+
+    /// Hands HUD-side config changes to an open settings window, so its
+    /// later messages do not carry stale values (see `settings_session`).
+    fn push_config_to_settings(&mut self) {
+        let Some(s) = self.settings.as_mut() else {
+            return;
+        };
+        let id = s.conn_id;
+        if let Some(config) = s.session.hud_changed(&self.app.cfg.to_value()) {
+            self.send_to(id, &IpcEvent::Config { config, tab: None });
+        }
     }
 
     // ══ Shutdown ════════════════════════════════════════════════════════════
@@ -951,54 +951,6 @@ fn spawn_self(args: &[&str]) -> Option<Child> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn merge_applies_only_changed_keys() {
-        let current =
-            json!({"font_size": 40, "custom_x": 500, "opacity": 0.88, "theme": "classic"});
-        let prev = json!({"font_size": 30, "custom_x": -1, "opacity": 0.88, "theme": "classic"});
-        let new = json!({"font_size": 30, "custom_x": -1, "opacity": 0.5, "theme": "classic"});
-        assert_eq!(
-            merge_settings_changes(&current, &prev, &new),
-            json!({"font_size": 40, "custom_x": 500, "opacity": 0.5, "theme": "classic"})
-        );
-    }
-
-    #[test]
-    fn merge_settings_wins_on_keys_it_changed() {
-        // Settings typed a custom_x: the whole position group comes from
-        // settings (its custom_y -1 too), overriding the HUD drag.
-        let current = json!({"position": "top-right", "custom_x": 500, "custom_y": 20});
-        let prev = json!({"position": "top-right", "custom_x": -1, "custom_y": -1});
-        let new = json!({"position": "top-right", "custom_x": 10, "custom_y": -1});
-        assert_eq!(
-            merge_settings_changes(&current, &prev, &new),
-            json!({"position": "top-right", "custom_x": 10, "custom_y": -1})
-        );
-    }
-
-    #[test]
-    fn merge_takes_position_group_whole_from_settings() {
-        // The HUD was dragged (custom_*) while settings picked a preset
-        // position: the pick wins, including its unset custom_*.
-        let current =
-            json!({"position": "top-right", "custom_x": 500, "custom_y": 20, "font_size": 40});
-        let prev =
-            json!({"position": "top-right", "custom_x": -1, "custom_y": -1, "font_size": 30});
-        let new =
-            json!({"position": "bottom-left", "custom_x": -1, "custom_y": -1, "font_size": 30});
-        assert_eq!(
-            merge_settings_changes(&current, &prev, &new),
-            json!({"position": "bottom-left", "custom_x": -1, "custom_y": -1, "font_size": 40})
-        );
-        // Settings did not touch the group: the drag survives.
-        let new = json!({"position": "top-right", "custom_x": -1, "custom_y": -1, "font_size": 50});
-        assert_eq!(
-            merge_settings_changes(&current, &prev, &new),
-            json!({"position": "top-right", "custom_x": 500, "custom_y": 20, "font_size": 50})
-        );
-    }
 
     #[test]
     fn raise_limiter_allows_four_per_second_then_defers() {
@@ -1014,28 +966,6 @@ mod tests {
         assert!(lim.try_raise(11.0));
         assert!(!lim.try_raise(11.05));
         assert_eq!(lim.next_allowed(), Some(11.1));
-    }
-
-    #[test]
-    fn merge_adds_keys_missing_from_prev_and_compares_deeply() {
-        let current =
-            json!({"presets": [{"name": "a", "duration": 60}, {"name": "b", "duration": 5}]});
-        let prev = json!({"presets": [{"name": "a", "duration": 60}]});
-        let new = json!({"presets": [{"name": "a", "duration": 60}], "future_key": 1});
-        // presets unchanged on the settings side: the HUD-saved preset stays.
-        assert_eq!(
-            merge_settings_changes(&current, &prev, &new),
-            json!({"presets": [{"name": "a", "duration": 60}, {"name": "b", "duration": 5}], "future_key": 1})
-        );
-    }
-
-    #[test]
-    fn merge_ignores_non_object_messages() {
-        let current = json!({"font_size": 40});
-        assert_eq!(
-            merge_settings_changes(&current, &json!({}), &json!([1, 2])),
-            current
-        );
     }
 
     #[test]

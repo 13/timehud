@@ -10,6 +10,7 @@ pub mod layout;
 pub mod menu;
 pub mod render;
 pub mod settings;
+pub mod settings_session;
 pub mod sound;
 pub mod text;
 pub mod themes;
