@@ -18,7 +18,7 @@ use crate::sound::Sound;
 use crate::text::FontSet;
 use crate::themes::get_theme;
 use crate::x11::grabs::{Grabs, HotkeyAction};
-use crate::x11::overlay::{OverlayWin, StackWatch, covered_now, restack_needed, translate};
+use crate::x11::overlay::{OverlayWin, StackWatch, covered_now, restack_needed};
 use crate::x11::popup::{MenuPopup, PopupOutcome};
 use crate::x11::tray::{Tray, TrayEvent};
 use crate::x11::{Canvas, Screens, X};
@@ -462,7 +462,7 @@ impl Hud {
             _ => {}
         }
 
-        if let Some(input) = translate(ev, self.overlay.id) {
+        if let Some(input) = self.overlay.translate(ev, |k| self.x.keysym(k)) {
             // No SetInputFocus on click: like the Python app, the overlay
             // never takes keyboard focus from the (fullscreen) app below.
             if let Input::Press {

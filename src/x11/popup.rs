@@ -8,8 +8,8 @@
 //! It logs an error (and fails debug builds) to catch that bug early. When
 //! the connection itself is gone, [`MenuPopup::abandon`] forgets the popup.
 
+use super::X;
 use super::overlay::raise_window;
-use super::{X, keysym_of};
 use crate::layout::{Rect, clamp_into};
 use crate::menu::{MenuAction, MenuItem, MenuLayout, layout_menu, render_menu};
 use crate::text::FontSet;
@@ -162,7 +162,7 @@ impl MenuPopup {
                     Some((_, None)) => PopupOutcome::Continue,
                 }
             }
-            Event::KeyPress(e) => self.key(x, keysym_of(e.detail), fonts),
+            Event::KeyPress(e) => self.key(x, x.keysym(e.detail), fonts),
             _ => PopupOutcome::Continue,
         }
     }

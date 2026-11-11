@@ -13,7 +13,6 @@ use crate::layout::Rect;
 use anyhow::{Context, bail};
 use std::cell::{Cell, RefCell};
 use std::os::fd::{AsRawFd, RawFd};
-use std::sync::RwLock;
 use x11rb::connection::{Connection, RequestConnection};
 use x11rb::protocol::Event;
 use x11rb::protocol::randr::ConnectionExt as _;
@@ -49,6 +48,8 @@ pub struct X {
     pub colormap: u32,
     pub atoms: Atoms,
     scale: Cell<f32>,
+    /// The keyboard mapping ([`X::reload_keymap`]).
+    keymap: RefCell<Keymap>,
     /// Reused BGRA conversion buffer for `present`.
     bgra: RefCell<Vec<u8>>,
 }
@@ -87,6 +88,7 @@ impl X {
             colormap,
             atoms,
             scale: Cell::new(1.0),
+            keymap: RefCell::default(),
             bgra: RefCell::default(),
         };
         x.reload_scale();
@@ -336,13 +338,21 @@ impl X {
         else {
             return;
         };
-        if let Ok(mut k) = KEYMAP.write() {
-            *k = Keymap {
-                min_keycode: min,
-                per: r.keysyms_per_keycode,
-                syms: r.keysyms,
-            };
-        }
+        *self.keymap.borrow_mut() = Keymap {
+            min_keycode: min,
+            per: r.keysyms_per_keycode,
+            syms: r.keysyms,
+        };
+    }
+
+    /// Unshifted (first column) keysym of a keycode; 0 if unknown.
+    pub fn keysym(&self, keycode: u8) -> u32 {
+        self.keymap.borrow().keysym(keycode)
+    }
+
+    /// A keycode producing `keysym` in any column (letters match either case).
+    pub fn keycode(&self, keysym: u32) -> Option<u8> {
+        self.keymap.borrow().keycode(keysym)
     }
 
     /// Creates an unmapped override-redirect ARGB window with a GC.
@@ -595,17 +605,12 @@ fn intersect(a: Rect, b: Rect) -> Option<Rect> {
 }
 
 /// Cached `GetKeyboardMapping` result shared by event translation and grabs.
+#[derive(Default)]
 struct Keymap {
     min_keycode: u8,
     per: u8,
     syms: Vec<u32>,
 }
-
-static KEYMAP: RwLock<Keymap> = RwLock::new(Keymap {
-    min_keycode: 0,
-    per: 0,
-    syms: Vec::new(),
-});
 
 impl Keymap {
     /// Unshifted (first column) keysym of a keycode; 0 if unknown.
@@ -633,14 +638,6 @@ impl Keymap {
             .or_else(|| self.syms.iter().position(|s| *s == alt))?;
         u8::try_from(i / per + usize::from(self.min_keycode)).ok()
     }
-}
-
-fn keysym_of(keycode: u8) -> u32 {
-    KEYMAP.read().map_or(0, |k| k.keysym(keycode))
-}
-
-fn keycode_of(keysym: u32) -> Option<u8> {
-    KEYMAP.read().ok()?.keycode(keysym)
 }
 
 #[cfg(test)]

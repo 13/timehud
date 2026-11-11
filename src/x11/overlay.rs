@@ -1,9 +1,8 @@
 //! The HUD's override-redirect ARGB overlay window and its input translation.
 
-use super::{X, keysym_of};
+use super::X;
 use crate::app::{Button, Input, Key};
 use crate::layout::Rect;
-use std::cell::Cell;
 use std::collections::HashMap;
 use x11rb::NONE;
 use x11rb::connection::Connection;
@@ -17,6 +16,8 @@ use x11rb::protocol::xproto::{
 pub struct OverlayWin {
     pub id: u32,
     pub gc: u32,
+    /// Button 1 pressed on the overlay and not yet released.
+    left_held: bool,
 }
 
 impl OverlayWin {
@@ -39,7 +40,11 @@ impl OverlayWin {
             false,
         )?;
         x.conn.flush()?;
-        Ok(OverlayWin { id, gc })
+        Ok(OverlayWin {
+            id,
+            gc,
+            left_held: false,
+        })
     }
 
     pub fn set_geometry(&self, x: &X, px: i32, py: i32, w: i32, h: i32) {
@@ -193,11 +198,6 @@ pub fn covered_now(x: &X, overlay: u32, own: &[u32]) -> bool {
     covered(&stack, overlay, own, |w| attrs.get(&w).copied())
 }
 
-thread_local! {
-    /// Button 1 pressed on the overlay and not yet released.
-    static LEFT_HELD: Cell<bool> = const { Cell::new(false) };
-}
-
 fn button(detail: u8) -> Option<Button> {
     match detail {
         1 => Some(Button::Left),
@@ -217,72 +217,76 @@ fn key(keysym: u32) -> Key {
     }
 }
 
-/// Translates an event for overlay window `win` into an app input.
-///
-/// Motion is always emitted (the app needs it for button hover). To keep a
-/// lost ButtonRelease from leaving the window stuck dragging, a motion event
-/// whose state lacks `Button1Mask` while a left press is outstanding is
-/// turned into a synthetic `Release { button: Left }` instead (that one
-/// motion's hover update is dropped; the next motion restores it).
-pub fn translate(ev: &Event, win: u32) -> Option<Input> {
-    match ev {
-        Event::ButtonPress(e) if e.event == win => {
-            let (x, y) = (e.event_x.into(), e.event_y.into());
-            match e.detail {
-                4 | 5 => Some(Input::Wheel {
-                    x,
-                    y,
-                    up: e.detail == 4,
-                }),
-                d => {
-                    let button = button(d)?;
-                    if button == Button::Left {
-                        LEFT_HELD.set(true);
-                    }
-                    Some(Input::Press {
+impl OverlayWin {
+    /// Translates an event for the overlay into an app input; `keysym` maps a
+    /// keycode to its unshifted keysym ([`X::keysym`]).
+    ///
+    /// Motion is always emitted (the app needs it for button hover). To keep a
+    /// lost ButtonRelease from leaving the window stuck dragging, a motion event
+    /// whose state lacks `Button1Mask` while a left press is outstanding is
+    /// turned into a synthetic `Release { button: Left }` instead (that one
+    /// motion's hover update is dropped; the next motion restores it).
+    pub fn translate(&mut self, ev: &Event, keysym: impl Fn(u8) -> u32) -> Option<Input> {
+        let win = self.id;
+        match ev {
+            Event::ButtonPress(e) if e.event == win => {
+                let (x, y) = (e.event_x.into(), e.event_y.into());
+                match e.detail {
+                    4 | 5 => Some(Input::Wheel {
                         x,
                         y,
-                        root_x: e.root_x.into(),
-                        root_y: e.root_y.into(),
-                        button,
-                    })
+                        up: e.detail == 4,
+                    }),
+                    d => {
+                        let button = button(d)?;
+                        if button == Button::Left {
+                            self.left_held = true;
+                        }
+                        Some(Input::Press {
+                            x,
+                            y,
+                            root_x: e.root_x.into(),
+                            root_y: e.root_y.into(),
+                            button,
+                        })
+                    }
                 }
             }
-        }
-        Event::ButtonRelease(e) if e.event == win => {
-            let button = button(e.detail)?;
-            if button == Button::Left {
-                LEFT_HELD.set(false);
+            Event::ButtonRelease(e) if e.event == win => {
+                let button = button(e.detail)?;
+                if button == Button::Left {
+                    self.left_held = false;
+                }
+                Some(Input::Release {
+                    root_x: e.root_x.into(),
+                    root_y: e.root_y.into(),
+                    button,
+                })
             }
-            Some(Input::Release {
-                root_x: e.root_x.into(),
-                root_y: e.root_y.into(),
-                button,
-            })
-        }
-        Event::MotionNotify(e) if e.event == win => {
-            let (root_x, root_y) = (e.root_x.into(), e.root_y.into());
-            if !e.state.contains(KeyButMask::BUTTON1) && LEFT_HELD.replace(false) {
-                return Some(Input::Release {
+            Event::MotionNotify(e) if e.event == win => {
+                let (root_x, root_y) = (e.root_x.into(), e.root_y.into());
+                if !e.state.contains(KeyButMask::BUTTON1) && std::mem::take(&mut self.left_held) {
+                    return Some(Input::Release {
+                        root_x,
+                        root_y,
+                        button: Button::Left,
+                    });
+                }
+                Some(Input::Motion {
+                    x: e.event_x.into(),
+                    y: e.event_y.into(),
                     root_x,
                     root_y,
-                    button: Button::Left,
-                });
+                })
             }
-            Some(Input::Motion {
-                x: e.event_x.into(),
-                y: e.event_y.into(),
-                root_x,
-                root_y,
-            })
+            Event::EnterNotify(e) if e.event == win => Some(Input::Enter),
+            Event::LeaveNotify(e) if e.event == win => Some(Input::Leave),
+            Event::KeyPress(e) if e.event == win => Some(Input::Key {
+                key: key(keysym(e.detail)),
+                ctrl: e.state.contains(KeyButMask::CONTROL),
+            }),
+            _ => None,
         }
-        Event::EnterNotify(e) if e.event == win => Some(Input::Enter),
-        Event::LeaveNotify(e) if e.event == win => Some(Input::Leave),
-        Event::KeyPress(e) if e.event == win => Some(Input::Key {
-            key: key(keysym_of(e.detail)),
-            ctrl: e.state.contains(KeyButMask::CONTROL),
-        }),
-        _ => None,
     }
 }
 
@@ -295,6 +299,14 @@ mod tests {
 
     const WIN: u32 = 0x40_0001;
     const ROOT: u32 = 0x1e3;
+
+    fn overlay() -> OverlayWin {
+        OverlayWin {
+            id: WIN,
+            gc: 0,
+            left_held: false,
+        }
+    }
 
     fn press(detail: u8) -> ButtonPressEvent {
         ButtonPressEvent {
@@ -334,8 +346,9 @@ mod tests {
 
     #[test]
     fn buttons_and_wheel() {
+        let mut w = overlay();
         assert_eq!(
-            translate(&Event::ButtonPress(press(3)), WIN),
+            w.translate(&Event::ButtonPress(press(3)), |_| 0),
             Some(Input::Press {
                 x: 10,
                 y: 20,
@@ -345,7 +358,7 @@ mod tests {
             })
         );
         assert_eq!(
-            translate(&Event::ButtonPress(press(4)), WIN),
+            w.translate(&Event::ButtonPress(press(4)), |_| 0),
             Some(Input::Wheel {
                 x: 10,
                 y: 20,
@@ -353,25 +366,29 @@ mod tests {
             })
         );
         assert_eq!(
-            translate(&Event::ButtonPress(press(5)), WIN),
+            w.translate(&Event::ButtonPress(press(5)), |_| 0),
             Some(Input::Wheel {
                 x: 10,
                 y: 20,
                 up: false
             })
         );
-        assert_eq!(translate(&Event::ButtonPress(press(8)), WIN), None);
+        assert_eq!(w.translate(&Event::ButtonPress(press(8)), |_| 0), None);
         // Wheel "releases" are dropped.
-        assert_eq!(translate(&Event::ButtonRelease(press(4)), WIN), None);
+        assert_eq!(w.translate(&Event::ButtonRelease(press(4)), |_| 0), None);
         // Other windows' events are ignored.
-        assert_eq!(translate(&Event::ButtonPress(press(1)), WIN + 1), None);
+        let mut other = OverlayWin {
+            id: WIN + 1,
+            ..overlay()
+        };
+        assert_eq!(other.translate(&Event::ButtonPress(press(1)), |_| 0), None);
     }
 
     #[test]
     fn motion_without_button_is_hover() {
-        LEFT_HELD.set(false);
+        let mut w = overlay();
         assert_eq!(
-            translate(&motion(KeyButMask::default()), WIN),
+            w.translate(&motion(KeyButMask::default()), |_| 0),
             Some(Input::Motion {
                 x: 30,
                 y: 40,
@@ -383,14 +400,14 @@ mod tests {
 
     #[test]
     fn drag_motion_then_release() {
-        LEFT_HELD.set(false);
-        translate(&Event::ButtonPress(press(1)), WIN);
+        let mut w = overlay();
+        w.translate(&Event::ButtonPress(press(1)), |_| 0);
         assert!(matches!(
-            translate(&motion(KeyButMask::BUTTON1), WIN),
+            w.translate(&motion(KeyButMask::BUTTON1), |_| 0),
             Some(Input::Motion { .. })
         ));
         assert!(matches!(
-            translate(&Event::ButtonRelease(press(1)), WIN),
+            w.translate(&Event::ButtonRelease(press(1)), |_| 0),
             Some(Input::Release {
                 button: Button::Left,
                 ..
@@ -398,18 +415,18 @@ mod tests {
         ));
         // Released normally: later plain motion is hover again.
         assert!(matches!(
-            translate(&motion(KeyButMask::default()), WIN),
+            w.translate(&motion(KeyButMask::default()), |_| 0),
             Some(Input::Motion { .. })
         ));
     }
 
     #[test]
     fn lost_release_ends_drag() {
-        LEFT_HELD.set(false);
-        translate(&Event::ButtonPress(press(1)), WIN);
+        let mut w = overlay();
+        w.translate(&Event::ButtonPress(press(1)), |_| 0);
         // The release went elsewhere; the first button-less motion ends the drag.
         assert_eq!(
-            translate(&motion(KeyButMask::default()), WIN),
+            w.translate(&motion(KeyButMask::default()), |_| 0),
             Some(Input::Release {
                 root_x: 130,
                 root_y: 240,
@@ -417,7 +434,7 @@ mod tests {
             })
         );
         assert!(matches!(
-            translate(&motion(KeyButMask::default()), WIN),
+            w.translate(&motion(KeyButMask::default()), |_| 0),
             Some(Input::Motion { .. })
         ));
     }

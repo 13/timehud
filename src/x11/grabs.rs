@@ -1,6 +1,6 @@
 //! Global hotkeys as exclusive passive key grabs on the root window.
 
-use super::{X, keycode_of};
+use super::X;
 use crate::hotkey::{Combo, format_combo};
 use x11rb::connection::Connection;
 use x11rb::errors::ReplyError;
@@ -34,7 +34,7 @@ impl Grabs {
         }
         let mut failures = Vec::new();
         for &(combo, action) in binds {
-            let Some(keycode) = keycode_of(combo.keysym) else {
+            let Some(keycode) = x.keycode(combo.keysym) else {
                 failures.push((combo, "no key on this keyboard produces it".into()));
                 continue;
             };
@@ -169,7 +169,7 @@ mod tests {
         let mut g = Grabs::default();
         let failures = g.set(&x, &[(combo, HotkeyAction::Reset)]);
         assert!(failures.is_empty(), "{failures:?}");
-        let keycode = keycode_of(combo.keysym).unwrap();
+        let keycode = x.keycode(combo.keysym).unwrap();
         assert_eq!(
             g.match_event(&press(keycode, combo.mods | 16)),
             Some(HotkeyAction::Reset)
