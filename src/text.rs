@@ -96,7 +96,7 @@ impl FontSet {
         let (w, h) = (pm.width() as i32, pm.height() as i32);
         let mut pen = x;
         for c in text.chars() {
-            let (m, bitmap) = self.glyph(c, px).clone();
+            let (m, bitmap) = self.glyph(c, px);
             let (adv, off) = if tabular && c.is_ascii_digit() {
                 (cell, (cell - m.advance_width) / 2.0)
             } else {

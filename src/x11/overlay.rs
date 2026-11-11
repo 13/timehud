@@ -436,7 +436,7 @@ mod tests {
             progress_color: Rgb(255, 0, 0),
             opacity: 1.0,
         };
-        let (pm, _) = render(&view, &mut FontSet::bundled());
+        let (pm, _) = render(&view, &mut FontSet::bundled()).unwrap();
         let win = OverlayWin::create(&x, 200, 100, 40, 40).unwrap();
         win.map(&x);
         win.raise(&x);

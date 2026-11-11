@@ -11,6 +11,7 @@ pub mod tray;
 
 use crate::layout::Rect;
 use anyhow::{Context, bail};
+use std::cell::RefCell;
 use std::os::fd::{AsRawFd, RawFd};
 use std::sync::RwLock;
 use x11rb::connection::{Connection, RequestConnection};
@@ -46,6 +47,8 @@ pub struct X {
     pub argb_visual: u32,
     pub colormap: u32,
     pub atoms: Atoms,
+    /// Reused BGRA conversion buffer for `present`.
+    bgra: RefCell<Vec<u8>>,
 }
 
 impl X {
@@ -81,6 +84,7 @@ impl X {
             argb_visual,
             colormap,
             atoms,
+            bgra: RefCell::default(),
         };
         x.reload_keymap();
         x.conn.flush()?;
@@ -178,9 +182,61 @@ impl X {
     /// Uploads a premultiplied RGBA pixmap to `win` at (0, 0), in row bands
     /// that fit the server's maximum request size.
     pub fn present(&self, win: u32, gc: u32, pm: &tiny_skia::Pixmap) -> anyhow::Result<()> {
-        let (w, h) = (pm.width() as usize, pm.height() as usize);
-        let mut buf = Vec::new();
+        let mut buf = self.bgra.borrow_mut();
         rgba_to_bgra(pm.data(), &mut buf);
+        let (w, h) = (pm.width() as usize, pm.height() as usize);
+        self.put_bgra(win, gc, &buf, (0, 0, w, h))?;
+        self.conn.flush()?;
+        Ok(())
+    }
+
+    /// Uploads `canvas.pixmap` to `win` at (0, 0), sending only the bounding
+    /// box of the pixels that changed since the last upload (everything after
+    /// [`Canvas::invalidate`] or a size change). Nothing to do without a pixmap.
+    pub fn present_canvas(&self, win: u32, gc: u32, c: &mut Canvas) -> anyhow::Result<()> {
+        let Some(pm) = &c.pixmap else {
+            return Ok(());
+        };
+        let (w, h) = (pm.width() as usize, pm.height() as usize);
+        rgba_to_bgra(pm.data(), &mut c.next);
+        let full = (0, 0, w, h);
+        let rect = if c.shown_w == w && c.shown.len() == c.next.len() {
+            changed_rect(&c.shown, &c.next, w)
+        } else {
+            Some(full)
+        };
+        let sent = match rect {
+            None => Ok(()),
+            Some(r) if r == full => self.put_bgra(win, gc, &c.next, r),
+            Some(r) => {
+                copy_rect(&c.next, w, r, &mut c.sub);
+                self.put_bgra(win, gc, &c.sub, r)
+            }
+        };
+        std::mem::swap(&mut c.shown, &mut c.next);
+        c.shown_w = w;
+        if sent.is_err() {
+            c.invalidate();
+        }
+        sent?;
+        self.conn.flush()?;
+        Ok(())
+    }
+
+    /// PutImage of tightly packed BGRA `data` covering `(x, y, w, h)` of
+    /// `win`, in row bands that fit the server's maximum request size.
+    fn put_bgra(
+        &self,
+        win: u32,
+        gc: u32,
+        data: &[u8],
+        (x, y, w, h): (usize, usize, usize, usize),
+    ) -> anyhow::Result<()> {
+        let (w16, _) = image_dims(w, h)?;
+        let (x, y) = (
+            i16::try_from(x).context("image x offset")?,
+            i16::try_from(y).context("image y offset")?,
+        );
         let stride = w * 4;
         // PutImage header is 24 bytes (28 with BIG-REQUESTS); leave slack.
         let rows = (self.conn.maximum_request_bytes().saturating_sub(64) / stride).clamp(1, h);
@@ -190,16 +246,15 @@ impl X {
                 ImageFormat::Z_PIXMAP,
                 win,
                 gc,
-                w as u16,
+                w16,
                 n as u16,
-                0,
-                y0 as i16,
+                x,
+                y + y0 as i16,
                 0,
                 32,
-                &buf[y0 * stride..(y0 + n) * stride],
+                &data[y0 * stride..(y0 + n) * stride],
             )?;
         }
-        self.conn.flush()?;
         Ok(())
     }
 
@@ -315,6 +370,69 @@ pub fn rgba_to_bgra(src: &[u8], dst: &mut Vec<u8>) {
     }
 }
 
+/// A window's back buffer: the pixmap drawn each frame and what was last
+/// uploaded, so [`X::present_canvas`] can send only the changed pixels.
+#[derive(Default)]
+pub struct Canvas {
+    pub pixmap: Option<tiny_skia::Pixmap>,
+    /// BGRA of the window contents as last uploaded; empty when unknown.
+    shown: Vec<u8>,
+    shown_w: usize,
+    next: Vec<u8>,
+    sub: Vec<u8>,
+}
+
+impl Canvas {
+    /// Forget what the window shows (e.g. after `Expose`): the next present
+    /// uploads everything.
+    pub fn invalidate(&mut self) {
+        self.shown.clear();
+        self.shown_w = 0;
+    }
+}
+
+/// Bounding box `(x, y, w, h)` of the pixels that differ between two
+/// same-size images of 4-byte pixels, `w` pixels wide; `None` if equal.
+pub fn changed_rect(a: &[u8], b: &[u8], w: usize) -> Option<(usize, usize, usize, usize)> {
+    let stride = w * 4;
+    let rows = || a.chunks_exact(stride).zip(b.chunks_exact(stride));
+    let y0 = rows().position(|(ra, rb)| ra != rb)?;
+    let y1 = rows().rposition(|(ra, rb)| ra != rb)?;
+    let (mut x0, mut x1) = (w, 0);
+    for (ra, rb) in rows().skip(y0).take(y1 - y0 + 1) {
+        let px = || ra.as_chunks::<4>().0.iter().zip(rb.as_chunks::<4>().0);
+        if let Some(i) = px().position(|(pa, pb)| pa != pb) {
+            x0 = x0.min(i);
+            x1 = x1.max(px().rposition(|(pa, pb)| pa != pb).unwrap_or(i));
+        }
+    }
+    Some((x0, y0, x1 - x0 + 1, y1 - y0 + 1))
+}
+
+/// Copies rect `(x, y, w, h)` of an image of 4-byte pixels, `stride_px`
+/// pixels wide, into `dst` as tightly packed rows.
+fn copy_rect(
+    src: &[u8],
+    stride_px: usize,
+    (x, y, w, h): (usize, usize, usize, usize),
+    dst: &mut Vec<u8>,
+) {
+    dst.clear();
+    for row in src.chunks_exact(stride_px * 4).skip(y).take(h) {
+        dst.extend_from_slice(&row[x * 4..(x + w) * 4]);
+    }
+}
+
+/// Image size as PutImage dimensions; errors when empty or so large that
+/// offsets inside it would not fit the protocol's 16-bit coordinates.
+fn image_dims(w: usize, h: usize) -> anyhow::Result<(u16, u16)> {
+    let max = i16::MAX as usize;
+    if w == 0 || h == 0 || w > max || h > max {
+        bail!("image size {w}x{h} out of range");
+    }
+    Ok((w as u16, h as u16))
+}
+
 /// `Xft.dpi` value from an X resource database string.
 fn parse_xft_dpi(db: &str) -> Option<f32> {
     db.lines().find_map(|l| {
@@ -417,6 +535,42 @@ mod tests {
         let mut out = vec![9; 12];
         rgba_to_bgra(&[1, 2, 3, 4, 5, 6, 7, 8], &mut out);
         assert_eq!(out, [3, 2, 1, 4, 7, 6, 5, 8]);
+    }
+
+    /// 4x3 image of 4-byte pixels, each pixel's bytes = its index.
+    fn img() -> Vec<u8> {
+        (0..12u8).flat_map(|i| [i; 4]).collect()
+    }
+
+    #[test]
+    fn changed_rect_none_when_equal() {
+        assert_eq!(changed_rect(&img(), &img(), 4), None);
+    }
+
+    #[test]
+    fn changed_rect_bounds_all_differences() {
+        let mut b = img();
+        b[(4 + 2) * 4 + 1] = 99; // pixel (2, 1)
+        assert_eq!(changed_rect(&img(), &b, 4), Some((2, 1, 1, 1)));
+        b[(2 * 4 + 1) * 4 + 3] = 99; // pixel (1, 2)
+        b[3 * 4] = 99; // pixel (3, 0)
+        assert_eq!(changed_rect(&img(), &b, 4), Some((1, 0, 3, 3)));
+    }
+
+    #[test]
+    fn copy_rect_extracts_rows() {
+        let mut out = vec![7; 3];
+        copy_rect(&img(), 4, (1, 1, 2, 2), &mut out);
+        let want: Vec<u8> = [5u8, 6, 9, 10].iter().flat_map(|i| [*i; 4]).collect();
+        assert_eq!(out, want);
+    }
+
+    #[test]
+    fn image_dims_reject_oversize() {
+        assert_eq!(image_dims(10, 20).ok(), Some((10, 20)));
+        assert!(image_dims(70_000, 1).is_err());
+        assert!(image_dims(1, 70_000).is_err());
+        assert!(image_dims(0, 1).is_err());
     }
 
     #[test]

@@ -15,11 +15,11 @@ use crate::settings_session::Session;
 use crate::sound::Sound;
 use crate::text::FontSet;
 use crate::themes::get_theme;
-use crate::x11::X;
 use crate::x11::grabs::{Grabs, HotkeyAction};
 use crate::x11::overlay::{OverlayWin, restack_needed, translate};
 use crate::x11::popup::{MenuPopup, PopupOutcome};
 use crate::x11::tray::{Tray, TrayEvent};
+use crate::x11::{Canvas, X};
 use chrono::Timelike;
 use nix::errno::Errno;
 use nix::poll::{PollFd, PollFlags, poll};
@@ -163,6 +163,8 @@ struct Hud {
     geom: (i32, i32, i32, i32),
     /// Window size of the last rendered layout.
     size: (i32, i32),
+    /// The overlay's frame buffer (reused pixmap, last uploaded pixels).
+    canvas: Canvas,
     mapped: bool,
     dirty: bool,
     /// When the next animation frame is due (`App::next_frame`).
@@ -217,14 +219,15 @@ impl Hud {
         let clock = Box::new(move || t0.elapsed().as_secs_f64());
         let now = t0.elapsed().as_secs_f64();
         let mut app = App::new(cfg, clock, fonts, scale, area, now);
-        let (pm, layout) = app.frame(now);
+        let mut canvas = Canvas::default();
+        let layout = app.frame_into(now, &mut canvas.pixmap);
         let (wx, wy) = app.window_pos();
         let overlay = OverlayWin::create(&x, layout.w, layout.h, wx, wy)?;
         if app.cfg.click_through {
             overlay.set_click_through(&x, true);
         }
         overlay.map(&x);
-        x.present(overlay.id, overlay.gc, &pm)?;
+        x.present_canvas(overlay.id, overlay.gc, &mut canvas)?;
         if trace_enabled()
             && let Some(start) = START.get()
         {
@@ -275,6 +278,7 @@ impl Hud {
             area,
             geom: (wx, wy, layout.w, layout.h),
             size: (layout.w, layout.h),
+            canvas,
             mapped: true,
             dirty: false,
             frame_due: None,
@@ -408,7 +412,10 @@ impl Hud {
         }
 
         match ev {
-            Event::Expose(e) if e.window == self.overlay.id && e.count == 0 => self.dirty = true,
+            Event::Expose(e) if e.window == self.overlay.id && e.count == 0 => {
+                self.canvas.invalidate();
+                self.dirty = true;
+            }
             Event::KeyPress(e) if e.event == self.x.root => {
                 if let Some(action) = self.grabs.match_event(e) {
                     let fx = match action {
@@ -679,10 +686,11 @@ impl Hud {
         if !self.dirty && !due {
             return;
         }
-        let (pm, layout) = self.app.frame(now);
+        let layout = self.app.frame_into(now, &mut self.canvas.pixmap);
         self.size = (layout.w, layout.h);
         self.sync_geometry();
-        if let Err(e) = self.x.present(self.overlay.id, self.overlay.gc, &pm) {
+        let (win, gc) = (self.overlay.id, self.overlay.gc);
+        if let Err(e) = self.x.present_canvas(win, gc, &mut self.canvas) {
             eprintln!("timehud: present failed: {e:#}");
         }
         self.dirty = false;

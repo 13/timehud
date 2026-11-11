@@ -44,7 +44,7 @@ fn main() {
                 progress_color: parse_hex(t.color_timer_run).unwrap(),
                 opacity: 1.0,
             };
-            let (pm, _) = render(&view, &mut fonts);
+            let (pm, _) = render(&view, &mut fonts).expect("pixmap");
             // Composite over mid-grey so translucency/shadow is visible.
             let mut bg = tiny_skia::Pixmap::new(pm.width(), pm.height()).unwrap();
             bg.fill(tiny_skia::Color::from_rgba8(90, 100, 120, 255));

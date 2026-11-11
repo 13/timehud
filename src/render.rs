@@ -463,12 +463,40 @@ fn draw_border_progress(pm: &mut Pixmap, view: &View, panel: Rect, radius: f32) 
     pm.stroke_path(&path, &p, &st, Transform::identity(), None);
 }
 
-/// Draw one frame.
-pub fn render(view: &View, fonts: &mut FontSet) -> (Pixmap, Layout) {
+/// Draw one frame into a new pixmap; `None` if no pixmap of the layout's
+/// size can be allocated.
+pub fn render(view: &View, fonts: &mut FontSet) -> Option<(Pixmap, Layout)> {
+    let mut pm = None;
+    let layout = render_into(view, fonts, &mut pm);
+    pm.map(|pm| (pm, layout))
+}
+
+/// Draw one frame into `canvas`, reusing its pixmap when the size is
+/// unchanged (cleared first) and replacing it otherwise. Leaves `None` when
+/// no pixmap of that size can be allocated; the layout is returned anyway.
+pub fn render_into(view: &View, fonts: &mut FontSet, canvas: &mut Option<Pixmap>) -> Layout {
     let pl = plan(view, fonts);
+    let lay = &pl.layout;
+    let layout = Layout {
+        w: lay.w,
+        h: lay.h,
+        panel: lay.panel,
+        regions: lay.regions.clone(),
+    };
+    let (w, h) = (lay.w.max(1) as u32, lay.h.max(1) as u32);
+    match canvas {
+        Some(pm) if pm.width() == w && pm.height() == h => pm.fill(Color::TRANSPARENT),
+        _ => *canvas = Pixmap::new(w, h),
+    }
+    if let Some(pm) = canvas {
+        draw_frame(view, &pl, fonts, pm);
+    }
+    layout
+}
+
+fn draw_frame(view: &View, pl: &Plan, fonts: &mut FontSet, pm: &mut Pixmap) {
     let (cfg, theme, s) = (view.cfg, view.theme, pl.s);
     let lay = &pl.layout;
-    let mut pm = Pixmap::new(lay.w.max(1) as u32, lay.h.max(1) as u32).expect("non-zero pixmap");
     let panel = lay.panel;
     let rad = theme.radius * s;
     let inset = panel.x;
@@ -480,11 +508,11 @@ pub fn render(view: &View, fonts: &mut FontSet) -> (Pixmap, Layout) {
     );
 
     if theme.shadow_alpha > 0 {
-        draw_shadow(&mut pm, panel, inset, rad, theme.shadow_alpha);
+        draw_shadow(pm, panel, inset, rad, theme.shadow_alpha);
     }
     let bg = hex(&cfg.color_bg, Rgb(0, 0, 0));
     fill_rrect(
-        &mut pm,
+        pm,
         pf,
         rad,
         &paint(Color::from_rgba8(bg.0, bg.1, bg.2, theme.bg_alpha)),
@@ -492,14 +520,14 @@ pub fn render(view: &View, fonts: &mut FontSet) -> (Pixmap, Layout) {
     if theme.border_alpha > 0
         && let Some(path) = rounded_outline(pf.0 + 0.5, pf.1 + 0.5, pf.2 - 1.0, pf.3 - 1.0, rad)
     {
-        stroke(&mut pm, &path, &paint(white(theme.border_alpha)), 1.0);
+        stroke(pm, &path, &paint(white(theme.border_alpha)), 1.0);
     }
     if theme.top_edge_alpha > 0 {
         let mut pb = PathBuilder::new();
         pb.move_to(pf.0 + rad, pf.1 + 1.5);
         pb.line_to(pf.0 + pf.2 - rad, pf.1 + 1.5);
         if let Some(path) = pb.finish() {
-            stroke(&mut pm, &path, &paint(white(theme.top_edge_alpha)), 1.0);
+            stroke(pm, &path, &paint(white(theme.top_edge_alpha)), 1.0);
         }
     }
     if let Some(y) = pl.sep_y {
@@ -514,16 +542,7 @@ pub fn render(view: &View, fonts: &mut FontSet) -> (Pixmap, Layout) {
     if let Some(base) = pl.clock_baseline {
         let tw = fonts.measure(&view.clock, pl.clock_px, true);
         let x = centre - tw / 2.0;
-        fonts.draw(
-            &mut pm,
-            &view.clock,
-            x,
-            base,
-            pl.clock_px,
-            clock_c,
-            true,
-            0.0,
-        );
+        fonts.draw(pm, &view.clock, x, base, pl.clock_px, clock_c, true, 0.0);
     }
     if let Some(row) = pl.timer_row {
         // Pulse: integer px size, scaled about the row centre; other rows stay put.
@@ -532,7 +551,7 @@ pub fn render(view: &View, fonts: &mut FontSet) -> (Pixmap, Layout) {
         let base = row.y as f32 + (row.h as f32 + ink) / 2.0;
         let tw = fonts.measure(&view.timer, tpx, true);
         fonts.draw(
-            &mut pm,
+            pm,
             &view.timer,
             centre - tw / 2.0,
             base,
@@ -544,11 +563,11 @@ pub fn render(view: &View, fonts: &mut FontSet) -> (Pixmap, Layout) {
     }
     if let Some(row) = pl.progress_row {
         let r = (row.x as f32, row.y as f32, row.w as f32, row.h as f32);
-        fill_rrect(&mut pm, r, 1.5 * s, &paint(white(30)));
+        fill_rrect(pm, r, 1.5 * s, &paint(white(30)));
         let fw = (r.2 * view.progress.min(1.0) as f32).floor();
         if fw > 0.0 {
             fill_rrect(
-                &mut pm,
+                pm,
                 (r.0, r.1, fw, r.3),
                 1.5 * s,
                 &paint(color(view.progress_color, 1.0)),
@@ -560,7 +579,7 @@ pub fn render(view: &View, fonts: &mut FontSet) -> (Pixmap, Layout) {
         let n = view.mode_text.chars().count().max(1) as f32;
         let tw = fonts.measure(&view.mode_text, pl.mode_px, true) + (n - 1.0) * ls;
         fonts.draw(
-            &mut pm,
+            pm,
             &view.mode_text,
             centre - tw / 2.0,
             pl.mode_baseline,
@@ -570,24 +589,19 @@ pub fn render(view: &View, fonts: &mut FontSet) -> (Pixmap, Layout) {
             ls,
         );
     }
-    draw_buttons(view, &pl, fonts, &mut pm);
+    draw_buttons(view, pl, fonts, pm);
     if cfg.progress_style == "border" && view.progress > 0.0 {
-        draw_border_progress(&mut pm, view, panel, rad);
+        draw_border_progress(pm, view, panel, rad);
     }
 
     let o = view.opacity.clamp(0.0, 1.0);
     if o < 1.0 {
+        // Same rounding as scaling each byte, via a 256-entry table.
+        let lut: [u8; 256] = std::array::from_fn(|b| (b as f32 * o).round() as u8);
         for b in pm.data_mut() {
-            *b = (*b as f32 * o).round() as u8;
+            *b = lut[*b as usize];
         }
     }
-    let layout = Layout {
-        w: lay.w,
-        h: lay.h,
-        panel: lay.panel,
-        regions: lay.regions.clone(),
-    };
-    (pm, layout)
 }
 
 #[cfg(test)]
@@ -669,9 +683,33 @@ mod tests {
     }
 
     #[test]
+    fn render_into_reuses_and_matches_fresh() {
+        let cfg = Config::default();
+        let mut v = mk(&cfg, "classic");
+        let mut canvas = None;
+        render_into(&v, &mut fonts(), &mut canvas);
+        let addr = canvas.as_ref().unwrap().data().as_ptr();
+        v.timer = "12:34".into();
+        v.opacity = 0.7;
+        render_into(&v, &mut fonts(), &mut canvas);
+        let reused = canvas.as_ref().unwrap();
+        assert_eq!(reused.data().as_ptr(), addr, "same-size frame reallocated");
+        let (fresh, _) = render(&v, &mut fonts()).unwrap();
+        assert!(
+            reused.data() == fresh.data(),
+            "reused frame differs from fresh"
+        );
+
+        v.controls_pos = 0.0; // fold: smaller window
+        let l = render_into(&v, &mut fonts(), &mut canvas);
+        let pm = canvas.as_ref().unwrap();
+        assert_eq!((pm.width(), pm.height()), (l.w as u32, l.h as u32));
+    }
+
+    #[test]
     fn corners_transparent_classic_no_shadow_area() {
         let cfg = Config::default();
-        let (pm, l) = render(&mk(&cfg, "mono"), &mut fonts());
+        let (pm, l) = render(&mk(&cfg, "mono"), &mut fonts()).unwrap();
         assert_eq!(l.panel.x, 0);
         assert_eq!(pm.pixel(0, 0).unwrap().alpha(), 0);
     }
@@ -684,7 +722,7 @@ mod tests {
         };
         let mut v = mk(&cfg, "mono");
         v.progress = 0.5;
-        let (pm, l) = render(&v, &mut fonts());
+        let (pm, l) = render(&v, &mut fonts()).unwrap();
         let red = |x: i32, y: i32| {
             let p = pm.pixel(x as u32, y as u32).unwrap();
             p.red() > 150 && p.green() < 60
@@ -699,7 +737,7 @@ mod tests {
         let cfg = Config::default();
         let mut v = mk(&cfg, "classic");
         let at = |v: &View| {
-            let (pm, l) = render(v, &mut fonts());
+            let (pm, l) = render(v, &mut fonts()).unwrap();
             pm.pixel((l.panel.x + 3) as u32, (l.panel.y + l.panel.h / 2) as u32)
                 .unwrap()
                 .alpha() as i32
