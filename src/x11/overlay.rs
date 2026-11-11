@@ -4,12 +4,14 @@ use super::{X, keysym_of};
 use crate::app::{Button, Input, Key};
 use crate::layout::Rect;
 use std::cell::Cell;
+use std::collections::HashMap;
 use x11rb::NONE;
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::shape::{self, SK, SO};
 use x11rb::protocol::xproto::{
-    ClipOrdering, ConfigureWindowAux, ConnectionExt as _, EventMask, KeyButMask, StackMode,
+    ClipOrdering, ConfigureWindowAux, ConnectionExt as _, EventMask, KeyButMask, MapState,
+    StackMode,
 };
 
 pub struct OverlayWin {
@@ -109,6 +111,86 @@ pub fn restack_needed(ev: &Event, root: u32, own: &[u32]) -> bool {
         }
         _ => false,
     }
+}
+
+/// Spots restacks of other top-levels that may have put them above the
+/// overlay indirectly (above some other sibling of ours, e.g. a
+/// notification), which [`restack_needed`] cannot see. Remembers each
+/// managed top-level's `above_sibling`, so the many ConfigureNotify events
+/// of plain moves and resizes are not mistaken for restacks.
+#[derive(Debug, Default)]
+pub struct StackWatch {
+    above: HashMap<u32, u32>,
+}
+
+impl StackWatch {
+    /// True when `ev` restacked a non-override-redirect top-level (not one
+    /// of `own`) somewhere above the bottom: then check [`covered`].
+    pub fn restacked(&mut self, ev: &Event, root: u32, own: &[u32]) -> bool {
+        match ev {
+            Event::ConfigureNotify(e)
+                if e.event == root && !e.override_redirect && !own.contains(&e.window) =>
+            {
+                let before = self.above.insert(e.window, e.above_sibling);
+                e.above_sibling != NONE && before != Some(e.above_sibling)
+            }
+            Event::DestroyNotify(e) if e.event == root => {
+                self.above.remove(&e.window);
+                false
+            }
+            // Reparented into a WM frame: no longer a top-level.
+            Event::ReparentNotify(e) if e.event == root && e.parent != root => {
+                self.above.remove(&e.window);
+                false
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Whether a mapped, non-override-redirect window other than `own` is
+/// stacked above `overlay`. `stack` is the root's children bottom to top
+/// (QueryTree order); `attrs` gives a window's (viewable, override-redirect)
+/// state, `None` if it is gone. Override-redirect windows are not fought
+/// (see [`restack_needed`]).
+pub fn covered(
+    stack: &[u32],
+    overlay: u32,
+    own: &[u32],
+    attrs: impl Fn(u32) -> Option<(bool, bool)>,
+) -> bool {
+    let Some(i) = stack.iter().position(|&w| w == overlay) else {
+        return false;
+    };
+    stack[i + 1..]
+        .iter()
+        .filter(|w| !own.contains(w))
+        .any(|&w| attrs(w).is_some_and(|(viewable, or)| viewable && !or))
+}
+
+/// [`covered`] against the live stacking order (one QueryTree, then the
+/// attributes of the windows above the overlay, pipelined).
+pub fn covered_now(x: &X, overlay: u32, own: &[u32]) -> bool {
+    let Some(tree) = x.conn.query_tree(x.root).ok().and_then(|c| c.reply().ok()) else {
+        return false;
+    };
+    let stack = tree.children;
+    let Some(i) = stack.iter().position(|&w| w == overlay) else {
+        return false;
+    };
+    let cookies: Vec<_> = stack[i + 1..]
+        .iter()
+        .filter(|w| !own.contains(w))
+        .map(|&w| (w, x.conn.get_window_attributes(w).ok()))
+        .collect();
+    let attrs: HashMap<u32, (bool, bool)> = cookies
+        .into_iter()
+        .filter_map(|(w, c)| {
+            let a = c?.reply().ok()?;
+            Some((w, (a.map_state == MapState::VIEWABLE, a.override_redirect)))
+        })
+        .collect();
+    covered(&stack, overlay, own, |w| attrs.get(&w).copied())
 }
 
 thread_local! {
@@ -405,6 +487,58 @@ mod tests {
         };
         e.override_redirect = true;
         assert!(!restack_needed(&Event::ConfigureNotify(e), ROOT, &own));
+    }
+
+    #[test]
+    fn stack_watch_reports_restacks_not_moves() {
+        let own = [WIN];
+        let mut w = StackWatch::default();
+        // First sighting above some sibling: may be a restack.
+        assert!(w.restacked(&configure(0x77, 0x55), ROOT, &own));
+        // Moved/resized, same sibling: not a restack.
+        assert!(!w.restacked(&configure(0x77, 0x55), ROOT, &own));
+        // Restacked above another sibling (e.g. a notification above us).
+        assert!(w.restacked(&configure(0x77, 0x66), ROOT, &own));
+        // Lowered to the bottom: cannot cover us.
+        assert!(!w.restacked(&configure(0x77, NONE), ROOT, &own));
+        // Our own and override-redirect windows are ignored.
+        assert!(!w.restacked(&configure(WIN, 0x55), ROOT, &own));
+        let Event::ConfigureNotify(mut e) = configure(0x88, 0x55) else {
+            unreachable!()
+        };
+        e.override_redirect = true;
+        assert!(!w.restacked(&Event::ConfigureNotify(e), ROOT, &own));
+        // Destroyed windows are forgotten (a new one may reuse the id).
+        w.restacked(&configure(0x99, 0x55), ROOT, &own);
+        let destroy = Event::DestroyNotify(x11rb::protocol::xproto::DestroyNotifyEvent {
+            response_type: 17,
+            sequence: 0,
+            event: ROOT,
+            window: 0x99,
+        });
+        assert!(!w.restacked(&destroy, ROOT, &own));
+        assert!(w.restacked(&configure(0x99, 0x55), ROOT, &own));
+    }
+
+    #[test]
+    fn covered_only_by_mapped_managed_windows_above() {
+        const POPUP: u32 = WIN + 1;
+        let own = [WIN, POPUP];
+        // (viewable, override-redirect)
+        let attrs = |w: u32| match w {
+            0x10 | 0x11 => Some((true, false)), // managed app windows
+            0x20 => Some((true, true)),         // notification / other overlay
+            0x30 => Some((false, false)),       // unmapped
+            _ => None,                          // gone
+        };
+        // Below us only.
+        assert!(!covered(&[0x10, 0x11, WIN, POPUP], WIN, &own, attrs));
+        // An app went above the notification that is above us.
+        assert!(covered(&[0x10, WIN, 0x20, 0x11], WIN, &own, attrs));
+        // Only override-redirect, unmapped or vanished windows above.
+        assert!(!covered(&[0x10, WIN, 0x20, 0x30, 0x40], WIN, &own, attrs));
+        // Not in the tree (not mapped yet): nothing to do.
+        assert!(!covered(&[0x10, 0x11], WIN, &own, attrs));
     }
 
     #[test]

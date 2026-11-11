@@ -16,7 +16,7 @@ use crate::sound::Sound;
 use crate::text::FontSet;
 use crate::themes::get_theme;
 use crate::x11::grabs::{Grabs, HotkeyAction};
-use crate::x11::overlay::{OverlayWin, restack_needed, translate};
+use crate::x11::overlay::{OverlayWin, StackWatch, covered_now, restack_needed, translate};
 use crate::x11::popup::{MenuPopup, PopupOutcome};
 use crate::x11::tray::{Tray, TrayEvent};
 use crate::x11::{Canvas, Screens, X};
@@ -213,6 +213,10 @@ struct Hud {
     frame_due: Option<f64>,
     /// Another window went above ours; raise when `raises` allows.
     raise_pending: bool,
+    /// Restacks of other windows, and whether one in the current batch of
+    /// events needs the stacking order checked (`covered_now`).
+    stack_watch: StackWatch,
+    stack_check: bool,
     raises: RaiseLimiter,
     /// The hotkey setup last applied (binds and parse errors).
     hotkeys: Option<HotkeySetup>,
@@ -321,6 +325,8 @@ impl Hud {
             dirty: false,
             frame_due: None,
             raise_pending: false,
+            stack_watch: StackWatch::default(),
+            stack_check: false,
             raises: RaiseLimiter::default(),
             hotkeys: None,
             next_tick: now,
@@ -397,7 +403,24 @@ impl Hud {
             self.handle_x(&ev);
         }
         self.refresh_screens();
+        self.check_stacking();
         Ok(())
+    }
+
+    /// After a restack that might have covered the overlay indirectly:
+    /// raise if a managed window is above it now.
+    fn check_stacking(&mut self) {
+        if !std::mem::take(&mut self.stack_check) || !self.mapped || self.raise_pending {
+            return;
+        }
+        let mut own = vec![self.overlay.id];
+        if let Some(p) = &self.popup {
+            own.extend(p.windows());
+        }
+        if covered_now(&self.x, self.overlay.id, &own) {
+            self.raise_pending = true;
+            self.raise_if_allowed(self.now());
+        }
     }
 
     /// Re-reads what root events reported as changed: monitors / work area
@@ -441,6 +464,8 @@ impl Hud {
         if self.mapped && restack_needed(ev, self.x.root, &own) {
             self.raise_pending = true;
             self.raise_if_allowed(now);
+        } else if self.stack_watch.restacked(ev, self.x.root, &own) {
+            self.stack_check |= self.mapped;
         }
 
         // An open menu sees every event first and swallows pointer/keyboard input.
