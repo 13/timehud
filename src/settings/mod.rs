@@ -470,6 +470,17 @@ fn rgb_to_hex(c: [u8; 3]) -> String {
 }
 
 /// A captured key press as a combo string, or None if the key is unusable.
+/// Whether a captured key press may become a global hotkey: it needs Ctrl or
+/// Alt (Super is not reported on Linux), except bare function keys. A plain
+/// letter or Space would be grabbed globally and stop reaching every app.
+fn capture_allowed(key: Key, m: egui::Modifiers) -> bool {
+    let name = key.name();
+    let is_fkey = name
+        .strip_prefix('F')
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    m.ctrl || m.alt || is_fkey
+}
+
 fn combo_from_key(key: Key, physical: Option<Key>, m: egui::Modifiers) -> Option<String> {
     [Some(key), physical]
         .into_iter()
@@ -503,6 +514,8 @@ struct SettingsApp {
     presets: presets::PresetsState,
     hotkey_error: Option<String>,
     capturing: Option<usize>,
+    /// The last key pressed while capturing lacked Ctrl/Alt.
+    capture_needs_mod: bool,
     fonts: Arc<OnceLock<Vec<String>>>,
     font_filter: String,
     picker: Option<&'static str>,
@@ -533,6 +546,7 @@ impl SettingsApp {
             section,
             hotkey_error: None,
             capturing: None,
+            capture_needs_mod: false,
             fonts,
             font_filter: String::new(),
             picker: file_picker(),
@@ -578,6 +592,7 @@ impl SettingsApp {
             return;
         };
         let mut result: Option<Option<String>> = None;
+        let mut needs_mod = false;
         ctx.input_mut(|input| {
             let mods = input.modifiers;
             input.events.retain(|ev| {
@@ -594,6 +609,8 @@ impl SettingsApp {
                     } => {
                         if *key == Key::Escape && !modifiers.any() {
                             result = Some(None);
+                        } else if !capture_allowed(*key, *modifiers) {
+                            needs_mod = true; // keep capturing
                         } else if let Some(c) = combo_from_key(*key, *physical_key, *modifiers) {
                             result = Some(Some(c));
                         }
@@ -614,8 +631,12 @@ impl SettingsApp {
                 }
             });
         });
+        if needs_mod {
+            self.capture_needs_mod = true;
+        }
         if let Some(r) = result {
             self.capturing = None;
+            self.capture_needs_mod = false;
             if let Some(combo) = r {
                 let field = hotkey_field(&mut self.cfg, i);
                 if *field != combo {
@@ -973,7 +994,9 @@ impl SettingsApp {
                     ui.horizontal(|ui| {
                         let capturing = self.capturing == Some(i);
                         let value = hotkey_field(&mut self.cfg, i).clone();
-                        let text = if capturing {
+                        let text = if capturing && self.capture_needs_mod {
+                            RichText::new("Add Ctrl or Alt…").color(WARN)
+                        } else if capturing {
                             RichText::new("Press keys…").color(ACCENT)
                         } else if value.is_empty() {
                             RichText::new(format!("e.g. {hint}")).color(WEAK).italics()
@@ -985,12 +1008,13 @@ impl SettingsApp {
                             btn = btn.stroke(Stroke::new(1.5, ACCENT));
                         }
                         let r = ui.add(btn).on_hover_text(if capturing {
-                            "Press the combo; Esc cancels"
+                            "Press a combo with Ctrl or Alt (or a bare F-key); Esc cancels"
                         } else {
                             "Click, then press the key combination"
                         });
                         if r.clicked() {
                             self.capturing = if capturing { None } else { Some(i) };
+                            self.capture_needs_mod = false;
                             r.surrender_focus();
                         }
                         if !value.is_empty()
@@ -1369,6 +1393,19 @@ mod tests {
         assert_eq!(countdown_note(45), "\u{2192} 45s");
         assert_eq!(countdown_note(300), "\u{2192} 5m 00s");
         assert_eq!(countdown_note(3725), "\u{2192} 1h 02m 05s");
+    }
+
+    #[test]
+    fn capture_requires_ctrl_or_alt_except_function_keys() {
+        use egui::Modifiers;
+        let shift = Modifiers::SHIFT;
+        assert!(!capture_allowed(Key::A, Modifiers::NONE));
+        assert!(!capture_allowed(Key::Space, Modifiers::NONE));
+        assert!(!capture_allowed(Key::A, shift));
+        assert!(capture_allowed(Key::A, Modifiers::CTRL));
+        assert!(capture_allowed(Key::Space, Modifiers::ALT | shift));
+        assert!(capture_allowed(Key::F5, Modifiers::NONE));
+        assert!(capture_allowed(Key::F12, shift));
     }
 
     #[test]
