@@ -1089,3 +1089,58 @@ fn status_of_a_hidden_timer_still_counts() {
     h.advance(3.0);
     assert_eq!(h.app.status().display, "00:03");
 }
+
+#[test]
+fn start_and_pause_are_idempotent() {
+    let mut h = mk(Config::default());
+    let now = h.now();
+    assert!(h.app.pause_timer(now).is_empty()); // not running
+    h.app.start_timer(now);
+    assert_eq!(h.app.status().state, "running");
+    assert!(h.app.start_timer(now).is_empty()); // already running
+    h.advance(1.0);
+    h.app.pause_timer(h.now());
+    assert_eq!(h.app.status().state, "paused");
+}
+
+#[test]
+fn set_countdown_switches_mode_and_ends_the_preset() {
+    let mut h = mk(with_presets(vec![json!({"name": "Tea", "duration": 180})]));
+    let now = h.now();
+    h.app.apply_preset_named("tea", now).unwrap(); // case-insensitive fallback
+    assert_eq!(h.app.cfg.active_preset, "Tea");
+    h.app.start_timer(now);
+    let fx = h.app.set_countdown(1500, now).unwrap();
+    assert!(fx.contains(&Effect::SaveSoon));
+    assert_eq!(h.app.cfg.timer_mode, Mode::Countdown);
+    assert_eq!(h.app.cfg.countdown_duration, 1500);
+    assert_eq!(h.app.cfg.active_preset, "");
+    let s = h.app.status();
+    assert_eq!((s.state.as_str(), s.display.as_str()), ("idle", "25:00"));
+    assert!(h.app.set_countdown(0, now).is_err());
+    assert!(h.app.set_countdown(COUNTDOWN_RANGE.1 + 1, now).is_err());
+    assert_eq!(h.app.cfg.countdown_duration, 1500);
+}
+
+#[test]
+fn apply_preset_named_errors_for_unknown_names() {
+    let mut h = mk(Config::default()); // "1 min", "5 min"
+    let now = h.now();
+    let err = h.app.apply_preset_named("Tea", now).unwrap_err();
+    assert!(err.contains("1 min, 5 min"), "{err}");
+    h.app.apply_preset_named("5 min", now).unwrap();
+    assert_eq!(h.app.cfg.countdown_duration, 300);
+    assert_eq!(h.app.cfg.timer_mode, Mode::Countdown);
+}
+
+#[test]
+fn set_mode_ends_the_preset_unless_unchanged() {
+    let mut h = mk(Config::default());
+    let now = h.now();
+    h.app.apply_preset_named("1 min", now).unwrap();
+    assert!(h.app.set_mode(Mode::Countdown, now).is_empty());
+    assert_eq!(h.app.cfg.active_preset, "1 min");
+    h.app.set_mode(Mode::Interval, now);
+    assert_eq!(h.app.cfg.timer_mode, Mode::Interval);
+    assert_eq!(h.app.cfg.active_preset, "");
+}

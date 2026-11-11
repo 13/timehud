@@ -1,5 +1,7 @@
 //! Single-instance IPC: newline-delimited JSON over a Unix socket.
 
+use crate::app::Status;
+use crate::config::Mode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io;
@@ -56,16 +58,37 @@ pub fn private_dir(dir: &Path, uid: u32) -> io::Result<()> {
 #[serde(tag = "cmd", rename_all = "kebab-case")]
 pub enum Request {
     Toggle,
+    Start,
+    Pause,
     Reset,
+    /// Countdown of this many seconds (`timehud set`).
+    SetCountdown {
+        seconds: i64,
+    },
+    /// Apply the preset of this name (`timehud preset`).
+    ApplyPreset {
+        name: String,
+    },
+    SetMode {
+        mode: Mode,
+    },
+    /// Answered with [`Event::Status`].
+    Status,
     Show,
     Hide,
     ToggleVisibility,
     Quit,
     SettingsHello,
-    Preview { config: Value },
-    Commit { config: Value },
+    Preview {
+        config: Value,
+    },
+    Commit {
+        config: Value,
+    },
     Cancel,
-    SavePreset { name: String },
+    SavePreset {
+        name: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -86,6 +109,9 @@ pub enum Event {
     },
     Focus {
         tab: Option<String>,
+    },
+    Status {
+        status: Status,
     },
 }
 
@@ -345,6 +371,17 @@ mod tests {
         );
         let back: Request = serde_json::from_str(r#"{"cmd":"save-preset","name":"x"}"#).unwrap();
         assert_eq!(back, Request::SavePreset { name: "x".into() });
+        assert_eq!(
+            serde_json::to_string(&Request::SetMode {
+                mode: Mode::Interval
+            })
+            .unwrap(),
+            r#"{"cmd":"set-mode","mode":"interval"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&Request::SetCountdown { seconds: 90 }).unwrap(),
+            r#"{"cmd":"set-countdown","seconds":90}"#
+        );
     }
 
     #[test]

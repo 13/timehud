@@ -10,6 +10,8 @@ TimeHUD is a Rust (edition 2024) transparent HUD overlay for Linux/X11 showing a
 
 ```bash
 cargo run --release                 # run the HUD (cargo run -- toggle etc. for subcommands)
+# control subcommands (IPC to the running HUD): toggle start pause reset show hide quit,
+#   set <duration>, preset <name>, mode <stopwatch|countdown|interval>, status [--json]
 cargo test                          # full suite (headless; no X server needed)
 cargo test engine::                 # one module
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test   # the gate; must be clean before every commit
@@ -26,7 +28,7 @@ Two processes, one binary:
 
 - **HUD process** (`timehud`): x11rb + tiny-skia + fontdue software rendering into an override-redirect ARGB window, driven by a `poll(2)` loop (X connection fd, IPC socket, signals) with no toolkit. Idle means blocked in poll; the loop wakes for the 100 ms tick, the 1 s clock and animation frames only. Owns the timer engine, tray (XEmbed), popup menus, sound and global hotkey grabs.
 - **Settings process** (`timehud settings`, hidden subcommand; also `save-preset`): a separate `eframe`/egui window so the HUD never links a GUI toolkit's idle cost. Talks to the HUD over the Unix socket in `$XDG_RUNTIME_DIR/timehud.sock` (`ipc.rs`): live config edits go HUD-ward; the HUD merges only the keys the settings process changed (`merge_settings_changes`), so HUD-side edits (drag, wheel font size) survive.
-- Single instance via the same socket: a second `timehud` toggles visibility; `toggle|reset|show|hide|quit` subcommands send control requests.
+- Single instance via the same socket: a second `timehud` toggles visibility; `toggle|start|pause|reset|set|preset|mode|status|show|hide|quit` subcommands send control requests (`main.rs::control_request`; HUD errors go to stderr with exit 1).
 
 Module map (`src/`):
 
@@ -37,7 +39,7 @@ Module map (`src/`):
 - `themes.rs` — six themes (classic, terminal, glass, mono, nord, amber); `apply_theme` stamps colors into config, structure is read live via `get_theme`.
 - `layout.rs`, `render.rs`, `text.rs`, `format.rs`, `anim.rs` — geometry/hit regions, tiny-skia drawing, fontdue text (bundled JetBrains Mono Bold + fontconfig fallback), time formatting, animations.
 - `hud.rs` + `hud/` — the poll loop, X event dispatch, `TIMEHUD_TRACE`; `deadlines.rs` (tick/frame/save/raise/accept deadlines → poll timeout), `ipc_server.rs` (clients, non-blocking event queues, settings session).
-- `x11/` — `mod.rs` (connection, windows, present), `overlay.rs`, `popup.rs` (menus), `tray.rs`, `grabs.rs` (hotkey grabs).
+- `x11/` — `mod.rs` (connection, windows, present), `overlay.rs`, `popup.rs` (menus), `tray.rs`, `tooltip.rs` (tray tooltip), `grabs.rs` (hotkey grabs).
 - `menu.rs` — context-menu model shared by window and tray.
 - `hotkey.rs` — combo parsing/formatting, egui key -> X keysym.
 - `sound.rs` — in-memory beeps via rodio, lazy device open + release after idle, player-chain fallback.

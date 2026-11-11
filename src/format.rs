@@ -14,6 +14,71 @@ pub fn fmt_seconds(secs: f64) -> String {
     }
 }
 
+/// Parses a duration for `timehud set`: plain seconds (`90`), unit
+/// groups (`25m`, `1h30m`, `1h 5m 10s`, `45s`) or a clock (`mm:ss`,
+/// `h:mm:ss`). Zero is refused.
+pub fn parse_duration(s: &str) -> Result<i64, String> {
+    let t = s.trim().to_ascii_lowercase();
+    let bad = || format!("invalid duration '{s}' (try 90, 25m, 1h30m or 12:30)");
+    let num = |d: &str| -> Result<i64, String> {
+        if d.is_empty() || !d.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(bad());
+        }
+        d.parse::<i64>().map_err(|_| bad())
+    };
+    let secs = if t.contains(':') {
+        let parts: Vec<&str> = t.split(':').collect();
+        let nums = parts
+            .iter()
+            .map(|p| num(p))
+            .collect::<Result<Vec<_>, _>>()?;
+        match nums[..] {
+            [m, s] if s < 60 => m.checked_mul(60).and_then(|m| m.checked_add(s)),
+            [h, m, s] if m < 60 && s < 60 => {
+                h.checked_mul(3600).and_then(|h| h.checked_add(m * 60 + s))
+            }
+            _ => None,
+        }
+        .ok_or_else(bad)?
+    } else if t.bytes().all(|b| b.is_ascii_digit()) {
+        num(&t)?
+    } else {
+        // Unit groups, each unit at most once and in h, m, s order.
+        let mut total: i64 = 0;
+        let mut digits = String::new();
+        let mut last_unit = 0;
+        for c in t.chars().filter(|c| !c.is_whitespace()) {
+            if c.is_ascii_digit() {
+                digits.push(c);
+                continue;
+            }
+            let (rank, mult) = match c {
+                'h' => (1, 3600),
+                'm' => (2, 60),
+                's' => (3, 1),
+                _ => return Err(bad()),
+            };
+            if rank <= last_unit {
+                return Err(bad());
+            }
+            last_unit = rank;
+            total = num(&digits)?
+                .checked_mul(mult)
+                .and_then(|v| total.checked_add(v))
+                .ok_or_else(bad)?;
+            digits.clear();
+        }
+        if !digits.is_empty() || last_unit == 0 {
+            return Err(bad());
+        }
+        total
+    };
+    if secs <= 0 {
+        return Err(format!("duration '{s}' is zero"));
+    }
+    Ok(secs)
+}
+
 /// Clock label text: "24h" HH:MM:SS, "24h-short" HH:MM, "12h" hh:MM:SS AM/PM.
 pub fn clock_text(now: NaiveTime, format: &str) -> String {
     let (h, m, s) = (now.hour(), now.minute(), now.second());
@@ -121,6 +186,45 @@ pub fn preset_menu_label(p: &Preset) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_duration_forms() {
+        for (s, want) in [
+            ("90", 90),
+            (" 300 ", 300),
+            ("45s", 45),
+            ("25m", 1500),
+            ("1h30m", 5400),
+            ("1h 5m 10s", 3910),
+            ("2H", 7200),
+            ("1m30s", 90),
+            ("12:30", 750),
+            ("90:00", 5400),
+            ("1:02:03", 3723),
+            ("0:05", 5),
+        ] {
+            assert_eq!(parse_duration(s), Ok(want), "{s}");
+        }
+        for s in [
+            "",
+            "0",
+            "0m",
+            "abc",
+            "5x",
+            "m",
+            "1m5",
+            "5m1h",
+            "1m1m",
+            "1:60",
+            "1:2:3:4",
+            ":30",
+            "-5",
+            "1.5m",
+            "99999999999999999999",
+        ] {
+            assert!(parse_duration(s).is_err(), "{s}");
+        }
+    }
 
     mod test_fmt_seconds {
         use super::*;

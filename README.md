@@ -46,12 +46,28 @@ Arch Linux: `cd packaging/aur && makepkg -si` (builds from source; the `url` /
 |---------|--------|
 | `timehud` | Start the overlay. If one is already running, toggles its visibility. |
 | `timehud toggle` | Start / pause the running timer |
+| `timehud start` / `pause` | Start / pause the timer (no-op if it already runs / is stopped) |
 | `timehud reset` | Reset the running timer |
+| `timehud set <duration>` | Switch to a stopped countdown of `<duration>`: `90` (seconds), `25m`, `1h30m`, `1h 5m 10s`, `12:30` or `1:02:03`. Ends the active preset. |
+| `timehud preset <name>` | Apply the preset with that name (exact, else case-insensitive; several words are joined: `timehud preset 5 min`) |
+| `timehud mode <stopwatch\|countdown\|interval>` | Switch the timer mode, stopped at its start (like the SW/CD/IV button; ends the active preset) |
+| `timehud status [--json]` | Print the timer state |
 | `timehud show` / `hide` | Show / hide the overlay |
 | `timehud quit` | Quit the running instance |
 
+`timehud status` prints one line — mode, state (`running`, `paused` or
+`idle`), the time as displayed, then the active preset if any:
+
+```console
+$ timehud status
+countdown running 02:12 Tea
+$ timehud status --json
+{"mode":"countdown","state":"running","display":"02:12","label":"TEA  ·  03:00","preset":"Tea","visible":true}
+```
+
 The subcommands exit non-zero with `TimeHUD is not running` when there is no
-instance. Flags: `--position <preset>`, `--reset-config`, `--no-tray`,
+instance, and print the HUD's error to stderr with a non-zero exit when it
+refuses a request (e.g. an unknown preset name). Flags: `--position <preset>`, `--reset-config`, `--no-tray`,
 `--wayland` (ignored, see below), `--version`.
 
 Binding keys in AwesomeWM (`rc.lua`) is the recommended alternative to the

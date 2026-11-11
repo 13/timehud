@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
-use timehud::config::{Config, config_path};
+use timehud::config::{Config, Mode, config_path};
+use timehud::format::parse_duration;
 use timehud::ipc::{self, Bind, Event, Request};
 use timehud::layout::POSITIONS;
 use timehud::{hud, settings};
@@ -31,12 +32,39 @@ struct Cli {
     command: Option<Cmd>,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug, PartialEq)]
 enum Cmd {
     /// Start or pause the running timer
     Toggle,
+    /// Start the timer (no-op if it runs)
+    Start,
+    /// Pause the timer (no-op if it is stopped)
+    Pause,
     /// Reset the running timer
     Reset,
+    /// Switch to a countdown of DURATION, stopped (ends the active preset)
+    Set {
+        /// 90 (seconds), 25m, 1h30m, 1h 5m 10s, mm:ss or h:mm:ss
+        #[arg(value_parser = parse_duration)]
+        duration: i64,
+    },
+    /// Apply the preset with this name (case-insensitive fallback)
+    Preset {
+        /// Preset name; several words are joined with spaces
+        #[arg(required = true, num_args = 1.., trailing_var_arg = true)]
+        name: Vec<String>,
+    },
+    /// Switch the timer mode (stopped; ends the active preset)
+    Mode {
+        #[arg(value_parser = parse_mode)]
+        mode: Mode,
+    },
+    /// Print the timer state: mode, state, display, preset
+    Status {
+        /// Print a JSON object instead of one line
+        #[arg(long)]
+        json: bool,
+    },
     /// Show the HUD
     Show,
     /// Hide the HUD
@@ -50,6 +78,44 @@ enum Cmd {
     },
     #[command(hide = true)]
     SavePreset,
+}
+
+fn parse_mode(s: &str) -> Result<Mode, String> {
+    s.parse()
+}
+
+/// The IPC request for a control subcommand (`None` for the ones that run
+/// a window here).
+fn control_request(cmd: &Cmd) -> Option<Request> {
+    Some(match cmd {
+        Cmd::Toggle => Request::Toggle,
+        Cmd::Start => Request::Start,
+        Cmd::Pause => Request::Pause,
+        Cmd::Reset => Request::Reset,
+        Cmd::Set { duration } => Request::SetCountdown { seconds: *duration },
+        Cmd::Preset { name } => Request::ApplyPreset {
+            name: name.join(" "),
+        },
+        Cmd::Mode { mode } => Request::SetMode { mode: *mode },
+        Cmd::Status { .. } => Request::Status,
+        Cmd::Show => Request::Show,
+        Cmd::Hide => Request::Hide,
+        Cmd::Quit => Request::Quit,
+        Cmd::Settings { .. } | Cmd::SavePreset => return None,
+    })
+}
+
+/// What to print for the HUD's reply: `Ok(text for stdout)` or
+/// `Err(message for stderr)` (exit status 1).
+fn reply_output(ev: Event, json: bool) -> Result<Option<String>, String> {
+    match ev {
+        Event::Error { message } => Err(message),
+        Event::Status { status } if json => serde_json::to_string(&status)
+            .map(Some)
+            .map_err(|e| e.to_string()),
+        Event::Status { status } => Ok(Some(status.line())),
+        _ => Ok(None),
+    }
 }
 
 fn main() -> ExitCode {
@@ -88,23 +154,25 @@ fn run() -> anyhow::Result<ExitCode> {
             settings::run_save_preset()?;
             return Ok(ExitCode::SUCCESS);
         }
-        Some(Cmd::Toggle) => Some(Request::Toggle),
-        Some(Cmd::Reset) => Some(Request::Reset),
-        Some(Cmd::Show) => Some(Request::Show),
-        Some(Cmd::Hide) => Some(Request::Hide),
-        Some(Cmd::Quit) => Some(Request::Quit),
+        Some(cmd) => control_request(&cmd).map(|req| (req, cmd)),
         None => None,
     };
 
-    if let Some(req) = control {
-        return Ok(match ipc::send(&path, &req) {
-            Ok(Event::Error { message }) => {
-                eprintln!("timehud: {message}");
-                ExitCode::FAILURE
+    if let Some((req, cmd)) = control {
+        let json = matches!(cmd, Cmd::Status { json: true });
+        let reply = match ipc::send(&path, &req) {
+            Ok(ev) => reply_output(ev, json),
+            Err(_) => Err("TimeHUD is not running".into()),
+        };
+        return Ok(match reply {
+            Ok(out) => {
+                if let Some(text) = out {
+                    println!("{text}");
+                }
+                ExitCode::SUCCESS
             }
-            Ok(_) => ExitCode::SUCCESS,
-            Err(_) => {
-                eprintln!("TimeHUD is not running");
+            Err(message) => {
+                eprintln!("timehud: {message}");
                 ExitCode::FAILURE
             }
         });
@@ -131,4 +199,88 @@ fn run() -> anyhow::Result<ExitCode> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use timehud::app::Status;
+
+    fn cmd(args: &[&str]) -> Result<Cmd, String> {
+        let argv = std::iter::once("timehud").chain(args.iter().copied());
+        Cli::try_parse_from(argv)
+            .map_err(|e| e.to_string())
+            .and_then(|c| c.command.ok_or_else(|| "no command".into()))
+    }
+
+    #[test]
+    fn control_subcommands_map_to_requests() {
+        let req = |args: &[&str]| control_request(&cmd(args).unwrap());
+        assert_eq!(req(&["start"]), Some(Request::Start));
+        assert_eq!(req(&["pause"]), Some(Request::Pause));
+        assert_eq!(req(&["toggle"]), Some(Request::Toggle));
+        assert_eq!(
+            req(&["set", "25m"]),
+            Some(Request::SetCountdown { seconds: 1500 })
+        );
+        assert_eq!(
+            req(&["set", "1:30"]),
+            Some(Request::SetCountdown { seconds: 90 })
+        );
+        assert_eq!(
+            req(&["preset", "5", "min"]),
+            Some(Request::ApplyPreset {
+                name: "5 min".into()
+            })
+        );
+        assert_eq!(
+            req(&["mode", "Interval"]),
+            Some(Request::SetMode {
+                mode: Mode::Interval
+            })
+        );
+        assert_eq!(req(&["status", "--json"]), Some(Request::Status));
+        assert_eq!(req(&["settings"]), None);
+    }
+
+    #[test]
+    fn bad_arguments_are_rejected_before_sending() {
+        assert!(cmd(&["set", "soon"]).is_err());
+        assert!(cmd(&["set"]).is_err());
+        assert!(cmd(&["mode", "lap"]).is_err());
+        assert!(cmd(&["preset"]).is_err());
+    }
+
+    #[test]
+    fn replies_print_or_fail() {
+        let status = Status {
+            mode: "countdown".into(),
+            state: "running".into(),
+            display: "04:12".into(),
+            label: "TEA".into(),
+            preset: "Tea".into(),
+            visible: true,
+        };
+        let ev = || Event::Status {
+            status: status.clone(),
+        };
+        assert_eq!(
+            reply_output(ev(), false),
+            Ok(Some("countdown running 04:12 Tea".into()))
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(&reply_output(ev(), true).unwrap().unwrap()).unwrap();
+        assert_eq!(json["display"], "04:12");
+        assert_eq!(json["preset"], "Tea");
+        assert_eq!(reply_output(Event::Ok, false), Ok(None));
+        assert_eq!(
+            reply_output(
+                Event::Error {
+                    message: "no preset named 'x'".into()
+                },
+                false
+            ),
+            Err("no preset named 'x'".into())
+        );
+    }
 }

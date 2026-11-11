@@ -116,6 +116,22 @@ impl Hud {
         }
         let fx = match req {
             Request::Toggle => self.app.toggle_timer(now),
+            Request::Start => self.app.start_timer(now),
+            Request::Pause => self.app.pause_timer(now),
+            Request::SetMode { mode } => self.app.set_mode(mode, now),
+            Request::SetCountdown { seconds } => match self.app.set_countdown(seconds, now) {
+                Ok(fx) => fx,
+                Err(message) => return Some(IpcEvent::Error { message }),
+            },
+            Request::ApplyPreset { name } => match self.app.apply_preset_named(&name, now) {
+                Ok(fx) => fx,
+                Err(message) => return Some(IpcEvent::Error { message }),
+            },
+            Request::Status => {
+                return Some(IpcEvent::Status {
+                    status: self.app.status(),
+                });
+            }
             Request::Reset => self.app.reset_timer(now),
             Request::Show => self.app.set_visible(true),
             Request::Hide => self.app.set_visible(false),

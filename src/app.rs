@@ -716,6 +716,83 @@ impl App {
         fx
     }
 
+    /// Starts the timer unless it already runs (`timehud start`).
+    pub fn start_timer(&mut self, now: f64) -> Vec<Effect> {
+        if self.engine.running() {
+            return Vec::new();
+        }
+        self.toggle_timer(now)
+    }
+
+    /// Pauses the timer if it runs (`timehud pause`).
+    pub fn pause_timer(&mut self, now: f64) -> Vec<Effect> {
+        if !self.engine.running() {
+            return Vec::new();
+        }
+        self.toggle_timer(now)
+    }
+
+    /// Switches to `mode` (stopped, at its start) and ends the preset, like
+    /// the mode button; a no-op if already in that mode.
+    pub fn set_mode(&mut self, mode: Mode, now: f64) -> Vec<Effect> {
+        self.poll(now);
+        if mode == self.cfg.timer_mode {
+            return Vec::new();
+        }
+        self.cfg.active_preset.clear(); // manual mode change ends the preset
+        self.engine.set_mode(&mut self.cfg, mode);
+        self.refresh_mode_label();
+        let mut fx = vec![Effect::SaveSoon];
+        fx.extend(self.sync(now));
+        fx
+    }
+
+    /// `timehud set`: a countdown of `secs`, stopped at its start. Not a
+    /// preset, so `active_preset` is cleared.
+    pub fn set_countdown(&mut self, secs: i64, now: f64) -> Result<Vec<Effect>, String> {
+        self.poll(now);
+        let (lo, hi) = COUNTDOWN_RANGE;
+        if !(lo..=hi).contains(&secs) {
+            return Err(format!(
+                "a countdown must last {lo} s to {}",
+                fmt_seconds(hi as f64)
+            ));
+        }
+        self.cfg.countdown_duration = secs;
+        self.last_cd_duration = secs;
+        self.cfg.active_preset.clear();
+        self.engine.set_mode(&mut self.cfg, Mode::Countdown);
+        self.refresh_mode_label();
+        let mut fx = vec![Effect::SaveSoon];
+        fx.extend(self.sync(now));
+        Ok(fx)
+    }
+
+    /// `timehud preset NAME`: applies the preset of that name (exact match
+    /// first, else ignoring case).
+    pub fn apply_preset_named(&mut self, name: &str, now: f64) -> Result<Vec<Effect>, String> {
+        self.poll(now);
+        let list = valid_presets(&self.cfg.presets);
+        let name = name.trim();
+        let index = list
+            .iter()
+            .find(|(p, _, _)| p.name() == name)
+            .or_else(|| {
+                list.iter()
+                    .find(|(p, _, _)| p.name().eq_ignore_ascii_case(name))
+            })
+            .map(|(_, _, i)| *i)
+            .ok_or_else(|| {
+                let names: Vec<&str> = list.iter().map(|(p, _, _)| p.name()).collect();
+                if names.is_empty() {
+                    format!("no preset named '{name}' (there are no presets)")
+                } else {
+                    format!("no preset named '{name}' (have: {})", names.join(", "))
+                }
+            })?;
+        Ok(self.apply_preset(index, now))
+    }
+
     /// Stop and zero the timer.
     pub fn reset_timer(&mut self, now: f64) -> Vec<Effect> {
         self.engine.reset(&self.cfg);
@@ -739,15 +816,7 @@ impl App {
             .position(|m| *m == self.cfg.timer_mode)
             .unwrap_or(0) as i32;
         let new = MODES[(cur + dir).rem_euclid(MODES.len() as i32) as usize];
-        if new == self.cfg.timer_mode {
-            return Vec::new();
-        }
-        self.cfg.active_preset.clear(); // manual mode change ends the preset
-        self.engine.set_mode(&mut self.cfg, new);
-        self.refresh_mode_label();
-        let mut fx = vec![Effect::SaveSoon];
-        fx.extend(self.sync(now));
-        fx
+        self.set_mode(new, now)
     }
 
     pub fn perform(&mut self, action: &MenuAction, now: f64) -> Vec<Effect> {
