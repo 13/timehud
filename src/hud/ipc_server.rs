@@ -139,9 +139,10 @@ impl Hud {
                     conn_id: id,
                     session: Session::new(&config),
                 });
-                return Some(IpcEvent::Config {
-                    config,
-                    tab: self.settings_tab.take(),
+                let tab = self.settings_tab.take();
+                self.send_to(id, &IpcEvent::Config { config, tab });
+                return Some(IpcEvent::HotkeyStatus {
+                    errors: self.hotkey_errors.clone(),
                 });
             }
             Request::Preview { config } => {

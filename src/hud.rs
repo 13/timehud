@@ -163,6 +163,8 @@ struct Hud {
     raises: RaiseLimiter,
     /// The hotkey setup last applied (binds and parse errors).
     hotkeys: Option<HotkeySetup>,
+    /// Problems from the last hotkey (re)grab, for the settings window.
+    hotkey_errors: Vec<String>,
     /// An X event read while checking for pending events before `poll`.
     backlog: Option<Event>,
     quit: bool,
@@ -268,6 +270,7 @@ impl Hud {
             stack_check: false,
             raises: RaiseLimiter::default(),
             hotkeys: None,
+            hotkey_errors: Vec::new(),
             backlog: None,
             quit: false,
         };
@@ -657,10 +660,10 @@ impl Hud {
         for (combo, reason) in self.grabs.set(&self.x, &binds) {
             errors.push(format!("Cannot grab {}: {reason}", format_combo(&combo)));
         }
+        self.hotkey_errors = errors;
         if let Some(id) = self.settings.as_ref().map(|s| s.conn_id) {
-            for message in errors {
-                self.send_to(id, &IpcEvent::Error { message });
-            }
+            let errors = self.hotkey_errors.clone();
+            self.send_to(id, &IpcEvent::HotkeyStatus { errors });
         }
     }
 

@@ -72,9 +72,21 @@ pub enum Request {
 #[serde(tag = "event", rename_all = "kebab-case")]
 pub enum Event {
     Ok,
-    Error { message: String },
-    Config { config: Value, tab: Option<String> },
-    Focus { tab: Option<String> },
+    Error {
+        message: String,
+    },
+    /// The global hotkey problems after the last (re)grab; empty = all fine.
+    /// Sent to the settings window, which shows them on its Hotkeys tab.
+    HotkeyStatus {
+        errors: Vec<String>,
+    },
+    Config {
+        config: Value,
+        tab: Option<String>,
+    },
+    Focus {
+        tab: Option<String>,
+    },
 }
 
 pub enum Bind {
@@ -339,6 +351,12 @@ mod tests {
     fn event_json_shape() {
         let v = serde_json::to_value(Event::Focus { tab: None }).unwrap();
         assert_eq!(v["event"], "focus");
+        let v = serde_json::to_value(Event::HotkeyStatus {
+            errors: vec!["Cannot grab F5".into()],
+        })
+        .unwrap();
+        assert_eq!(v["event"], "hotkey-status");
+        assert_eq!(v["errors"][0], "Cannot grab F5");
     }
 
     #[test]

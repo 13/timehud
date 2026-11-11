@@ -516,7 +516,10 @@ struct SettingsApp {
     base: Config,
     section: Section,
     presets: presets::PresetsState,
-    hotkey_error: Option<String>,
+    /// Hotkey problems: the HUD's grab report, or local ones (see `hotkeys`).
+    hotkey_errors: Vec<String>,
+    /// The last other error the HUD reported, shown in the button bar.
+    status: Option<String>,
     capturing: Option<usize>,
     /// The last key pressed while capturing lacked Ctrl/Alt.
     capture_needs_mod: bool,
@@ -549,7 +552,8 @@ impl SettingsApp {
             base: cfg.clone(),
             cfg,
             section,
-            hotkey_error: None,
+            hotkey_errors: Vec::new(),
+            status: None,
             capturing: None,
             capture_needs_mod: false,
             fonts,
@@ -570,8 +574,11 @@ impl SettingsApp {
                     ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(ViewportCommand::Focus);
                 }
+                Incoming::Event(Event::HotkeyStatus { errors }) => {
+                    self.hotkey_errors = errors;
+                }
                 Incoming::Event(Event::Error { message }) => {
-                    self.hotkey_error = Some(message);
+                    self.status = Some(message);
                 }
                 Incoming::Event(Event::Config { config, .. }) => self.adopt(&config),
                 Incoming::Event(_) => {}
@@ -665,7 +672,7 @@ impl SettingsApp {
                 if *field != combo {
                     *field = combo;
                     // A new hotkey set: the HUD reports its errors afresh.
-                    self.hotkey_error = None;
+                    self.hotkey_errors.clear();
                 }
             }
         }
@@ -1077,7 +1084,7 @@ impl SettingsApp {
                     ui.end_row();
                 }
             });
-            if let Some(err) = &self.hotkey_error {
+            if !self.hotkey_errors.is_empty() {
                 ui.add_space(4.0);
                 Frame::new()
                     .fill(ERROR.gamma_multiply(0.12))
@@ -1086,7 +1093,9 @@ impl SettingsApp {
                     .inner_margin(Margin::symmetric(10, 6))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        ui.label(RichText::new(err.as_str()).color(ERROR));
+                        for err in &self.hotkey_errors {
+                            ui.label(RichText::new(err.as_str()).color(ERROR));
+                        }
                     });
             }
         });
@@ -1116,7 +1125,7 @@ impl SettingsApp {
             self.cfg.hotkey_visibility.clone(),
         );
         if after != before {
-            self.hotkey_error = None;
+            self.hotkey_errors.clear();
         }
     }
 
@@ -1296,7 +1305,25 @@ impl eframe::App for SettingsApp {
                         self.finish(&ctx, Request::Cancel);
                     }
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                        note(ui, "Changes preview live on the HUD.");
+                        match &self.status {
+                            Some(msg) => {
+                                let r = ui.add(
+                                    egui::Label::new(
+                                        RichText::new(msg.as_str()).size(12.0).color(ERROR),
+                                    )
+                                    .truncate()
+                                    .sense(Sense::click()),
+                                );
+                                if r.on_hover_text(format!("{msg}\n(click to dismiss)"))
+                                    .clicked()
+                                {
+                                    self.status = None;
+                                }
+                            }
+                            None => {
+                                note(ui, "Changes preview live on the HUD.");
+                            }
+                        }
                     });
                 });
             });
