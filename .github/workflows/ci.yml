@@ -11,9 +11,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install system dependencies
+        # alsa-sys is the only crate linking a system library at build time;
+        # X11/GL/xkbcommon are pure Rust or loaded via dlopen at runtime.
+        # sudo may be missing on a self-hosted Gitea runner (already root).
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential pkg-config libx11-dev libxcb1-dev libxkbcommon-dev libasound2-dev libfontconfig1-dev libgl1-mesa-dev fontconfig curl
+          SUDO=$(command -v sudo || true)
+          $SUDO apt-get update
+          $SUDO apt-get install -y --no-install-recommends build-essential pkg-config libasound2-dev fontconfig curl ca-certificates
       # Runs on GitHub and Gitea alike: the self-hosted Gitea runner has no Rust toolchain.
       - name: Install Rust
         run: |
