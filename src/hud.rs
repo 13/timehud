@@ -843,7 +843,10 @@ impl Hud {
             Request::Hide => self.app.set_visible(false),
             Request::ToggleVisibility => self.app.toggle_visibility(),
             Request::Quit => vec![Effect::Quit],
-            Request::SavePreset { name } => self.app.save_preset(&name),
+            Request::SavePreset { name } => match self.app.save_preset(&name) {
+                Ok(fx) => fx,
+                Err(message) => return Some(IpcEvent::Error { message }),
+            },
             Request::SettingsHello => {
                 if let Some(other) = self.settings.as_ref().map(|s| s.conn_id)
                     && other != id

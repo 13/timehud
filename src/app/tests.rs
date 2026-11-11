@@ -730,7 +730,7 @@ fn save_preset_overwrites_same_name() {
         ],
         ..countdown(90)
     });
-    let fx = h.app.save_preset("  b ");
+    let fx = h.app.save_preset("  b ").unwrap();
     assert!(fx.contains(&Effect::SaveSoon));
     assert_eq!(h.app.cfg.active_preset, "b");
     assert_eq!(
@@ -740,7 +740,28 @@ fn save_preset_overwrites_same_name() {
             json!({"name": "b", "duration": 90, "last5": false, "boundary": true, "halfway": false}),
         ]
     );
-    assert!(h.app.save_preset("   ").is_empty());
+    assert!(h.app.save_preset("   ").is_err());
+}
+
+#[test]
+fn save_preset_rejects_what_the_loader_would_drop() {
+    // A plain stopwatch (work 0) is no valid preset: nothing is stored and
+    // the active preset stays as it was.
+    let mut h = mk(Config {
+        timer_mode: Mode::Stopwatch,
+        stopwatch_work: 0,
+        active_preset: "old".into(),
+        ..with_presets(vec![json!({"name": "a", "duration": 60})])
+    });
+    let before = h.app.cfg.clone();
+    assert!(h.app.save_preset("plain").is_err());
+    assert_eq!(h.app.cfg, before);
+    // A cycling stopwatch is fine.
+    h.app.cfg.stopwatch_work = 30;
+    h.app.cfg.stopwatch_rest = 10;
+    h.app.save_preset("cyc").unwrap();
+    assert_eq!(h.app.cfg.active_preset, "cyc");
+    assert_eq!(h.app.cfg.presets.len(), 2);
 }
 
 #[test]

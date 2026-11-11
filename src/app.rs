@@ -778,10 +778,12 @@ impl App {
     }
 
     /// Save the current timer setup as a preset (same name overwrites).
-    pub fn save_preset(&mut self, name: &str) -> Vec<Effect> {
+    /// Fails, changing nothing, for an empty name or a setup the config
+    /// loader would discard (e.g. a plain stopwatch).
+    pub fn save_preset(&mut self, name: &str) -> Result<Vec<Effect>, String> {
         let name = name.trim();
         if name.is_empty() {
-            return Vec::new();
+            return Err("the preset name is empty".into());
         }
         let cfg = &self.cfg;
         let preset = match cfg.timer_mode {
@@ -807,17 +809,24 @@ impl App {
             boundary: Some(cfg.phase_beeps),
             halfway: Some(cfg.halfway_beep),
         };
+        let value = preset.to_value(&rules);
+        if valid_presets(std::slice::from_ref(&value)).is_empty() {
+            return Err(match cfg.timer_mode {
+                Mode::Stopwatch => "a plain stopwatch cannot be saved as a preset".into(),
+                _ => "the current timer setup is not a valid preset".into(),
+            });
+        }
         // Like Python, malformed entries are dropped; kept ones stay verbatim.
         let mut presets: Vec<_> = valid_presets(&cfg.presets)
             .into_iter()
             .filter(|(p, _, _)| p.name() != name)
             .map(|(_, _, i)| cfg.presets[i].clone())
             .collect();
-        presets.push(preset.to_value(&rules));
+        presets.push(value);
         self.cfg.presets = presets;
         self.cfg.active_preset = name.into();
         self.refresh_mode_label();
-        vec![Effect::SaveSoon, Effect::Redraw]
+        Ok(vec![Effect::SaveSoon, Effect::Redraw])
     }
 
     /// Live-apply a config edited in Settings (port of `update_ui` + `_sync_*`).

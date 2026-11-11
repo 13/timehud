@@ -1,7 +1,7 @@
 //! The "Save current as preset…" name prompt.
 
-use super::{ACCENT_DARK, BG, apply_style, native_options};
-use crate::ipc::{Request, send, socket_path};
+use super::{ACCENT_DARK, BG, ERROR, apply_style, native_options};
+use crate::ipc::{Event, Request, send, socket_path};
 use eframe::egui::{
     self, Align, Color32, Frame, Key, Layout, Margin, RichText, Ui, Vec2, ViewportCommand,
 };
@@ -9,6 +9,8 @@ use eframe::egui::{
 struct SavePreset {
     name: String,
     focused: bool,
+    /// The HUD refused the preset; shown instead of closing.
+    error: Option<String>,
 }
 
 impl eframe::App for SavePreset {
@@ -26,6 +28,9 @@ impl eframe::App for SavePreset {
                 if !self.focused {
                     r.request_focus();
                     self.focused = true;
+                }
+                if let Some(err) = &self.error {
+                    ui.label(RichText::new(err.as_str()).color(ERROR));
                 }
                 let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                 let escape = ui.input(|i| i.key_pressed(Key::Escape));
@@ -45,9 +50,13 @@ impl eframe::App for SavePreset {
                     if name.is_empty() {
                         return;
                     }
-                    if let Err(e) = send(&socket_path(), &Request::SavePreset { name: name.into() })
-                    {
-                        eprintln!("timehud: cannot save preset: {e}");
+                    match send(&socket_path(), &Request::SavePreset { name: name.into() }) {
+                        Ok(Event::Error { message }) => {
+                            self.error = Some(message);
+                            return;
+                        }
+                        Ok(_) => {}
+                        Err(e) => eprintln!("timehud: cannot save preset: {e}"),
                     }
                     ctx.send_viewport_cmd(ViewportCommand::Close);
                 } else if cancel {
@@ -66,6 +75,7 @@ pub fn run_save_preset() -> anyhow::Result<()> {
             Ok(Box::new(SavePreset {
                 name: String::new(),
                 focused: false,
+                error: None,
             }))
         }),
     )
