@@ -11,10 +11,11 @@ pub mod tray;
 
 use crate::layout::Rect;
 use anyhow::{Context, bail};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::os::fd::{AsRawFd, RawFd};
 use std::sync::RwLock;
 use x11rb::connection::{Connection, RequestConnection};
+use x11rb::protocol::Event;
 use x11rb::protocol::randr::ConnectionExt as _;
 use x11rb::protocol::xproto::{
     AtomEnum, ChangeWindowAttributesAux, ColormapAlloc, ConnectionExt as _, CreateGCAux,
@@ -47,6 +48,7 @@ pub struct X {
     pub argb_visual: u32,
     pub colormap: u32,
     pub atoms: Atoms,
+    scale: Cell<f32>,
     /// Reused BGRA conversion buffer for `present`.
     bgra: RefCell<Vec<u8>>,
 }
@@ -84,8 +86,10 @@ impl X {
             argb_visual,
             colormap,
             atoms,
+            scale: Cell::new(1.0),
             bgra: RefCell::default(),
         };
+        x.reload_scale();
         x.reload_keymap();
         x.conn.flush()?;
         Ok(x)
@@ -95,9 +99,17 @@ impl X {
         self.conn.stream().as_raw_fd()
     }
 
-    /// `Xft.dpi / 96` from the root `RESOURCE_MANAGER` property, default 1.0.
+    /// `Xft.dpi / 96` as last read by [`X::reload_scale`] (at connect and
+    /// when the root `RESOURCE_MANAGER` property changes).
     pub fn scale(&self) -> f32 {
-        self.conn
+        self.scale.get()
+    }
+
+    /// Re-reads `Xft.dpi / 96` from the root `RESOURCE_MANAGER` property
+    /// (default 1.0); true if the scale changed.
+    pub fn reload_scale(&self) -> bool {
+        let scale = self
+            .conn
             .get_property(
                 false,
                 self.root,
@@ -109,7 +121,8 @@ impl X {
             .ok()
             .and_then(|c| c.reply().ok())
             .and_then(|r| parse_xft_dpi(&String::from_utf8_lossy(&r.value)))
-            .map_or(1.0, |dpi| dpi / 96.0)
+            .map_or(1.0, |dpi| dpi / 96.0);
+        self.scale.replace(scale) != scale
     }
 
     /// Pointer position in root coordinates; `(0, 0)` if the query fails.
@@ -121,16 +134,67 @@ impl X {
             .map_or((0, 0), |r| (r.root_x.into(), r.root_y.into()))
     }
 
-    /// The RandR monitor containing the point, intersected with the current
-    /// desktop's `_NET_WORKAREA` if the WM sets one.
-    pub fn work_area_at(&self, x: i32, y: i32) -> Rect {
-        let screen = &self.conn.setup().roots[self.screen_num];
-        let full = Rect {
-            x: 0,
-            y: 0,
-            w: screen.width_in_pixels.into(),
-            h: screen.height_in_pixels.into(),
-        };
+    /// Asks for the root events that change [`X::screens`] and [`X::scale`]:
+    /// size changes (StructureNotify), `_NET_WORKAREA`, the current desktop
+    /// and `RESOURCE_MANAGER` (PropertyChange), and RandR screen, CRTC and
+    /// output changes (monitors added, removed, moved or resized).
+    pub fn watch_screens(&self) -> anyhow::Result<()> {
+        use x11rb::protocol::randr::NotifyMask;
+        let mask = self
+            .conn
+            .get_window_attributes(self.root)?
+            .reply()?
+            .your_event_mask;
+        self.conn.change_window_attributes(
+            self.root,
+            &ChangeWindowAttributesAux::new()
+                .event_mask(mask | EventMask::STRUCTURE_NOTIFY | EventMask::PROPERTY_CHANGE),
+        )?;
+        // RandR delivers 1.2+ events only to clients that announced 1.2+.
+        if self.conn.randr_query_version(1, 5)?.reply().is_ok() {
+            self.conn.randr_select_input(
+                self.root,
+                NotifyMask::SCREEN_CHANGE | NotifyMask::CRTC_CHANGE | NotifyMask::OUTPUT_CHANGE,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Whether a root event may change [`X::screens`].
+    pub fn changes_screens(&self, ev: &Event) -> bool {
+        match ev {
+            Event::ConfigureNotify(e) => e.window == self.root,
+            Event::RandrScreenChangeNotify(_) | Event::RandrNotify(_) => true,
+            Event::PropertyNotify(e) => {
+                e.window == self.root
+                    && (e.atom == self.atoms._NET_WORKAREA
+                        || e.atom == self.atoms._NET_CURRENT_DESKTOP)
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether a root event may change [`X::scale`].
+    pub fn changes_scale(&self, ev: &Event) -> bool {
+        matches!(ev, Event::PropertyNotify(e)
+            if e.window == self.root && e.atom == u32::from(AtomEnum::RESOURCE_MANAGER))
+    }
+
+    /// The current screen size, RandR monitors and `_NET_WORKAREA`.
+    pub fn screens(&self) -> Screens {
+        let size = self
+            .conn
+            .get_geometry(self.root)
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .map(|g| (i32::from(g.width), i32::from(g.height)))
+            .unwrap_or_else(|| {
+                let screen = &self.conn.setup().roots[self.screen_num];
+                (
+                    screen.width_in_pixels.into(),
+                    screen.height_in_pixels.into(),
+                )
+            });
         let monitors: Vec<Rect> = self
             .conn
             .randr_get_monitors(self.root, true)
@@ -148,10 +212,11 @@ impl X {
                     .collect()
             })
             .unwrap_or_default();
-        let monitor = monitor_at(&monitors, x, y).unwrap_or(full);
-        self.net_workarea()
-            .and_then(|wa| intersect(monitor, wa))
-            .unwrap_or(monitor)
+        Screens {
+            size,
+            monitors,
+            workarea: self.net_workarea(),
+        }
     }
 
     fn cardinals(&self, atom: u32, len: u32) -> Option<Vec<u32>> {
@@ -444,6 +509,65 @@ fn parse_xft_dpi(db: &str) -> Option<f32> {
     })
 }
 
+/// Monitor layout and work area, cached by the HUD (refreshed on the events
+/// [`X::changes_screens`] reports) so placing windows needs no round trips.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Screens {
+    /// Root window size.
+    pub size: (i32, i32),
+    /// RandR monitors (may be empty, e.g. without RandR).
+    pub monitors: Vec<Rect>,
+    /// The current desktop's `_NET_WORKAREA`, if the WM sets one.
+    pub workarea: Option<Rect>,
+}
+
+impl Screens {
+    fn full(&self) -> Rect {
+        Rect {
+            x: 0,
+            y: 0,
+            w: self.size.0,
+            h: self.size.1,
+        }
+    }
+
+    /// The monitor containing the point (else the first, else the whole
+    /// screen), intersected with the work area.
+    pub fn work_area_at(&self, x: i32, y: i32) -> Rect {
+        let monitor = monitor_at(&self.monitors, x, y).unwrap_or(self.full());
+        self.workarea
+            .and_then(|wa| intersect(monitor, wa))
+            .unwrap_or(monitor)
+    }
+
+    /// Whether the point lies on some monitor (on the screen if none known).
+    pub fn on_screen(&self, x: i32, y: i32) -> bool {
+        if self.monitors.is_empty() {
+            contains(self.full(), x, y)
+        } else {
+            self.monitors.iter().any(|m| contains(*m, x, y))
+        }
+    }
+
+    /// Where the HUD starts: the work area of the monitor holding the saved
+    /// custom position, so a HUD saved on another monitor stays there; the
+    /// one under the pointer without a custom position or when the saved one
+    /// is on no monitor now (`pointer` is only queried then).
+    pub fn start_area(
+        &self,
+        custom: Option<(i32, i32)>,
+        pointer: impl FnOnce() -> (i32, i32),
+    ) -> Rect {
+        match custom {
+            Some((x, y)) if self.on_screen(x, y) => self.work_area_at(x, y),
+            _ => {
+                let (x, y) = pointer();
+                self.work_area_at(x, y)
+            }
+        }
+    }
+}
+
 fn contains(r: Rect, x: i32, y: i32) -> bool {
     x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
 }
@@ -599,6 +723,53 @@ mod tests {
         assert_eq!(monitor_at(&[LEFT, RIGHT], 2000, 10), Some(RIGHT));
         assert_eq!(monitor_at(&[LEFT, RIGHT], -5, -5), Some(LEFT));
         assert_eq!(monitor_at(&[], 0, 0), None);
+    }
+
+    fn two_monitors() -> Screens {
+        Screens {
+            size: (4480, 1440),
+            monitors: vec![LEFT, RIGHT],
+            workarea: None,
+        }
+    }
+
+    #[test]
+    fn start_area_follows_the_saved_position() {
+        let s = two_monitors();
+        let no_pointer = || panic!("pointer queried although the position is known");
+        // Saved on the right monitor, pointer on the left: stay right.
+        assert_eq!(s.start_area(Some((2500, 100)), no_pointer), RIGHT);
+        assert_eq!(s.start_area(Some((10, 10)), no_pointer), LEFT);
+        // No custom position: the monitor under the pointer.
+        assert_eq!(s.start_area(None, || (2000, 10)), RIGHT);
+        // Saved on a monitor that is gone (or in a gap): pointer's monitor.
+        assert_eq!(s.start_area(Some((9000, 100)), || (2000, 10)), RIGHT);
+        assert_eq!(s.start_area(Some((100, 1300)), || (2000, 10)), RIGHT);
+    }
+
+    #[test]
+    fn screens_without_monitors_use_the_current_size() {
+        let s = Screens {
+            size: (3000, 2000),
+            monitors: Vec::new(),
+            workarea: Some(Rect {
+                x: 0,
+                y: 30,
+                w: 3000,
+                h: 1970,
+            }),
+        };
+        assert_eq!(
+            s.work_area_at(5, 5),
+            Rect {
+                x: 0,
+                y: 30,
+                w: 3000,
+                h: 1970
+            }
+        );
+        assert!(s.on_screen(2999, 1999));
+        assert!(!s.on_screen(3000, 10));
     }
 
     #[test]

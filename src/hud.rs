@@ -19,7 +19,7 @@ use crate::x11::grabs::{Grabs, HotkeyAction};
 use crate::x11::overlay::{OverlayWin, restack_needed, translate};
 use crate::x11::popup::{MenuPopup, PopupOutcome};
 use crate::x11::tray::{Tray, TrayEvent};
-use crate::x11::{Canvas, X};
+use crate::x11::{Canvas, Screens, X};
 use chrono::Timelike;
 use nix::errno::Errno;
 use nix::poll::{PollFd, PollFlags, poll};
@@ -34,7 +34,6 @@ use std::sync::OnceLock;
 use std::time::Instant;
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
-use x11rb::protocol::xproto::{ChangeWindowAttributesAux, ConnectionExt as _, EventMask};
 
 /// Config writes are debounced this long after the last `SaveSoon`.
 const SAVE_DEBOUNCE: f64 = 0.3;
@@ -189,6 +188,12 @@ struct Hud {
     /// Tab requested when spawning settings, handed over in its `Config`.
     settings_tab: Option<String>,
     children: Vec<Child>,
+    /// Monitors and work area, refreshed when the root reports changes.
+    screens: Screens,
+    /// A root event may have changed `screens` / the DPI scale: re-read
+    /// once after the current batch of events.
+    screens_stale: bool,
+    scale_stale: bool,
     /// The work area the app positions in.
     area: Rect,
     /// Geometry last sent to the X server: x, y, w, h.
@@ -245,8 +250,13 @@ impl Hud {
         let t0 = Instant::now();
         let x = X::connect()?;
         let scale = x.scale();
-        let (px, py) = x.pointer();
-        let area = x.work_area_at(px, py);
+        let screens = x.screens();
+        // A HUD saved on another monitor starts there, not under the pointer.
+        let custom = (cfg.custom_x >= 0 && cfg.custom_y >= 0).then(|| {
+            let c = |v: i64| v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+            (c(cfg.custom_x), c(cfg.custom_y))
+        });
+        let area = screens.start_area(custom, || x.pointer());
         let fonts = FontSet::load(&resolved_family(&cfg));
         let clock = Box::new(move || t0.elapsed().as_secs_f64());
         let now = t0.elapsed().as_secs_f64();
@@ -269,17 +279,7 @@ impl Hud {
             );
         }
 
-        // Root: screen resizes (StructureNotify) and _NET_WORKAREA changes.
-        let mask = x
-            .conn
-            .get_window_attributes(x.root)?
-            .reply()?
-            .your_event_mask;
-        x.conn.change_window_attributes(
-            x.root,
-            &ChangeWindowAttributesAux::new()
-                .event_mask(mask | EventMask::STRUCTURE_NOTIFY | EventMask::PROPERTY_CHANGE),
-        )?;
+        x.watch_screens()?;
         listener.set_nonblocking(true)?;
         let (signals, sig_writer) = UnixStream::pair()?;
         signals.set_nonblocking(true)?;
@@ -310,6 +310,9 @@ impl Hud {
             settings_child: None,
             settings_tab: None,
             children: Vec::new(),
+            screens,
+            screens_stale: false,
+            scale_stale: false,
             area,
             geom: (wx, wy, layout.w, layout.h),
             size: (layout.w, layout.h),
@@ -393,7 +396,24 @@ impl Hud {
         while let Some(ev) = self.next_x()? {
             self.handle_x(&ev);
         }
+        self.refresh_screens();
         Ok(())
+    }
+
+    /// Re-reads what root events reported as changed: monitors / work area
+    /// (then re-places the HUD) and the DPI scale (then re-lays it out).
+    fn refresh_screens(&mut self) {
+        if std::mem::take(&mut self.screens_stale) {
+            let screens = self.x.screens();
+            if screens != self.screens {
+                self.screens = screens;
+                self.refresh_area_here();
+            }
+        }
+        if std::mem::take(&mut self.scale_stale) && self.x.reload_scale() {
+            let fx = self.app.set_scale(self.x.scale(), self.now());
+            self.apply(fx);
+        }
     }
 
     fn handle_x(&mut self, ev: &Event) {
@@ -465,12 +485,8 @@ impl Hud {
                     self.apply(fx);
                 }
             }
-            Event::ConfigureNotify(e) if e.window == self.x.root => self.refresh_area_here(),
-            Event::PropertyNotify(e)
-                if e.window == self.x.root && e.atom == self.x.atoms._NET_WORKAREA =>
-            {
-                self.refresh_area_here();
-            }
+            _ if self.x.changes_screens(ev) => self.screens_stale = true,
+            _ if self.x.changes_scale(ev) => self.scale_stale = true,
             _ => {}
         }
 
@@ -492,9 +508,10 @@ impl Hud {
         }
     }
 
-    /// Re-reads the work area of the monitor at the point; repositions if it changed.
+    /// Switches to the work area of the monitor at the point (from the
+    /// cached `screens`, no round trip); repositions if it changed.
     fn refresh_area(&mut self, x: i32, y: i32) {
-        let area = self.x.work_area_at(x, y);
+        let area = self.screens.work_area_at(x, y);
         if area != self.area {
             self.area = area;
             self.app.set_area(area);
@@ -643,7 +660,8 @@ impl Hud {
         let fonts = self.menu_fonts.get_or_insert_with(FontSet::bundled);
         let items = build_menu(&self.app.cfg, include_window_actions);
         let theme = get_theme(&self.app.cfg.theme);
-        match MenuPopup::open(&self.x, items, root_x, root_y, theme, fonts) {
+        let area = self.screens.work_area_at(root_x, root_y);
+        match MenuPopup::open(&self.x, items, root_x, root_y, area, theme, fonts) {
             Ok(p) => self.popup = Some(p),
             Err(e) => eprintln!("timehud: {e:#}"),
         }

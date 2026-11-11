@@ -451,6 +451,23 @@ impl App {
         };
     }
 
+    /// The display scale (`Xft.dpi / 96`) changed: re-measure at the new
+    /// size, then re-anchor and keep the window inside the work area.
+    pub fn set_scale(&mut self, scale: f32, now: f64) -> Vec<Effect> {
+        if scale == self.scale {
+            return Vec::new();
+        }
+        self.scale = scale;
+        let mut fx = self.relayout(now);
+        let before = self.window_pos();
+        self.set_area(self.area);
+        if self.window_pos() != before && !fx.iter().any(|e| matches!(e, Effect::Move { .. })) {
+            fx.push(self.move_effect());
+        }
+        fx.push(Effect::Redraw);
+        fx
+    }
+
     fn move_effect(&self) -> Effect {
         let (x, y) = self.window_pos();
         Effect::Move { x, y }

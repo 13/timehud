@@ -97,11 +97,13 @@ impl MenuPopup {
     /// Opens the menu at the pointer position (kept on-screen) and grabs the
     /// pointer (owner events) and keyboard. On failure nothing stays grabbed
     /// or mapped.
+    /// `area` is the work area of the monitor at the pointer.
     pub fn open(
         x: &X,
         items: Vec<MenuItem>,
         root_x: i32,
         root_y: i32,
+        area: Rect,
         theme: &'static Theme,
         fonts: &mut FontSet,
     ) -> anyhow::Result<Self> {
@@ -109,7 +111,7 @@ impl MenuPopup {
             items,
             theme,
             scale: x.scale(),
-            area: x.work_area_at(root_x, root_y),
+            area,
             levels: Vec::new(),
             grabbed: false,
         };
@@ -506,7 +508,16 @@ mod tests {
                 items: vec![act("Two", true)],
             },
         ];
-        let mut p = MenuPopup::open(&x, items, 100, 100, get_theme("classic"), &mut fonts).unwrap();
+        let mut p = MenuPopup::open(
+            &x,
+            items,
+            100,
+            100,
+            x.screens().work_area_at(100, 100),
+            get_theme("classic"),
+            &mut fonts,
+        )
+        .unwrap();
         // Keyboard navigation opens the submenu as a second level.
         p.key(&x, KEY_DOWN, &mut fonts);
         p.key(&x, KEY_DOWN, &mut fonts);
@@ -550,6 +561,7 @@ mod tests {
             vec![act("A", true)],
             50,
             50,
+            x.screens().work_area_at(50, 50),
             get_theme("classic"),
             &mut fonts,
         )

@@ -947,3 +947,33 @@ fn running_tick_redraws_only_on_visible_change() {
     h.advance(1.0); // next second: the timer text changes
     assert!(h.tick().contains(&Effect::Redraw));
 }
+
+#[test]
+fn set_scale_relayouts_and_stays_in_the_work_area() {
+    // A custom position near the bottom-right corner.
+    let mut h = mk(Config {
+        custom_x: 1700,
+        custom_y: 950,
+        ..Config::default()
+    });
+    let now = h.now();
+    let before = h.app.layout.panel;
+    assert!(h.app.set_scale(1.0, now).is_empty(), "same scale: no-op");
+    let fx = h.app.set_scale(2.0, now);
+    let after = h.app.layout.panel;
+    assert!(
+        after.w > before.w * 3 / 2 && after.h > before.h * 3 / 2,
+        "{before:?} -> {after:?}"
+    );
+    assert!(fx.contains(&Effect::Resize), "{fx:?}");
+    assert!(fx.contains(&Effect::Redraw), "{fx:?}");
+    assert!(
+        fx.iter().any(|e| matches!(e, Effect::Move { .. })),
+        "{fx:?}"
+    );
+    let (x, y) = h.app.panel_pos;
+    assert!(
+        x + after.w <= AREA.w && y + after.h <= AREA.h,
+        "off screen: {x},{y} {after:?}"
+    );
+}

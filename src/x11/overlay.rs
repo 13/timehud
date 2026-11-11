@@ -458,7 +458,7 @@ mod tests {
         x.destroy_window(win.id, win.gc);
         x.conn.flush().unwrap();
         assert!(x.scale() > 0.0);
-        let area = x.work_area_at(0, 0);
+        let area = x.screens().work_area_at(0, 0);
         assert!(area.w > 0 && area.h > 0, "{area:?}");
     }
 }
