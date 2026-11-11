@@ -45,14 +45,16 @@ Module map (`src/`):
 - `sound.rs` — in-memory beeps via rodio, lazy device open + release after idle, player-chain fallback.
 - `ipc.rs` — socket path, `Request`/`Event` protocol, bind-or-detect.
 - `settings/` — the egui settings window (`mod.rs`), presets tab, save-preset dialog.
+- `settings_session.rs` — pure settings-session bookkeeping shared by both processes: merge only keys Settings changed, Cancel restores only the user's edited keys, HUD-side edits are pushed to the window (`Event::Config`) and adopted for unedited keys.
 - `examples/snapshot.rs` — renders the HUD to a PNG for visual checks.
 
 ## Conventions
 
 - Engine quirks are deliberate 1:1 ports from the Python engine and are pinned by tests; don't "fix" without intent: warn window only when remaining > 6 s; auto-restart not resetting `sound_alert_before` beats; display reverting to the full duration one tick after a countdown finishes. Ported tests that look wrong are still right.
 - Keep the README settings-JSON example in sync with every `Config` field when adding config keys. A new field needs a default; old config files must keep loading, and a Rust-saved file must still load in the Python app.
-- `active_preset` must be cleared whenever `countdown_duration` changes by means other than applying a preset (wheel handler and settings already do this).
-- Beep timing: last-5 shorts at displayed 5..1, long beep exactly at 00:00 (countdown finish, every interval/cycle phase end, session end), the latter gated by `phase_beeps`. The fast double beep is exclusively the optional `halfway_beep` cue at half of each work phase. Cycle modes never play periodic `sound_interval` beeps or the `sound_alert_before` pre-beep. Pinned by tests.
+- `active_preset` must be cleared whenever `countdown_duration` changes by means other than applying a preset (wheel handler and settings already do this); the HUD clears it whenever the setup no longer matches the preset (`config::active_preset_matches`), which also covers mode changes.
+- Numeric config fields are clamped into working ranges on load and in `preview_config` (`config.rs`); new numeric fields need a range too.
+- Beep timing: last-5 shorts at displayed 5..1, long beep exactly at 00:00 (countdown finish, every interval/cycle phase end, session end); only the interval/cycle phase-end beeps are gated by `phase_beeps`, the countdown-finish beep is not (same as Python). The fast double beep is exclusively the optional `halfway_beep` cue at half of each work phase. Cycle modes never play periodic `sound_interval` beeps or the `sound_alert_before` pre-beep. Pinned by tests.
 - Preset shapes: countdown `{name, duration}`, interval `{name, type, work, rest, total}` (rounds derived from total), stopwatch `{name, type, work, rest}` (sets `stopwatch_work/rest`; count-up cycling, endless; work=0 means plain stopwatch).
 - `progress_style`: `line` (bar under timer) | `border` (traced around the window outline) | `off`.
 - Classic theme values must stay identical to the Python ones (guarded by tests).
