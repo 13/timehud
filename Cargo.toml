@@ -12,6 +12,7 @@ rodio = { version = "0.23.0", default-features = false, features = ["playback", 
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tiny-skia = "0.12.0"
+x11rb = { version = "0.14.0", features = ["randr", "shape"] }
 
 [profile.release]
 lto = "thin"

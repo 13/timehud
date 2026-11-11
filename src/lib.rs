@@ -13,3 +13,4 @@ pub mod settings;
 pub mod sound;
 pub mod text;
 pub mod themes;
+pub mod x11;
