@@ -6,26 +6,36 @@ pkgdesc="Transparent HUD overlay with clock, countdown, interval and cycling sto
 arch=('x86_64')
 url="https://example.invalid/timehud"  # TODO: set when the repo has a remote
 license=('MIT')
-depends=('libx11' 'libxcb' 'fontconfig' 'alsa-lib' 'libglvnd')
-makedepends=('cargo')
+# alsa-lib is linked (rodio/cpal). The rest is loaded via dlopen by the
+# egui/winit settings window: libX11, libXcursor, libXi, libxkbcommon(-x11)
+# and libGL/libEGL (glow, via libglvnd). The overlay itself speaks X11 in
+# pure Rust (x11rb) and links no X library.
+depends=('glibc' 'gcc-libs' 'alsa-lib' 'libx11' 'libxcursor' 'libxi'
+         'libxkbcommon' 'libxkbcommon-x11' 'libglvnd')
+makedepends=('cargo' 'pkg-config')
+optdepends=('fontconfig: resolve font_family via fc-match (bundled font otherwise)'
+            'libnotify: notify_on_finish desktop notifications (notify-send)')
+# The repository is named timehud2, so its tag archive unpacks to
+# timehud2-<version>/, not $pkgname-$pkgver/. Keep in sync with `source`.
+_srcname="timehud2-$pkgver"
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")  # TODO: set when the repo has a remote
 sha256sums=('SKIP')  # TODO: real checksum once the source URL exists
 
 prepare() {
-    cd "$pkgname-$pkgver"
+    cd "$_srcname"
     export RUSTUP_TOOLCHAIN=stable
     cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 }
 
 build() {
-    cd "$pkgname-$pkgver"
+    cd "$_srcname"
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=target
     cargo build --release --locked
 }
 
 package() {
-    cd "$pkgname-$pkgver"
+    cd "$_srcname"
     install -Dm755 target/release/timehud "$pkgdir/usr/bin/timehud"
     install -Dm644 assets/icons/timehud.svg \
         "$pkgdir/usr/share/icons/hicolor/scalable/apps/timehud.svg"
