@@ -716,7 +716,9 @@ impl Hud {
     }
 
     fn wait(&mut self, timeout_ms: u16) -> anyhow::Result<()> {
-        let ready: Vec<bool> = {
+        // Per client: (readable or hung up, writable).
+        // The X connection is drained at the top of the next iteration.
+        let (sig_ready, listen_ready, client_ready) = {
             let in_ = PollFlags::POLLIN;
             // SAFETY: the X connection and every client outlive this poll call.
             let mut fds = vec![
@@ -725,9 +727,16 @@ impl Hud {
                 PollFd::new(self.listener.as_fd(), in_),
             ];
             for c in &self.clients {
+                // POLLOUT only while output is queued: an idle socket is
+                // always writable and would spin the loop.
+                let flags = if c.conn.wants_write() {
+                    in_ | PollFlags::POLLOUT
+                } else {
+                    in_
+                };
                 fds.push(PollFd::new(
                     unsafe { BorrowedFd::borrow_raw(c.conn.fd()) },
-                    in_,
+                    flags,
                 ));
             }
             match poll(&mut fds, timeout_ms) {
@@ -735,20 +744,29 @@ impl Hud {
                 Err(Errno::EINTR) => return Ok(()),
                 Err(e) => return Err(e.into()),
             }
-            fds.iter()
-                .map(|f| f.revents().is_some_and(|r| !r.is_empty()))
-                .collect()
+            let revents = |f: &PollFd| f.revents().unwrap_or(PollFlags::empty());
+            let readable = |f: &PollFd| !(revents(f) - PollFlags::POLLOUT).is_empty();
+            let clients: Vec<(bool, bool)> = fds[3..]
+                .iter()
+                .map(|f| (readable(f), revents(f).contains(PollFlags::POLLOUT)))
+                .collect();
+            (readable(&fds[1]), readable(&fds[2]), clients)
         };
-        if ready[1] {
+        if sig_ready {
             let mut buf = [0u8; 64];
             while matches!((&self.signals).read(&mut buf), Ok(n) if n > 0) {}
             self.quit = true;
         }
         let ids: Vec<u64> = self.clients.iter().map(|c| c.id).collect();
-        for (id, _) in ids.iter().zip(&ready[3..]).filter(|(_, r)| **r) {
-            self.service_client(*id);
+        for (&id, &(readable, writable)) in ids.iter().zip(&client_ready) {
+            if writable {
+                self.flush_client(id);
+            }
+            if readable {
+                self.service_client(id);
+            }
         }
-        if ready[2] {
+        if listen_ready {
             self.accept();
         }
         Ok(())
@@ -798,20 +816,40 @@ impl Hud {
                     let message = format!("bad request: {e}");
                     self.send_to(id, &IpcEvent::Error { message });
                 }
-                self.clients.retain(|c| c.id != id);
-                if self.settings.as_ref().is_some_and(|s| s.conn_id == id) {
-                    // Closing the settings window = Cancel.
-                    self.settings_cancel();
-                    self.settings = None;
-                }
+                self.drop_client(id);
             }
         }
     }
 
+    /// Writes a client's queued events; drops it if the socket broke.
+    fn flush_client(&mut self, id: u64) {
+        if let Some(c) = self.clients.iter_mut().find(|c| c.id == id)
+            && c.conn.flush().is_err()
+        {
+            self.drop_client(id);
+        }
+    }
+
+    fn drop_client(&mut self, id: u64) {
+        let before = self.clients.len();
+        self.clients.retain(|c| c.id != id);
+        if self.clients.len() != before && self.settings.as_ref().is_some_and(|s| s.conn_id == id) {
+            // Closing the settings window = Cancel.
+            self.settings_cancel();
+            self.settings = None;
+        }
+    }
+
+    /// Queues an event for a client (never blocks); a client whose socket
+    /// broke or that stopped reading is dropped.
     fn send_to(&mut self, id: u64, ev: &IpcEvent) {
-        if let Some(c) = self.clients.iter_mut().find(|c| c.id == id) {
-            // A failed write shows up as EOF on the next read.
-            let _ = c.conn.send(ev);
+        if let Some(c) = self.clients.iter_mut().find(|c| c.id == id)
+            && let Err(e) = c.conn.send(ev)
+        {
+            if e.kind() == io::ErrorKind::WouldBlock {
+                eprintln!("timehud: ipc: dropping client: {e}");
+            }
+            self.drop_client(id);
         }
     }
 

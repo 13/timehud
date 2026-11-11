@@ -190,6 +190,10 @@ const MAX_LINE: usize = 64 * 1024;
 const CHUNK: usize = 4096;
 const MAX_CHUNKS_PER_CALL: usize = 4;
 
+/// Most event bytes queued for a client that does not read them (a full
+/// `Config` is a few KiB).
+const MAX_QUEUED: usize = 1 << 20;
+
 fn too_long() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "request line too long")
 }
@@ -199,6 +203,8 @@ pub struct Conn {
     stream: UnixStream,
     buf: Vec<u8>,
     eof: bool,
+    /// Event bytes not yet accepted by the socket.
+    out: Vec<u8>,
 }
 
 impl Conn {
@@ -208,6 +214,7 @@ impl Conn {
             stream,
             buf: Vec::new(),
             eof: false,
+            out: Vec::new(),
         })
     }
 
@@ -257,28 +264,48 @@ impl Conn {
         Ok(out)
     }
 
-    /// Write one event line; tolerates a full socket buffer for up to 2 s.
+    /// Queues one event line and writes as much of the queue as the socket
+    /// takes now, never blocking (the HUD loop must keep ticking). The rest
+    /// goes out from [`Conn::flush`] when poll reports `POLLOUT`. Errors
+    /// when the socket is broken or a stuck peer let more than
+    /// `MAX_QUEUED` bytes pile up: drop the client then.
     pub fn send(&mut self, ev: &Event) -> io::Result<()> {
-        use std::io::Write;
         let mut line = serde_json::to_vec(ev).map_err(io::Error::other)?;
         line.push(b'\n');
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let mut rest = &line[..];
-        while !rest.is_empty() {
-            match self.stream.write(rest) {
-                Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
-                Ok(n) => rest = &rest[n..],
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    if Instant::now() > deadline {
-                        return Err(io::ErrorKind::TimedOut.into());
-                    }
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                Err(e) => return Err(e),
-            }
+        self.out.extend_from_slice(&line);
+        self.flush()?;
+        if self.out.len() > MAX_QUEUED {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "client is not reading its events",
+            ));
         }
         Ok(())
+    }
+
+    /// Writes queued output until the socket would block.
+    pub fn flush(&mut self) -> io::Result<()> {
+        use std::io::Write;
+        let mut sent = 0;
+        let result = loop {
+            if sent == self.out.len() {
+                break Ok(());
+            }
+            match self.stream.write(&self.out[sent..]) {
+                Ok(0) => break Err(io::ErrorKind::WriteZero.into()),
+                Ok(n) => sent += n,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break Ok(()),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => break Err(e),
+            }
+        };
+        self.out.drain(..sent);
+        result
+    }
+
+    /// Output is queued: poll this connection for `POLLOUT` too.
+    pub fn wants_write(&self) -> bool {
+        !self.out.is_empty()
     }
 }
 
@@ -515,5 +542,85 @@ mod tests {
         let mut buf = [0u8; 64];
         let n = b.read(&mut buf).unwrap();
         assert_eq!(&buf[..n], b"{\"event\":\"ok\"}\n");
+        assert!(!c.wants_write());
+    }
+
+    fn big_event() -> Event {
+        Event::Error {
+            message: "x".repeat(32 * 1024),
+        }
+    }
+
+    /// Reads everything available on a nonblocking stream.
+    fn drain(b: &mut UnixStream) -> Vec<u8> {
+        b.set_nonblocking(true).unwrap();
+        let mut all = Vec::new();
+        let mut buf = [0u8; 8192];
+        while let Ok(n) = b.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            all.extend_from_slice(&buf[..n]);
+        }
+        all
+    }
+
+    #[test]
+    fn conn_send_queues_instead_of_blocking_and_flushes_later() {
+        let (a, mut b) = UnixStream::pair().unwrap();
+        let mut c = Conn::new(a).unwrap();
+        let t = Instant::now();
+        // Far more than the socket buffer, less than the cap.
+        for _ in 0..16 {
+            c.send(&big_event()).unwrap();
+        }
+        assert!(t.elapsed() < Duration::from_millis(500), "send blocked");
+        assert!(c.wants_write(), "socket buffer should be full by now");
+        // The peer catches up; flushing delivers every line intact, in order.
+        let mut got = Vec::new();
+        for _ in 0..1000 {
+            got.extend(drain(&mut b));
+            c.flush().unwrap();
+            if !c.wants_write() {
+                break;
+            }
+        }
+        got.extend(drain(&mut b));
+        assert!(!c.wants_write());
+        let lines: Vec<&[u8]> = got
+            .split(|&x| x == b'\n')
+            .filter(|l| !l.is_empty())
+            .collect();
+        assert_eq!(lines.len(), 16);
+        for l in lines {
+            assert_eq!(serde_json::from_slice::<Event>(l).unwrap(), big_event());
+        }
+    }
+
+    #[test]
+    fn conn_send_gives_up_on_a_stuck_peer() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let mut c = Conn::new(a).unwrap();
+        let mut sent = 0;
+        let err = loop {
+            match c.send(&big_event()) {
+                Ok(()) => sent += 1,
+                Err(e) => break e,
+            }
+            assert!(sent < 1000, "queue cap not enforced");
+        };
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+        assert!(
+            sent * 32 * 1024 >= MAX_QUEUED / 2,
+            "gave up too early ({sent})"
+        );
+    }
+
+    #[test]
+    fn conn_send_to_closed_peer_errors() {
+        let (a, b) = UnixStream::pair().unwrap();
+        let mut c = Conn::new(a).unwrap();
+        drop(b);
+        assert!(c.send(&Event::Ok).is_err());
     }
 }
