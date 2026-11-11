@@ -1098,22 +1098,22 @@ impl SettingsApp {
                             RichText::new("Press keys…").color(ACCENT)
                         } else if value.is_empty() {
                             RichText::new(format!("e.g. {hint}")).color(WEAK).italics()
+                        } else if dup.contains(&i) {
+                            RichText::new(value.as_str()).strong().color(ERROR)
                         } else {
                             RichText::new(value.as_str()).strong()
                         };
                         let mut btn = egui::Button::new(text).min_size(Vec2::new(200.0, 28.0));
                         if capturing {
                             btn = btn.stroke(Stroke::new(1.5, ACCENT));
+                        } else if dup.contains(&i) {
+                            btn = btn.stroke(Stroke::new(1.0, ERROR.gamma_multiply(0.7)));
                         }
                         let r = ui.add(btn).on_hover_text(if capturing {
                             "Press a combo with Ctrl or Alt (or a bare F-key); Esc cancels"
                         } else {
                             "Click, then press the key combination"
                         });
-                        if dup.contains(&i) {
-                            ui.label(RichText::new("duplicate").size(12.0).color(ERROR))
-                                .on_hover_text("Another action uses the same combo");
-                        }
                         if r.clicked() {
                             self.capturing = if capturing { None } else { Some(i) };
                             self.capture_note = None;
