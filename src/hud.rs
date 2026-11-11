@@ -284,7 +284,9 @@ impl Hud {
         let (signals, sig_writer) = UnixStream::pair()?;
         signals.set_nonblocking(true)?;
         sig_writer.set_nonblocking(true)?;
-        for sig in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
+        // HUP: the terminal closed; QUIT: Ctrl+\. All flush a pending save.
+        use signal_hook::consts::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
+        for sig in [SIGINT, SIGTERM, SIGHUP, SIGQUIT] {
             signal_hook::low_level::pipe::register(sig, sig_writer.try_clone()?)?;
         }
 
