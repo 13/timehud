@@ -716,3 +716,36 @@ fn preview_toggles_tray_and_resets_interval() {
     assert!(h.app.engine.is_idle(&h.app.cfg));
     assert_eq!(h.app.engine.remaining(), 30.0);
 }
+
+#[test]
+fn pause_reset_and_mode_change_update_color_immediately() {
+    let mut h = mk(countdown(60));
+    let pause = h.app.cfg.color_timer_pause.clone();
+    let run = h.app.cfg.color_timer_run.clone();
+    let now = h.now();
+    h.app.toggle_timer(now);
+    assert_eq!(h.app.color_target, run, "start shows the run color at once");
+    h.advance(2.0);
+    h.tick();
+    let now = h.now();
+    h.app.toggle_timer(now);
+    assert_eq!(
+        h.app.color_target, pause,
+        "pause must not wait for the next tick"
+    );
+    assert!((h.app.progress_target - 58.0 / 60.0).abs() < 1e-9);
+
+    h.app.toggle_timer(h.now());
+    h.advance(1.0);
+    h.tick();
+    h.press(Hit::BtnReset, Button::Left);
+    assert_eq!(h.app.color_target, pause);
+    assert_eq!(h.app.progress_target, 1.0);
+
+    h.app.toggle_timer(h.now());
+    h.advance(1.0);
+    h.tick();
+    h.press(Hit::BtnMode, Button::Left);
+    assert_eq!(h.app.cfg.timer_mode, Mode::Interval);
+    assert_eq!(h.app.color_target, pause);
+}

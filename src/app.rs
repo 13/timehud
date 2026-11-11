@@ -575,9 +575,12 @@ impl App {
     // ══ Actions ═════════════════════════════════════════════════════════════
 
     /// Start if stopped, pause if running.
-    pub fn toggle_timer(&mut self, _now: f64) -> Vec<Effect> {
+    /// Refreshes color/progress at once: paused HUDs only tick once per second.
+    pub fn toggle_timer(&mut self, now: f64) -> Vec<Effect> {
         self.engine.toggle(&self.cfg);
-        vec![Effect::Redraw]
+        let mut fx = self.update_timer(now);
+        fx.push(Effect::Redraw);
+        fx
     }
 
     /// Stop and zero the timer.
