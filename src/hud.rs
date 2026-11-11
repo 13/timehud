@@ -36,8 +36,6 @@ use x11rb::protocol::xproto::{ChangeWindowAttributesAux, ConnectionExt as _, Eve
 
 /// Config writes are debounced this long after the last `SaveSoon`.
 const SAVE_DEBOUNCE: f64 = 0.3;
-/// Frame interval while animating (~60 fps).
-const FRAME: f64 = 0.016;
 /// `Sound::idle_release` cadence.
 const IDLE_RELEASE: f64 = 1.0;
 
@@ -64,9 +62,12 @@ pub fn merge_settings_changes(current: &Value, prev: &Value, new: &Value) -> Val
     out
 }
 
+/// Hotkey bindings and messages for unparsable hotkey fields.
+pub type HotkeySetup = (Vec<(Combo, HotkeyAction)>, Vec<String>);
+
 /// Hotkey bindings from the three `hotkey_*` fields, plus messages for
 /// fields that do not parse.
-pub fn hotkey_binds(cfg: &Config) -> (Vec<(Combo, HotkeyAction)>, Vec<String>) {
+pub fn hotkey_binds(cfg: &Config) -> HotkeySetup {
     let fields = [
         (&cfg.hotkey_toggle, HotkeyAction::Toggle),
         (&cfg.hotkey_reset, HotkeyAction::Reset),
@@ -146,7 +147,10 @@ struct Hud {
     size: (i32, i32),
     mapped: bool,
     dirty: bool,
-    last_frame: f64,
+    /// When the next animation frame is due (`App::next_frame`).
+    frame_due: Option<f64>,
+    /// The hotkey setup last applied (binds and parse errors).
+    hotkeys: Option<HotkeySetup>,
     next_tick: f64,
     save_at: Option<f64>,
     next_idle: f64,
@@ -247,7 +251,8 @@ impl Hud {
             size: (layout.w, layout.h),
             mapped: true,
             dirty: false,
-            last_frame: now,
+            frame_due: None,
+            hotkeys: None,
             next_tick: now,
             save_at: None,
             next_idle: now + IDLE_RELEASE,
@@ -257,7 +262,8 @@ impl Hud {
         if hud.app.cfg.show_tray_icon && !no_tray {
             hud.set_tray(true);
         }
-        hud.sync_hotkeys();
+        hud.frame_due = hud.app.next_frame(hud.now());
+        hud.sync_hotkeys(true);
         hud.x.conn.flush()?;
         Ok(hud)
     }
@@ -330,7 +336,7 @@ impl Hud {
             }
             Event::MappingNotify(_) => {
                 self.x.reload_keymap();
-                self.sync_hotkeys();
+                self.sync_hotkeys(true);
                 return;
             }
             _ => {}
@@ -479,6 +485,10 @@ impl Hud {
         self.next_tick = self
             .next_tick
             .min(now + self.app.next_wakeup(now, wall_frac(&wall)));
+        // ... or start an animation (e.g. the auto-fold begins in a tick).
+        if let Some(t) = self.app.next_frame(now) {
+            self.frame_due = Some(self.frame_due.map_or(t, |d| d.min(t)));
+        }
     }
 
     fn perform(&mut self, action: MenuAction) {
@@ -562,9 +572,15 @@ impl Hud {
         self.settings_tab = tab;
     }
 
-    /// Re-grabs the global hotkeys; failures go to the settings window.
-    fn sync_hotkeys(&mut self) {
-        let (binds, mut errors) = hotkey_binds(&self.app.cfg);
+    /// Re-grabs the global hotkeys when their setup changed (or `force`, e.g.
+    /// after a keymap change); failures go to the settings window.
+    fn sync_hotkeys(&mut self, force: bool) {
+        let setup = hotkey_binds(&self.app.cfg);
+        if !force && self.hotkeys.as_ref() == Some(&setup) {
+            return;
+        }
+        self.hotkeys = Some(setup.clone());
+        let (binds, mut errors) = setup;
         for e in &errors {
             eprintln!("timehud: {e}");
         }
@@ -611,8 +627,8 @@ impl Hud {
         if !self.mapped {
             return;
         }
-        let animating = self.app.animating(now);
-        if !self.dirty && !(animating && now - self.last_frame >= FRAME * 0.9) {
+        let due = self.frame_due.is_some_and(|t| now >= t - 0.001);
+        if !self.dirty && !due {
             return;
         }
         let (pm, layout) = self.app.frame(now);
@@ -622,11 +638,11 @@ impl Hud {
             eprintln!("timehud: present failed: {e:#}");
         }
         self.dirty = false;
-        self.last_frame = now;
+        self.frame_due = self.app.next_frame(now);
     }
 
     fn timeout(&self, now: f64) -> u16 {
-        let frame = (self.mapped && self.app.animating(now)).then_some(self.last_frame + FRAME);
+        let frame = self.frame_due.filter(|_| self.mapped);
         poll_timeout_ms(
             now,
             &[
@@ -815,7 +831,7 @@ impl Hud {
             fx.push(Effect::SaveNow);
         }
         self.apply(fx);
-        self.sync_hotkeys();
+        self.sync_hotkeys(false);
     }
 
     fn settings_cancel(&mut self) {
@@ -825,7 +841,7 @@ impl Hud {
         let mut fx = self.app.preview_config(snapshot, self.now());
         fx.push(Effect::SaveNow);
         self.apply(fx);
-        self.sync_hotkeys();
+        self.sync_hotkeys(false);
     }
 
     // ══ Shutdown ════════════════════════════════════════════════════════════

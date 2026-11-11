@@ -37,6 +37,8 @@ const RUN_TICK: f64 = 0.1;
 /// Countdown's final seconds: crisp color flips and beep pulses.
 const FINAL_SECONDS: f64 = 6.5;
 const MODE_GREY: Rgb = Rgb(0x99, 0x99, 0x99);
+/// Frame interval while a tween animates (~60 fps).
+pub const FRAME: f64 = 0.016;
 const MODES: [Mode; 3] = [Mode::Stopwatch, Mode::Countdown, Mode::Interval];
 
 struct Drag {
@@ -240,19 +242,56 @@ impl App {
 
     /// True while a frame-by-frame animation is visible (never while hidden).
     pub fn animating(&self, now: f64) -> bool {
+        self.next_frame(now).is_some()
+    }
+
+    /// When the next animation frame is due (never while hidden): `now +
+    /// FRAME` while a tween runs; while only the live progress bar moves, when
+    /// its drawn length next changes by about half a device pixel; `None`
+    /// when the picture only changes through ticks and actions.
+    pub fn next_frame(&self, now: f64) -> Option<f64> {
         if !self.visible {
-            return false;
+            return None;
         }
+        let running = self.engine.running();
         let pulsing = self.pulse_start.is_some_and(|s| now - s < PULSE);
-        let gliding = self.progress_glide.as_ref().is_some_and(|g| !g.done(now));
-        // While running, the progress bar reads engine time every frame.
-        let live_progress = self.engine.running() && self.progress_target >= 0.0;
-        !self.fade_in.done(now)
+        // While running the bar reads engine time; the glide is unused then.
+        let gliding = !running && self.progress_glide.as_ref().is_some_and(|g| !g.done(now));
+        if !self.fade_in.done(now)
             || !self.color_anim.done(now)
             || !self.controls.done(now)
             || pulsing
             || gliding
-            || live_progress
+        {
+            return Some(now + FRAME);
+        }
+        if running && self.progress_target >= 0.0 {
+            return Some(now + self.progress_frame_interval());
+        }
+        None
+    }
+
+    /// Seconds for the running bar to move ~0.5 device px (at least `FRAME`).
+    fn progress_frame_interval(&self) -> f64 {
+        let cfg = &self.cfg;
+        // Shortest phase the bar can be draining (it moves 1/phase per second).
+        let phases: &[i64] = match cfg.timer_mode {
+            Mode::Countdown => &[cfg.countdown_duration],
+            Mode::Interval => &[cfg.interval_work, cfg.interval_rest],
+            Mode::Stopwatch => &[cfg.stopwatch_work, cfg.stopwatch_rest],
+        };
+        let Some(phase) = phases.iter().copied().filter(|d| *d > 0).min() else {
+            return FRAME;
+        };
+        let p = self.layout.panel;
+        // Upper bounds of the drawn length: the panel width for the line, the
+        // panel outline for the border.
+        let length = if cfg.progress_style == "border" {
+            2 * (p.w + p.h)
+        } else {
+            p.w
+        };
+        (0.5 * phase as f64 / f64::from(length.max(1))).max(FRAME)
     }
 
     /// Seconds until `tick` is next needed: 100 ms while running, else the next
@@ -431,6 +470,7 @@ impl App {
     pub fn tick(&mut self, now: f64, wall: chrono::NaiveTime) -> Vec<Effect> {
         self.poll(now);
         let before = (self.clock.len(), self.timer.len(), self.mode_text.clone());
+        let shown_before = self.shown_state();
         if self.cfg.show_clock {
             self.clock = clock_text(wall, &self.cfg.clock_format);
         }
@@ -438,8 +478,31 @@ impl App {
         if before != (self.clock.len(), self.timer.len(), self.mode_text.clone()) {
             fx.extend(self.relayout(now));
         }
-        fx.push(Effect::Redraw);
+        // Running: ticks come every 100 ms, but the picture changes about once
+        // a second (the moving bar is driven by `next_frame`).
+        if !fx.is_empty() || self.shown_state() != shown_before {
+            fx.push(Effect::Redraw);
+        }
         fx
+    }
+
+    /// What a tick can change on screen outside of animations.
+    fn shown_state(&self) -> (String, String, String, Option<Rgb>, String, Rgb, f64) {
+        // While running, the bar follows engine time, not the tick's target.
+        let progress = if self.engine.running() {
+            self.progress_target.signum()
+        } else {
+            self.progress_target
+        };
+        (
+            self.clock.clone(),
+            self.timer.clone(),
+            self.mode_text.clone(),
+            self.mode_color,
+            self.color_target.clone(),
+            self.bar_color,
+            progress,
+        )
     }
 
     fn update_timer(&mut self, now: f64) -> Vec<Effect> {

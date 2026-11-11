@@ -749,3 +749,73 @@ fn pause_reset_and_mode_change_update_color_immediately() {
     assert_eq!(h.app.cfg.timer_mode, Mode::Interval);
     assert_eq!(h.app.color_target, pause);
 }
+
+// ── Frame deadlines ──────────────────────────────────────────────────
+
+/// Running 5-min countdown, fade-in and color fade over, controls unfolded.
+fn running_countdown() -> Harness {
+    let mut h = mk(countdown(300));
+    let now = h.now();
+    h.app.toggle_timer(now);
+    h.advance(1.05);
+    h.tick();
+    h
+}
+
+#[test]
+fn live_progress_frames_are_sparse() {
+    let mut h = running_countdown();
+    h.app.frame(h.now()); // layout with the progress row
+    let now = h.now();
+    let next = h.app.next_frame(now).expect("running bar still advances");
+    assert!(next - now >= 0.5, "line bar frame after {} s", next - now);
+}
+
+#[test]
+fn border_progress_frames_follow_perimeter() {
+    let mut h = running_countdown();
+    let mut cfg = h.app.cfg.clone();
+    cfg.progress_style = "border".into();
+    let now = h.now();
+    h.app.preview_config(cfg, now);
+    h.advance(0.5); // let the fold reset settle
+    h.tick();
+    h.app.frame(h.now());
+    let now = h.now();
+    let dt = h.app.next_frame(now).unwrap() - now;
+    // Longer path than the line: more frequent, but far from 60 fps.
+    assert!((FRAME..0.5).contains(&dt), "border frame after {dt} s");
+}
+
+#[test]
+fn tweens_frame_at_full_rate() {
+    let mut h = running_countdown();
+    h.input(Input::Enter);
+    h.input(Input::Leave);
+    h.advance(2.1); // fold starts at 2.0 s
+    h.tick();
+    let now = h.now();
+    let dt = h.app.next_frame(now).unwrap() - now;
+    assert!((dt - FRAME).abs() < 1e-9, "fold frame after {dt} s");
+}
+
+#[test]
+fn paused_needs_no_frames() {
+    let mut h = mk(countdown(300));
+    h.advance(1.0); // fade-in over
+    h.tick();
+    assert_eq!(h.app.next_frame(h.now()), None);
+    h.app.set_visible(false);
+    let now = h.now();
+    h.app.toggle_timer(now);
+    assert_eq!(h.app.next_frame(h.now()), None, "hidden: no frames");
+}
+
+#[test]
+fn running_tick_redraws_only_on_visible_change() {
+    let mut h = running_countdown();
+    h.advance(0.1); // same displayed second
+    assert!(!h.tick().contains(&Effect::Redraw));
+    h.advance(1.0); // next second: the timer text changes
+    assert!(h.tick().contains(&Effect::Redraw));
+}
