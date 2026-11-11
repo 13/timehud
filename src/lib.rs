@@ -3,6 +3,7 @@ pub mod app;
 pub mod config;
 pub mod engine;
 pub mod format;
+pub mod hotkey;
 pub mod layout;
 pub mod menu;
 pub mod render;
