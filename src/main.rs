@@ -53,6 +53,7 @@ enum Cmd {
 }
 
 fn main() -> ExitCode {
+    hud::mark_start();
     match run() {
         Ok(code) => code,
         Err(e) => {

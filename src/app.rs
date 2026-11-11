@@ -100,7 +100,7 @@ fn to_i32(v: i64) -> i32 {
 }
 
 /// Font family the HUD draws with: theme font, else config font, else Monospace.
-fn resolved_family(cfg: &Config) -> String {
+pub fn resolved_family(cfg: &Config) -> String {
     let theme = get_theme(&cfg.theme);
     [theme.font_family, cfg.font_family.as_str()]
         .into_iter()
