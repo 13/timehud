@@ -69,6 +69,47 @@ pub fn icon_for_size(size: u32) -> Pixmap {
     out
 }
 
+/// A `w` x `h` tray slot: the icon at the slot's smaller side, centred,
+/// transparent around it.
+pub fn slot_icon(w: u32, h: u32) -> Pixmap {
+    let (w, h) = (w.max(1), h.max(1));
+    let size = w.min(h);
+    let icon = icon_for_size(size);
+    if (w, h) == (size, size) {
+        return icon;
+    }
+    let Some(mut out) = Pixmap::new(w, h) else {
+        return icon;
+    };
+    out.draw_pixmap(
+        ((w - size) / 2) as i32,
+        ((h - size) / 2) as i32,
+        icon.as_ref(),
+        &PixmapPaint::default(),
+        Transform::identity(),
+        None,
+    );
+    out
+}
+
+/// The last slot image, rebuilt only when the slot size changes (decoding and
+/// rescaling the PNG on every Expose is wasted work).
+#[derive(Default)]
+struct SlotCache {
+    img: Option<Pixmap>,
+}
+
+impl SlotCache {
+    fn get(&mut self, w: u32, h: u32) -> &Pixmap {
+        let (w, h) = (w.max(1), h.max(1));
+        match &self.img {
+            Some(p) if (p.width(), p.height()) == (w, h) => {}
+            _ => self.img = Some(slot_icon(w, h)),
+        }
+        self.img.get_or_insert_with(|| slot_icon(w, h))
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum TrayEvent {
     /// Left click.
@@ -83,7 +124,9 @@ struct Docked {
     /// Colormap we created for a foreign ARGB visual (freed with the window).
     own_colormap: Option<u32>,
     argb: bool,
-    size: u32,
+    /// Window size (width, height) the tray gave us.
+    slot: (u32, u32),
+    icon: SlotCache,
 }
 
 pub struct Tray {
@@ -170,9 +213,9 @@ impl Tray {
             }
             Event::ConfigureNotify(e) => {
                 if let Some(d) = self.docked.as_mut().filter(|d| d.win == e.window) {
-                    let size = u32::from(e.width.min(e.height)).max(1);
-                    if size != d.size {
-                        d.size = size;
+                    let slot = (u32::from(e.width).max(1), u32::from(e.height).max(1));
+                    if slot != d.slot {
+                        d.slot = slot;
                         self.repaint(x);
                     }
                 }
@@ -363,7 +406,8 @@ impl Tray {
             gc,
             own_colormap,
             argb,
-            size,
+            slot: (size, size),
+            icon: SlotCache::default(),
         })
     }
 
@@ -374,13 +418,14 @@ impl Tray {
         let _ = x.conn.flush();
     }
 
-    fn repaint(&self, x: &X) {
-        let Some(d) = &self.docked else { return };
-        let icon = icon_for_size(d.size);
-        let res = if d.argb {
-            x.present(d.win, d.gc, &icon)
+    fn repaint(&mut self, x: &X) {
+        let Some(d) = &mut self.docked else { return };
+        let (win, gc, argb) = (d.win, d.gc, d.argb);
+        let icon = d.icon.get(d.slot.0, d.slot.1);
+        let res = if argb {
+            x.present(win, gc, icon)
         } else {
-            paint_thresholded(x, d, &icon)
+            paint_thresholded(x, win, gc, icon)
         };
         if let Err(e) = res {
             eprintln!("warning: tray icon paint failed: {e:#}");
@@ -400,7 +445,7 @@ fn release(x: &X, d: &Docked, destroy: bool) {
 
 /// Paints only pixels with alpha >= 128 onto a cleared (ParentRelative)
 /// window, using a 1-bit clip mask and an opaque root-depth image.
-fn paint_thresholded(x: &X, d: &Docked, icon: &Pixmap) -> anyhow::Result<()> {
+fn paint_thresholded(x: &X, win: Window, gc: u32, icon: &Pixmap) -> anyhow::Result<()> {
     let setup = x.conn.setup();
     let screen = &setup.roots[x.screen_num];
     let depth = screen.root_depth;
@@ -409,7 +454,7 @@ fn paint_thresholded(x: &X, d: &Docked, icon: &Pixmap) -> anyhow::Result<()> {
         .iter()
         .find(|f| f.depth == depth)
         .map_or(0, |f| f.bits_per_pixel);
-    x.conn.clear_area(false, d.win, 0, 0, 0, 0)?;
+    x.conn.clear_area(false, win, 0, 0, 0, 0)?;
     if bpp != 32 {
         x.conn.flush()?;
         return Ok(()); // unsupported root format: leave the window blank
@@ -421,7 +466,7 @@ fn paint_thresholded(x: &X, d: &Docked, icon: &Pixmap) -> anyhow::Result<()> {
         setup.bitmap_format_bit_order == ImageOrder::LSB_FIRST,
     );
     let clip = x.conn.generate_id()?;
-    x.conn.create_pixmap(1, clip, d.win, w as u16, h as u16)?;
+    x.conn.create_pixmap(1, clip, win, w as u16, h as u16)?;
     let mgc = x.conn.generate_id()?;
     x.conn.create_gc(mgc, clip, &CreateGCAux::new())?;
     x.conn.put_image(
@@ -451,7 +496,7 @@ fn paint_thresholded(x: &X, d: &Docked, icon: &Pixmap) -> anyhow::Result<()> {
         buf.extend_from_slice(&[un(b), un(g), un(r), 0]);
     }
     x.conn.change_gc(
-        d.gc,
+        gc,
         &x11rb::protocol::xproto::ChangeGCAux::new().clip_mask(clip),
     )?;
     let stride = w * 4;
@@ -460,8 +505,8 @@ fn paint_thresholded(x: &X, d: &Docked, icon: &Pixmap) -> anyhow::Result<()> {
         let n = rows.min(h - y0);
         x.conn.put_image(
             ImageFormat::Z_PIXMAP,
-            d.win,
-            d.gc,
+            win,
+            gc,
             w as u16,
             n as u16,
             0,
@@ -472,7 +517,7 @@ fn paint_thresholded(x: &X, d: &Docked, icon: &Pixmap) -> anyhow::Result<()> {
         )?;
     }
     x.conn.change_gc(
-        d.gc,
+        gc,
         &x11rb::protocol::xproto::ChangeGCAux::new().clip_mask(0u32),
     )?;
     x.conn.free_pixmap(clip)?;
@@ -513,6 +558,40 @@ mod tests {
     }
 
     #[test]
+    fn slot_icon_centred_in_non_square_slot() {
+        let p = slot_icon(40, 24);
+        assert_eq!((p.width(), p.height()), (40, 24));
+        let icon = icon_for_size(24);
+        // The 24 px icon sits at x = 8..32: columns outside are transparent
+        // and the icon's pixels appear shifted by the offset.
+        for y in 0..24 {
+            for x in (0..8).chain(32..40) {
+                assert_eq!(p.pixel(x, y).unwrap().alpha(), 0, "({x}, {y})");
+            }
+            for x in 0..24 {
+                assert_eq!(p.pixel(x + 8, y), icon.pixel(x, y));
+            }
+        }
+        let tall = slot_icon(22, 30);
+        assert_eq!((tall.width(), tall.height()), (22, 30));
+        assert_eq!(tall.pixel(11, 3).unwrap().alpha(), 0);
+        assert_eq!(tall.pixel(11, 4), icon_for_size(22).pixel(11, 0));
+    }
+
+    #[test]
+    fn slot_icon_square_is_plain_icon() {
+        assert!(slot_icon(22, 22).data() == icon_for_size(22).data());
+    }
+
+    #[test]
+    fn slot_cache_reuses_until_resized() {
+        let mut c = SlotCache::default();
+        let a = c.get(30, 22).data().as_ptr();
+        assert_eq!(c.get(30, 22).data().as_ptr(), a);
+        assert_eq!(c.get(24, 24).width(), 24);
+    }
+
+    #[test]
     fn threshold_mask_bits() {
         let mut p = Pixmap::new(10, 2).unwrap();
         // Premultiplied pixels: alpha 200 opaque-ish at x=0 and x=9, 100 at x=1.
@@ -546,7 +625,7 @@ mod tests {
         }
         // Centre (icon body) must differ from the corner (transparent -> bar bg).
         let d = t.docked.as_ref().unwrap();
-        let (win, size) = (d.win, d.size as u16);
+        let (win, size) = (d.win, d.slot);
         let geo = x.conn.get_geometry(win).unwrap().reply().unwrap();
         let img = x
             .conn
@@ -560,7 +639,7 @@ mod tests {
             img.data[i..i + 3].to_vec()
         };
         let (centre, corner) = (px(geo.width / 2, geo.height / 2), px(0, 0));
-        eprintln!("size {size} centre {centre:?} corner {corner:?}");
+        eprintln!("slot {size:?} centre {centre:?} corner {corner:?}");
         assert_ne!(centre, corner, "icon body not painted");
         t.set_visible(&x, false);
         assert!(!t.is_docked());
