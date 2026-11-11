@@ -787,6 +787,26 @@ fn preview_mode_change_clears_preset() {
 }
 
 #[test]
+fn preview_keeps_preset_when_its_own_values_change_with_it() {
+    let mut h = mk(with_presets(vec![json!({"name": "Tea", "duration": 180})]));
+    let now = h.now();
+    h.app.perform(&MenuAction::ApplyPreset(0), now);
+    assert_eq!(h.app.cfg.active_preset, "Tea");
+    // Settings updated the active preset to 4 min and applied it.
+    let mut edited = h.app.cfg.clone();
+    edited.presets = vec![json!({"name": "Tea", "duration": 240})];
+    edited.countdown_duration = 240;
+    h.app.preview_config(edited, now);
+    assert_eq!(h.app.cfg.active_preset, "Tea");
+    assert_eq!(h.app.timer_text(), "04:00");
+    // A duration that no longer matches the preset still ends it.
+    let mut edited = h.app.cfg.clone();
+    edited.countdown_duration = 60;
+    h.app.preview_config(edited, now);
+    assert_eq!(h.app.cfg.active_preset, "");
+}
+
+#[test]
 fn preview_toggles_tray_and_resets_interval() {
     let mut h = mk(Config {
         timer_mode: Mode::Interval,

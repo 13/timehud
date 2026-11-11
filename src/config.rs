@@ -409,6 +409,95 @@ impl Preset {
     }
 }
 
+/// The keys a preset's shape and rules may use; anything else in a preset
+/// object is the user's and survives edits.
+pub const PRESET_KEYS: [&str; 9] = [
+    "name", "type", "duration", "work", "rest", "total", "last5", "boundary", "halfway",
+];
+
+impl Preset {
+    /// Writes this preset into an existing raw entry: known keys are set or,
+    /// when the new shape lacks them, removed; unknown keys stay. A countdown
+    /// keeps a `type` that already reads as countdown.
+    pub fn merge_into(&self, rules: &PresetRules, raw: &mut Value) {
+        let fresh = self.to_value(rules);
+        let Some(obj) = raw.as_object_mut() else {
+            *raw = fresh;
+            return;
+        };
+        let countdown_type =
+            |v: &Value| !matches!(v.as_str(), Some("interval") | Some("stopwatch"));
+        for key in PRESET_KEYS {
+            match fresh.get(key) {
+                Some(v) => {
+                    obj.insert(key.into(), v.clone());
+                }
+                None if key == "type" && obj.get(key).is_some_and(countdown_type) => {}
+                None => {
+                    obj.remove(key);
+                }
+            }
+        }
+    }
+
+    /// Puts this preset's timer setup and sound rules into `cfg` and makes
+    /// it the active preset (the config half of selecting it in the menu).
+    pub fn apply_to(&self, rules: &PresetRules, cfg: &mut Config) {
+        match self {
+            Preset::Stopwatch { work, rest, .. } => {
+                cfg.timer_mode = Mode::Stopwatch;
+                cfg.stopwatch_work = *work;
+                cfg.stopwatch_rest = *rest;
+            }
+            Preset::Interval {
+                work, rest, total, ..
+            } => {
+                cfg.timer_mode = Mode::Interval;
+                cfg.interval_work = *work;
+                cfg.interval_rest = *rest;
+                cfg.interval_rounds = interval_preset_rounds(*work, *rest, *total);
+            }
+            Preset::Countdown { duration, .. } => {
+                cfg.timer_mode = Mode::Countdown;
+                cfg.countdown_duration = *duration;
+            }
+        }
+        // Optional per-preset sound rules override the global ones
+        if let Some(last5) = rules.last5 {
+            cfg.alert_last_5_seconds = last5;
+        }
+        // Phase-end long beep defaults ON; halfway double defaults OFF
+        cfg.phase_beeps = rules.boundary.unwrap_or(true);
+        cfg.halfway_beep = rules.halfway.unwrap_or(false);
+        cfg.active_preset = self.name().to_string();
+    }
+}
+
+/// Whether `cfg`'s timer setup is still what its `active_preset` sets up
+/// (false without an active preset or when it names no valid preset).
+pub fn active_preset_matches(cfg: &Config) -> bool {
+    let Some((p, r, _)) = valid_presets(&cfg.presets)
+        .into_iter()
+        .find(|(p, _, _)| p.name() == cfg.active_preset)
+    else {
+        return false;
+    };
+    let mut applied = cfg.clone();
+    p.apply_to(&r, &mut applied);
+    let timer = |c: &Config| {
+        let mut t = (c.timer_mode, 0, 0, 0, 0, 0);
+        match c.timer_mode {
+            Mode::Countdown => t.1 = c.countdown_duration,
+            Mode::Interval => {
+                (t.2, t.3, t.4) = (c.interval_work, c.interval_rest, c.interval_rounds)
+            }
+            Mode::Stopwatch => (t.2, t.3) = (c.stopwatch_work, c.stopwatch_rest),
+        }
+        t
+    };
+    !cfg.active_preset.is_empty() && timer(&applied) == timer(cfg)
+}
+
 /// Integer (not bool, not float) that is at least `minimum`.
 fn int_min(v: Option<&Value>, minimum: i64) -> Option<i64> {
     v.and_then(Value::as_i64).filter(|&n| n >= minimum)
@@ -490,6 +579,80 @@ mod tests {
             .iter()
             .map(|(p, r, _)| p.to_value(r))
             .collect()
+    }
+
+    #[test]
+    fn merge_into_keeps_unknown_keys_and_drops_stale_shape_keys() {
+        let mut raw = json!({"name": "a", "duration": 60, "icon": "tea", "last5": true});
+        let p = Preset::Interval {
+            name: "b".into(),
+            work: 20,
+            rest: 10,
+            total: 150,
+        };
+        let rules = PresetRules {
+            last5: None,
+            boundary: Some(false),
+            halfway: None,
+        };
+        p.merge_into(&rules, &mut raw);
+        assert_eq!(
+            raw,
+            json!({"name": "b", "type": "interval", "work": 20, "rest": 10, "total": 150,
+                "boundary": false, "icon": "tea"})
+        );
+        // Back to countdown: an explicit countdown `type` survives, others go.
+        let mut raw = json!({"name": "c", "type": "countdown", "duration": 5, "x": 1});
+        let c = Preset::Countdown {
+            name: "c".into(),
+            duration: 9,
+        };
+        c.merge_into(&PresetRules::default(), &mut raw);
+        assert_eq!(
+            raw,
+            json!({"name": "c", "type": "countdown", "duration": 9, "x": 1})
+        );
+        p.merge_into(&PresetRules::default(), &mut raw);
+        c.merge_into(&PresetRules::default(), &mut raw);
+        assert_eq!(raw, json!({"name": "c", "duration": 9, "x": 1}));
+    }
+
+    #[test]
+    fn apply_to_sets_timer_rules_and_active_name() {
+        let mut cfg = Config::default();
+        let p = Preset::Interval {
+            name: "hiit".into(),
+            work: 20,
+            rest: 10,
+            total: 150,
+        };
+        p.apply_to(&PresetRules::default(), &mut cfg);
+        assert_eq!(cfg.timer_mode, Mode::Interval);
+        assert_eq!(
+            (cfg.interval_work, cfg.interval_rest, cfg.interval_rounds),
+            (20, 10, 5)
+        );
+        assert!(cfg.phase_beeps && !cfg.halfway_beep);
+        assert_eq!(cfg.active_preset, "hiit");
+    }
+
+    #[test]
+    fn active_preset_matches_compares_the_timer_setup() {
+        let mut cfg = Config::default(); // presets "1 min" and "5 min"
+        assert!(!active_preset_matches(&cfg));
+        cfg.active_preset = "5 min".into();
+        cfg.timer_mode = Mode::Countdown;
+        cfg.countdown_duration = 300;
+        assert!(active_preset_matches(&cfg));
+        cfg.interval_work = 99; // irrelevant to a countdown
+        assert!(active_preset_matches(&cfg));
+        cfg.countdown_duration = 60;
+        assert!(!active_preset_matches(&cfg));
+        cfg.countdown_duration = 300;
+        cfg.timer_mode = Mode::Stopwatch;
+        assert!(!active_preset_matches(&cfg));
+        cfg.active_preset = "gone".into();
+        assert!(!active_preset_matches(&cfg));
     }
 
     // ---- TestRoundTrip ----

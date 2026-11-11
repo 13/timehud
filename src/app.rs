@@ -5,7 +5,7 @@
 //! itself is larger by the theme's shadow inset (`Layout::panel.x/y`).
 use crate::anim::{Ease, Tween, lerp_rgb};
 use crate::config::{
-    COUNTDOWN_RANGE, Config, FONT_SIZE_RANGE, Mode, Preset, PresetRules, interval_preset_rounds,
+    COUNTDOWN_RANGE, Config, FONT_SIZE_RANGE, Mode, Preset, PresetRules, active_preset_matches,
     valid_presets,
 };
 use crate::engine::{ClockFn, Phase, State, TimerEngine};
@@ -763,36 +763,12 @@ impl App {
         else {
             return Vec::new();
         };
-        let cfg = &mut self.cfg;
-        match &preset {
-            Preset::Stopwatch { work, rest, .. } => {
-                cfg.timer_mode = Mode::Stopwatch;
-                cfg.stopwatch_work = *work;
-                cfg.stopwatch_rest = *rest;
-            }
-            Preset::Interval {
-                work, rest, total, ..
-            } => {
-                cfg.timer_mode = Mode::Interval;
-                cfg.interval_work = *work;
-                cfg.interval_rest = *rest;
-                cfg.interval_rounds = interval_preset_rounds(*work, *rest, *total);
-                self.last_interval_cfg = interval_cfg(cfg);
-            }
-            Preset::Countdown { duration, .. } => {
-                cfg.timer_mode = Mode::Countdown;
-                cfg.countdown_duration = *duration;
-                self.last_cd_duration = *duration;
-            }
+        preset.apply_to(&rules, &mut self.cfg);
+        match preset {
+            Preset::Interval { .. } => self.last_interval_cfg = interval_cfg(&self.cfg),
+            Preset::Countdown { duration, .. } => self.last_cd_duration = duration,
+            Preset::Stopwatch { .. } => {}
         }
-        // Optional per-preset sound rules override the global ones
-        if let Some(last5) = rules.last5 {
-            cfg.alert_last_5_seconds = last5;
-        }
-        // Phase-end long beep defaults ON; halfway double defaults OFF
-        cfg.phase_beeps = rules.boundary.unwrap_or(true);
-        cfg.halfway_beep = rules.halfway.unwrap_or(false);
-        cfg.active_preset = preset.name().to_string();
         self.engine.reset(&self.cfg);
         self.refresh_mode_label();
         let mut fx = vec![Effect::SaveSoon];
@@ -861,9 +837,12 @@ impl App {
         let mut fx = Vec::new();
         // A manual duration or mode change ends the preset, unless the edit
         // already changed `active_preset` itself (e.g. Cancel restoring it).
+        // An edit that keeps the setup the preset describes (Settings
+        // updating the active preset itself) keeps it.
         if (self.cfg.countdown_duration != old.countdown_duration
             || self.cfg.timer_mode != old.timer_mode)
             && self.cfg.active_preset == old.active_preset
+            && !active_preset_matches(&self.cfg)
         {
             self.cfg.active_preset.clear();
         }
