@@ -220,7 +220,7 @@ impl Hud {
         let now = t0.elapsed().as_secs_f64();
         let mut app = App::new(cfg, clock, fonts, scale, area, now);
         let mut canvas = Canvas::default();
-        let layout = app.frame_into(now, &mut canvas.pixmap);
+        let layout = app.frame_into(now, &mut canvas.frame);
         let (wx, wy) = app.window_pos();
         let overlay = OverlayWin::create(&x, layout.w, layout.h, wx, wy)?;
         if app.cfg.click_through {
@@ -686,7 +686,7 @@ impl Hud {
         if !self.dirty && !due {
             return;
         }
-        let layout = self.app.frame_into(now, &mut self.canvas.pixmap);
+        let layout = self.app.frame_into(now, &mut self.canvas.frame);
         self.size = (layout.w, layout.h);
         self.sync_geometry();
         let (win, gc) = (self.overlay.id, self.overlay.gc);

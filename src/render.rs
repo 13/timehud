@@ -466,16 +466,122 @@ fn draw_border_progress(pm: &mut Pixmap, view: &View, panel: Rect, radius: f32) 
 /// Draw one frame into a new pixmap; `None` if no pixmap of the layout's
 /// size can be allocated.
 pub fn render(view: &View, fonts: &mut FontSet) -> Option<(Pixmap, Layout)> {
-    let mut pm = None;
-    let layout = render_into(view, fonts, &mut pm);
-    pm.map(|pm| (pm, layout))
+    let mut frame = Frame::default();
+    let layout = render_into(view, fonts, &mut frame);
+    frame.pixmap.map(|pm| (pm, layout))
 }
 
-/// Draw one frame into `canvas`, reusing its pixmap when the size is
-/// unchanged (cleared first) and replacing it otherwise. Leaves `None` when
-/// no pixmap of that size can be allocated; the layout is returned anyway.
-pub fn render_into(view: &View, fonts: &mut FontSet, canvas: &mut Option<Pixmap>) -> Layout {
-    let pl = plan(view, fonts);
+/// A reusable frame: the drawn `pixmap` plus a cache of everything but the
+/// progress bar and opacity, so frames where only the bar moved (the common
+/// case while running) skip layout, text and panel drawing.
+#[derive(Default)]
+pub struct Frame {
+    /// The last frame drawn; `None` if no pixmap could be allocated.
+    pub pixmap: Option<Pixmap>,
+    base: Option<Pixmap>,
+    key: Option<StaticKey>,
+    plan: Option<Plan>,
+}
+
+/// The `View` inputs of the static layer (all but the bar's length and the
+/// opacity).
+#[derive(PartialEq)]
+struct StaticKey {
+    cfg: Config,
+    theme: *const Theme,
+    scale: f32,
+    clock: String,
+    timer: String,
+    timer_color: Rgb,
+    timer_px_mul: f32,
+    mode_text: String,
+    mode_color: Rgb,
+    show_controls_row: bool,
+    controls_pos: f32,
+    running: bool,
+    mode_btn: &'static str,
+    hover_btn: Option<Hit>,
+    progress_shown: bool,
+    progress_color: Rgb,
+}
+
+impl StaticKey {
+    fn matches(&self, v: &View) -> bool {
+        self.theme == std::ptr::from_ref(v.theme)
+            && self.scale == v.scale
+            && self.clock == v.clock
+            && self.timer == v.timer
+            && self.timer_color == v.timer_color
+            && self.timer_px_mul == v.timer_px_mul
+            && self.mode_text == v.mode_text
+            && self.mode_color == v.mode_color
+            && self.show_controls_row == v.show_controls_row
+            && self.controls_pos == v.controls_pos
+            && self.running == v.running
+            && self.mode_btn == v.mode_btn
+            && self.hover_btn == v.hover_btn
+            && self.progress_shown == (v.progress >= 0.0)
+            && self.progress_color == v.progress_color
+            && self.cfg == *v.cfg
+    }
+
+    fn of(v: &View) -> StaticKey {
+        StaticKey {
+            cfg: v.cfg.clone(),
+            theme: std::ptr::from_ref(v.theme),
+            scale: v.scale,
+            clock: v.clock.clone(),
+            timer: v.timer.clone(),
+            timer_color: v.timer_color,
+            timer_px_mul: v.timer_px_mul,
+            mode_text: v.mode_text.clone(),
+            mode_color: v.mode_color,
+            show_controls_row: v.show_controls_row,
+            controls_pos: v.controls_pos,
+            running: v.running,
+            mode_btn: v.mode_btn,
+            hover_btn: v.hover_btn,
+            progress_shown: v.progress >= 0.0,
+            progress_color: v.progress_color,
+        }
+    }
+}
+
+/// Copies `src` into `dst`, reusing `dst`'s pixmap when the size matches.
+fn copy_into(dst: &mut Option<Pixmap>, src: &Pixmap) {
+    match dst {
+        Some(d) if d.width() == src.width() && d.height() == src.height() => {
+            d.data_mut().copy_from_slice(src.data());
+        }
+        _ => *dst = Some(src.clone()),
+    }
+}
+
+/// Draw one frame into `frame.pixmap`, redrawing the static layer only when
+/// a `View` input other than the bar length or opacity changed. Leaves
+/// `None` when no pixmap of the layout's size can be allocated; the layout
+/// is returned anyway.
+pub fn render_into(view: &View, fonts: &mut FontSet, frame: &mut Frame) -> Layout {
+    let fresh = match (&frame.key, &frame.plan) {
+        (Some(k), Some(_)) if frame.base.is_some() => !k.matches(view),
+        _ => true,
+    };
+    if fresh {
+        let pl = plan(view, fonts);
+        let (w, h) = (pl.layout.w.max(1) as u32, pl.layout.h.max(1) as u32);
+        match &mut frame.base {
+            Some(pm) if pm.width() == w && pm.height() == h => pm.fill(Color::TRANSPARENT),
+            base => *base = Pixmap::new(w, h),
+        }
+        if let Some(base) = &mut frame.base {
+            draw_static(view, &pl, fonts, base);
+            frame.key = Some(StaticKey::of(view));
+        } else {
+            frame.key = None;
+        }
+        frame.plan = Some(pl);
+    }
+    let pl = frame.plan.as_ref().expect("plan set above");
     let lay = &pl.layout;
     let layout = Layout {
         w: lay.w,
@@ -483,18 +589,18 @@ pub fn render_into(view: &View, fonts: &mut FontSet, canvas: &mut Option<Pixmap>
         panel: lay.panel,
         regions: lay.regions.clone(),
     };
-    let (w, h) = (lay.w.max(1) as u32, lay.h.max(1) as u32);
-    match canvas {
-        Some(pm) if pm.width() == w && pm.height() == h => pm.fill(Color::TRANSPARENT),
-        _ => *canvas = Pixmap::new(w, h),
+    match &frame.base {
+        Some(base) => copy_into(&mut frame.pixmap, base),
+        None => frame.pixmap = None,
     }
-    if let Some(pm) = canvas {
-        draw_frame(view, &pl, fonts, pm);
+    if let Some(pm) = &mut frame.pixmap {
+        draw_dynamic(view, pl, pm);
     }
     layout
 }
 
-fn draw_frame(view: &View, pl: &Plan, fonts: &mut FontSet, pm: &mut Pixmap) {
+/// Everything but the progress bar fill and the opacity.
+fn draw_static(view: &View, pl: &Plan, fonts: &mut FontSet, pm: &mut Pixmap) {
     let (cfg, theme, s) = (view.cfg, view.theme, pl.s);
     let lay = &pl.layout;
     let panel = lay.panel;
@@ -564,15 +670,6 @@ fn draw_frame(view: &View, pl: &Plan, fonts: &mut FontSet, pm: &mut Pixmap) {
     if let Some(row) = pl.progress_row {
         let r = (row.x as f32, row.y as f32, row.w as f32, row.h as f32);
         fill_rrect(pm, r, 1.5 * s, &paint(white(30)));
-        let fw = (r.2 * view.progress.min(1.0) as f32).floor();
-        if fw > 0.0 {
-            fill_rrect(
-                pm,
-                (r.0, r.1, fw, r.3),
-                1.5 * s,
-                &paint(color(view.progress_color, 1.0)),
-            );
-        }
     }
     if pl.mode_row.is_some() {
         let ls = 2.0 * s;
@@ -590,8 +687,26 @@ fn draw_frame(view: &View, pl: &Plan, fonts: &mut FontSet, pm: &mut Pixmap) {
         );
     }
     draw_buttons(view, pl, fonts, pm);
-    if cfg.progress_style == "border" && view.progress > 0.0 {
-        draw_border_progress(pm, view, panel, rad);
+}
+
+/// The progress bar fill (line or border) and the window opacity.
+fn draw_dynamic(view: &View, pl: &Plan, pm: &mut Pixmap) {
+    let s = pl.s;
+    if let Some(row) = pl.progress_row {
+        let r = (row.x as f32, row.y as f32, row.w as f32, row.h as f32);
+        let fw = (r.2 * view.progress.min(1.0) as f32).floor();
+        if fw > 0.0 {
+            fill_rrect(
+                pm,
+                (r.0, r.1, fw, r.3),
+                1.5 * s,
+                &paint(color(view.progress_color, 1.0)),
+            );
+        }
+    }
+    if view.cfg.progress_style == "border" && view.progress > 0.0 {
+        let rad = view.theme.radius * s;
+        draw_border_progress(pm, view, pl.layout.panel, rad);
     }
 
     let o = view.opacity.clamp(0.0, 1.0);
@@ -683,27 +798,73 @@ mod tests {
     }
 
     #[test]
-    fn render_into_reuses_and_matches_fresh() {
+    fn render_into_reuses_pixmap() {
         let cfg = Config::default();
         let mut v = mk(&cfg, "classic");
-        let mut canvas = None;
-        render_into(&v, &mut fonts(), &mut canvas);
-        let addr = canvas.as_ref().unwrap().data().as_ptr();
+        let mut frame = Frame::default();
+        render_into(&v, &mut fonts(), &mut frame);
+        let addr = frame.pixmap.as_ref().unwrap().data().as_ptr();
         v.timer = "12:34".into();
-        v.opacity = 0.7;
-        render_into(&v, &mut fonts(), &mut canvas);
-        let reused = canvas.as_ref().unwrap();
-        assert_eq!(reused.data().as_ptr(), addr, "same-size frame reallocated");
-        let (fresh, _) = render(&v, &mut fonts()).unwrap();
-        assert!(
-            reused.data() == fresh.data(),
-            "reused frame differs from fresh"
-        );
+        render_into(&v, &mut fonts(), &mut frame);
+        let pm = frame.pixmap.as_ref().unwrap();
+        assert_eq!(pm.data().as_ptr(), addr, "same-size frame reallocated");
 
         v.controls_pos = 0.0; // fold: smaller window
-        let l = render_into(&v, &mut fonts(), &mut canvas);
-        let pm = canvas.as_ref().unwrap();
+        let l = render_into(&v, &mut fonts(), &mut frame);
+        let pm = frame.pixmap.as_ref().unwrap();
         assert_eq!((pm.width(), pm.height()), (l.w as u32, l.h as u32));
+    }
+
+    /// Frames drawn over the cached static layer equal fresh renders, for
+    /// every theme, both bar styles, HiDPI, and changes in and out of the key.
+    #[test]
+    fn cached_frames_match_fresh() {
+        let mut f = fonts();
+        for t in crate::themes::THEMES.iter() {
+            for style in ["line", "border"] {
+                // HiDPI once; debug-build rendering is slow.
+                let scales: &[f32] = if t.name == "classic" {
+                    &[1.0, 2.0]
+                } else {
+                    &[1.0]
+                };
+                for &scale in scales {
+                    let mut cfg = Config::default();
+                    crate::themes::apply_theme(&mut cfg, t.name);
+                    cfg.progress_style = style.into();
+                    let mut frame = Frame::default();
+                    let steps: [(f64, f32, &str); 4] = [
+                        (0.9, 0.88, "24:59"),
+                        (0.0, 0.5, "24:59"),
+                        (1.0, 1.0, "24:58"),
+                        (-1.0, 0.88, "24:58"),
+                    ];
+                    for (progress, opacity, timer) in steps {
+                        let mut v = mk(&cfg, t.name);
+                        v.scale = scale;
+                        v.running = true;
+                        v.progress = progress;
+                        v.progress_color = Rgb(0, 200, 100);
+                        v.opacity = opacity;
+                        v.timer = timer.into();
+                        let l = render_into(&v, &mut f, &mut frame);
+                        let (fresh, fl) = render(&v, &mut f).unwrap();
+                        let got = frame.pixmap.as_ref().unwrap();
+                        assert!(
+                            got.data() == fresh.data(),
+                            "{} {style} x{scale} p={progress}: cached frame differs",
+                            t.name
+                        );
+                        assert_eq!((l.w, l.h, l.panel), (fl.w, fl.h, fl.panel));
+                    }
+                    cfg.color_bg = "#203040".into(); // config change rebuilds
+                    let v = mk(&cfg, t.name);
+                    render_into(&v, &mut f, &mut frame);
+                    let (fresh, _) = render(&v, &mut f).unwrap();
+                    assert!(frame.pixmap.as_ref().unwrap().data() == fresh.data());
+                }
+            }
+        }
     }
 
     #[test]

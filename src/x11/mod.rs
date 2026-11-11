@@ -194,7 +194,7 @@ impl X {
     /// box of the pixels that changed since the last upload (everything after
     /// [`Canvas::invalidate`] or a size change). Nothing to do without a pixmap.
     pub fn present_canvas(&self, win: u32, gc: u32, c: &mut Canvas) -> anyhow::Result<()> {
-        let Some(pm) = &c.pixmap else {
+        let Some(pm) = &c.frame.pixmap else {
             return Ok(());
         };
         let (w, h) = (pm.width() as usize, pm.height() as usize);
@@ -374,7 +374,7 @@ pub fn rgba_to_bgra(src: &[u8], dst: &mut Vec<u8>) {
 /// uploaded, so [`X::present_canvas`] can send only the changed pixels.
 #[derive(Default)]
 pub struct Canvas {
-    pub pixmap: Option<tiny_skia::Pixmap>,
+    pub frame: crate::render::Frame,
     /// BGRA of the window contents as last uploaded; empty when unknown.
     shown: Vec<u8>,
     shown_w: usize,

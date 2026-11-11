@@ -14,7 +14,7 @@ use crate::format::{
 };
 use crate::layout::{Rect, clamp_into, preset_position, resize_anchor_delta, snap_drag};
 use crate::menu::MenuAction;
-use crate::render::{Hit, Layout, View, measure, render_into};
+use crate::render::{Frame, Hit, Layout, View, measure, render_into};
 use crate::text::FontSet;
 use crate::themes::{Rgb, apply_theme, get_theme, parse_hex};
 use std::cell::RefCell;
@@ -379,14 +379,13 @@ impl App {
     /// Render the current state. The size may change between frames (fold
     /// animation); callers apply `window_pos()` and the layout size after each.
     pub fn frame(&mut self, now: f64) -> (Option<tiny_skia::Pixmap>, Layout) {
-        let mut pm = None;
-        let layout = self.frame_into(now, &mut pm);
-        (pm, layout)
+        let mut frame = Frame::default();
+        let layout = self.frame_into(now, &mut frame);
+        (frame.pixmap, layout)
     }
 
-    /// `frame`, drawing into `canvas` (its pixmap is reused when the size is
-    /// unchanged; `None` if a pixmap cannot be allocated).
-    pub fn frame_into(&mut self, now: f64, canvas: &mut Option<tiny_skia::Pixmap>) -> Layout {
+    /// `frame`, drawing into the reusable `canvas` (see `render_into`).
+    pub fn frame_into(&mut self, now: f64, canvas: &mut Frame) -> Layout {
         self.poll(now);
         let layout = {
             let view = self.view(now);
