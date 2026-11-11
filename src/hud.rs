@@ -83,6 +83,37 @@ impl RaiseLimiter {
     }
 }
 
+/// How long the IPC listener stays out of the poll set after `accept`
+/// failed for a reason other than "nothing pending" (e.g. `EMFILE`).
+const ACCEPT_BACKOFF: f64 = 1.0;
+
+/// Pauses accepting after an `accept` error: the pending connection keeps
+/// the listener readable, so polling it would spin the loop.
+#[derive(Debug, Default)]
+pub struct AcceptBackoff {
+    until: Option<f64>,
+}
+
+impl AcceptBackoff {
+    /// `accept` failed at `now`.
+    pub fn failed(&mut self, now: f64) {
+        self.until = Some(now + ACCEPT_BACKOFF);
+    }
+
+    /// Whether to poll the listener at `now` (ends an expired pause).
+    pub fn listening(&mut self, now: f64) -> bool {
+        if self.until.is_some_and(|t| now >= t) {
+            self.until = None;
+        }
+        self.until.is_none()
+    }
+
+    /// When the pause ends (a poll deadline), if paused.
+    pub fn deadline(&self) -> Option<f64> {
+        self.until
+    }
+}
+
 /// Hotkey bindings and messages for unparsable hotkey fields.
 pub type HotkeySetup = (Vec<(Combo, HotkeyAction)>, Vec<String>);
 
@@ -149,6 +180,7 @@ struct Hud {
     grabs: Grabs,
     sound: Sound,
     listener: UnixListener,
+    accept_backoff: AcceptBackoff,
     signals: UnixStream,
     clients: Vec<Client>,
     next_client: u64,
@@ -268,6 +300,7 @@ impl Hud {
             grabs: Grabs::default(),
             sound: Sound::new(),
             listener,
+            accept_backoff: AcceptBackoff::default(),
             signals,
             clients: Vec::new(),
             next_client: 0,
@@ -711,12 +744,13 @@ impl Hud {
                 self.save_at,
                 Some(self.next_idle),
                 raise,
+                self.accept_backoff.deadline(),
             ],
         )
     }
 
     fn wait(&mut self, timeout_ms: u16) -> anyhow::Result<()> {
-        // Per client: (readable or hung up, writable).
+        let listening = self.accept_backoff.listening(self.now());
         // The X connection is drained at the top of the next iteration.
         let (sig_ready, listen_ready, client_ready) = {
             let in_ = PollFlags::POLLIN;
@@ -724,7 +758,11 @@ impl Hud {
             let mut fds = vec![
                 PollFd::new(unsafe { BorrowedFd::borrow_raw(self.x.fd()) }, in_),
                 PollFd::new(self.signals.as_fd(), in_),
-                PollFd::new(self.listener.as_fd(), in_),
+                // Paused: no events requested (errors would still show).
+                PollFd::new(
+                    self.listener.as_fd(),
+                    if listening { in_ } else { PollFlags::empty() },
+                ),
             ];
             for c in &self.clients {
                 // POLLOUT only while output is queued: an idle socket is
@@ -746,6 +784,7 @@ impl Hud {
             }
             let revents = |f: &PollFd| f.revents().unwrap_or(PollFlags::empty());
             let readable = |f: &PollFd| !(revents(f) - PollFlags::POLLOUT).is_empty();
+            // Per client: (readable or hung up, writable).
             let clients: Vec<(bool, bool)> = fds[3..]
                 .iter()
                 .map(|f| (readable(f), revents(f).contains(PollFlags::POLLOUT)))
@@ -766,7 +805,7 @@ impl Hud {
                 self.service_client(id);
             }
         }
-        if listen_ready {
+        if listening && listen_ready {
             self.accept();
         }
         Ok(())
@@ -790,7 +829,8 @@ impl Hud {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(e) => {
-                    eprintln!("timehud: ipc accept: {e}");
+                    eprintln!("timehud: ipc accept: {e} (pausing for {ACCEPT_BACKOFF} s)");
+                    self.accept_backoff.failed(self.now());
                     break;
                 }
             }
@@ -1012,6 +1052,19 @@ mod tests {
         assert!(lim.try_raise(11.0));
         assert!(!lim.try_raise(11.05));
         assert_eq!(lim.next_allowed(), Some(11.1));
+    }
+
+    #[test]
+    fn accept_backoff_pauses_for_a_second() {
+        let mut b = AcceptBackoff::default();
+        assert!(b.listening(5.0));
+        assert_eq!(b.deadline(), None);
+        b.failed(5.0);
+        assert!(!b.listening(5.0));
+        assert!(!b.listening(5.99));
+        assert_eq!(b.deadline(), Some(6.0));
+        assert!(b.listening(6.0));
+        assert_eq!(b.deadline(), None, "expired pause is no poll deadline");
     }
 
     #[test]
