@@ -425,7 +425,9 @@ fn paint_thresholded(x: &X, d: &Docked, icon: &Pixmap) -> anyhow::Result<()> {
     let mgc = x.conn.generate_id()?;
     x.conn.create_gc(mgc, clip, &CreateGCAux::new())?;
     x.conn.put_image(
-        ImageFormat::XY_BITMAP,
+        // XY_PIXMAP copies bits literally; XY_BITMAP would colour 1-bits with the
+        // GC foreground (default 0) and invert the mask.
+        ImageFormat::XY_PIXMAP,
         clip,
         mgc,
         w as u16,
@@ -542,6 +544,24 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+        // Centre (icon body) must differ from the corner (transparent -> bar bg).
+        let d = t.docked.as_ref().unwrap();
+        let (win, size) = (d.win, d.size as u16);
+        let geo = x.conn.get_geometry(win).unwrap().reply().unwrap();
+        let img = x
+            .conn
+            .get_image(ImageFormat::Z_PIXMAP, win, 0, 0, geo.width, geo.height, !0)
+            .unwrap()
+            .reply()
+            .unwrap();
+        let bpp = img.data.len() / (usize::from(geo.width) * usize::from(geo.height));
+        let px = |cx: u16, cy: u16| {
+            let i = (usize::from(cy) * usize::from(geo.width) + usize::from(cx)) * bpp;
+            img.data[i..i + 3].to_vec()
+        };
+        let (centre, corner) = (px(geo.width / 2, geo.height / 2), px(0, 0));
+        eprintln!("size {size} centre {centre:?} corner {corner:?}");
+        assert_ne!(centre, corner, "icon body not painted");
         t.set_visible(&x, false);
         assert!(!t.is_docked());
         x.conn.get_input_focus().unwrap().reply().unwrap();
