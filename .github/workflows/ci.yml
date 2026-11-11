@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libx11-dev libxcb1-dev libxkbcommon-dev libasound2-dev libfontconfig1-dev libgl1-mesa-dev fontconfig curl
+      # Runs on GitHub and Gitea alike: the self-hosted Gitea runner has no Rust toolchain.
+      - name: Install Rust
+        run: |
+          curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal -c rustfmt,clippy
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test

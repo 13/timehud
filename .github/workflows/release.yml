@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=dev-$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          fi
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libx11-dev libxcb1-dev libxkbcommon-dev libasound2-dev libfontconfig1-dev libgl1-mesa-dev fontconfig curl
+      # Runs on GitHub and Gitea alike: the self-hosted Gitea runner has no Rust toolchain.
+      - name: Install Rust
+        run: |
+          curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal -c rustfmt,clippy
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Build release binary
+        run: cargo build --release
+      - name: Pack tarball
+        run: |
+          set -eux
+          NAME="timehud-${VERSION}-x86_64"
+          mkdir -p "dist/$NAME"
+          cp target/release/timehud assets/icons/timehud.svg assets/timehud.desktop README.md LICENSE "dist/$NAME/"
+          tar -C dist -czf "$NAME.tar.gz" "$NAME"
+          echo "TARBALL=$NAME.tar.gz" >> "$GITHUB_ENV"
+      - name: Upload artifact
+        if: github.server_url == 'https://github.com'
+        uses: actions/upload-artifact@v4
+        with:
+          name: timehud-x86_64
+          path: ${{ env.TARBALL }}
+      - name: Create GitHub Release
+        if: github.server_url == 'https://github.com' && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release ${{ env.VERSION }}
+          tag_name: ${{ env.VERSION }}
+          files: ${{ env.TARBALL }}
+      - name: Create Gitea Release
+        if: github.server_url != 'https://github.com' && startsWith(github.ref, 'refs/tags/')
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          API="${{ github.server_url }}/api/v1/repos/${{ github.repository }}"
+          RELEASE_ID=$(curl -fsS -X POST "$API/releases" \
+            -H "Authorization: token $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"tag_name\": \"$VERSION\", \"name\": \"Release $VERSION\"}" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+          curl -fsS -X POST "$API/releases/$RELEASE_ID/assets?name=$TARBALL" \
+            -H "Authorization: token $TOKEN" \
+            -F "attachment=@$TARBALL"
