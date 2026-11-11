@@ -833,7 +833,24 @@ impl SettingsApp {
         });
         ui.add_space(10.0);
         card(ui, "Show", |ui| {
-            ui.checkbox(&mut cfg.show_clock, "System clock  (HH:MM:SS)");
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut cfg.show_clock, "System clock");
+                egui::ComboBox::from_id_salt("clock-format")
+                    .width(170.0)
+                    .selected_text(clock_format_label(&cfg.clock_format))
+                    .show_ui(ui, |ui| {
+                        for (value, label) in CLOCK_FORMATS {
+                            if ui
+                                .selectable_label(cfg.clock_format == value, label)
+                                .clicked()
+                            {
+                                cfg.clock_format = value.into();
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("Clock format");
+            });
             if ui
                 .checkbox(&mut cfg.show_timer, "Timer  (stopwatch / countdown)")
                 .changed()
@@ -903,6 +920,11 @@ impl SettingsApp {
                 &mut cfg.auto_restart_countdown,
                 "Restart countdown automatically",
             );
+            ui.checkbox(
+                &mut cfg.notify_on_finish,
+                "Desktop notification when the timer runs out",
+            )
+            .on_hover_text("Countdown or interval session end, via notify-send");
         });
         ui.add_space(10.0);
         card(ui, "Interval", |ui| {
@@ -1205,6 +1227,21 @@ impl SettingsApp {
     }
 }
 
+/// `clock_format` values and their labels (see `format::clock_text`).
+const CLOCK_FORMATS: [(&str, &str); 3] = [
+    ("24h", "24-hour  13:05:09"),
+    ("24h-short", "24-hour  13:05"),
+    ("12h", "12-hour  01:05:09 PM"),
+];
+
+/// Label for a `clock_format`; unknown values render like `24h`.
+fn clock_format_label(value: &str) -> &'static str {
+    CLOCK_FORMATS
+        .iter()
+        .find(|(v, _)| *v == value)
+        .map_or(CLOCK_FORMATS[0].1, |(_, l)| l)
+}
+
 fn mode_name(m: Mode) -> &'static str {
     match m {
         Mode::Stopwatch => "stopwatch",
@@ -1432,6 +1469,14 @@ mod tests {
         assert!(capture_allowed(Key::Space, Modifiers::ALT | shift));
         assert!(capture_allowed(Key::F5, Modifiers::NONE));
         assert!(capture_allowed(Key::F12, shift));
+    }
+
+    #[test]
+    fn clock_format_labels() {
+        assert_eq!(clock_format_label("12h"), "12-hour  01:05:09 PM");
+        assert_eq!(clock_format_label("24h-short"), "24-hour  13:05");
+        // Unknown values behave like 24h (format::clock_text).
+        assert_eq!(clock_format_label("bogus"), clock_format_label("24h"));
     }
 
     #[test]
