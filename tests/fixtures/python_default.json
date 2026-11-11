@@ -1,0 +1,49 @@
+{
+  "position": "top-right",
+  "custom_x": -1,
+  "custom_y": -1,
+  "margin": 15,
+  "opacity": 0.88,
+  "font_size": 30,
+  "font_family": "Monospace",
+  "color_bg": "#000000",
+  "color_clock": "#00FF88",
+  "color_timer_run": "#FFFFFF",
+  "color_timer_pause": "#888888",
+  "show_clock": true,
+  "show_timer": true,
+  "timer_mode": "stopwatch",
+  "countdown_duration": 300,
+  "interval_work": 40,
+  "interval_rest": 20,
+  "interval_rounds": 8,
+  "stopwatch_work": 0,
+  "stopwatch_rest": 0,
+  "phase_beeps": true,
+  "halfway_beep": false,
+  "sound_enabled": true,
+  "sound_interval": 60,
+  "sound_alert_before": 0,
+  "sound_file": "",
+  "show_tray_icon": true,
+  "show_controls": true,
+  "click_through": false,
+  "auto_restart_countdown": false,
+  "alert_last_5_seconds": false,
+  "presets": [
+    {
+      "name": "1 min",
+      "duration": 60
+    },
+    {
+      "name": "5 min",
+      "duration": 300
+    }
+  ],
+  "active_preset": "",
+  "theme": "classic",
+  "progress_style": "line",
+  "padding": 12,
+  "padding_top": -1,
+  "row_spacing": 6
+}

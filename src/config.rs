@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -109,5 +111,611 @@ impl Default for Config {
             notify_on_finish: false,
             extra: serde_json::Map::new(),
         }
+    }
+}
+
+/// `$XDG_CONFIG_HOME/timehud/config.json`, default `~/.config/timehud/config.json`.
+pub fn config_path() -> PathBuf {
+    let base = match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(v) if !v.is_empty() => PathBuf::from(v),
+        _ => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"),
+    };
+    base.join("timehud").join("config.json")
+}
+
+/// Lists every known field once; generates tolerant `from_value` and `to_value`.
+macro_rules! config_codec {
+    ($($field:ident),+ $(,)?) => {
+        impl Config {
+            /// Per-field tolerant: a wrongly typed field falls back to its default alone.
+            pub fn from_value(v: &Value) -> Config {
+                let mut cfg = Config::default();
+                let Some(obj) = v.as_object() else {
+                    return cfg;
+                };
+                for (key, val) in obj {
+                    match key.as_str() {
+                        $(
+                            stringify!($field) => {
+                                if let Ok(x) = serde_json::from_value(val.clone()) {
+                                    cfg.$field = x;
+                                }
+                            }
+                        )+
+                        _ => {
+                            cfg.extra.insert(key.clone(), val.clone());
+                        }
+                    }
+                }
+                cfg
+            }
+
+            /// Unknown keys first, then known fields (known fields win).
+            pub fn to_value(&self) -> Value {
+                let mut map = self.extra.clone();
+                $(
+                    map.insert(
+                        stringify!($field).to_string(),
+                        serde_json::to_value(&self.$field).unwrap_or(Value::Null),
+                    );
+                )+
+                Value::Object(map)
+            }
+        }
+    };
+}
+
+config_codec!(
+    position,
+    custom_x,
+    custom_y,
+    margin,
+    opacity,
+    font_size,
+    font_family,
+    color_bg,
+    color_clock,
+    color_timer_run,
+    color_timer_pause,
+    show_clock,
+    show_timer,
+    timer_mode,
+    countdown_duration,
+    interval_work,
+    interval_rest,
+    interval_rounds,
+    stopwatch_work,
+    stopwatch_rest,
+    phase_beeps,
+    halfway_beep,
+    sound_enabled,
+    sound_interval,
+    sound_alert_before,
+    sound_file,
+    show_tray_icon,
+    show_controls,
+    click_through,
+    auto_restart_countdown,
+    alert_last_5_seconds,
+    presets,
+    active_preset,
+    theme,
+    progress_style,
+    padding,
+    padding_top,
+    row_spacing,
+    clock_format,
+    hotkey_toggle,
+    hotkey_reset,
+    hotkey_visibility,
+    notify_on_finish,
+);
+
+impl Config {
+    /// Missing or unparseable file gives defaults.
+    pub fn load_from(path: &Path) -> Config {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .map(|v| Config::from_value(&v))
+            .unwrap_or_default()
+    }
+
+    /// Atomic: writes `<path>.tmp`, then renames over `path`. Creates the directory.
+    pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let mut tmp = path.as_os_str().to_owned();
+        tmp.push(".tmp");
+        let tmp = PathBuf::from(tmp);
+        let text = serde_json::to_string_pretty(&self.to_value()).map_err(std::io::Error::other)?;
+        std::fs::write(&tmp, text)?;
+        std::fs::rename(&tmp, path).inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })
+    }
+
+    pub fn load() -> Config {
+        Config::load_from(&config_path())
+    }
+
+    pub fn save(&self) -> std::io::Result<()> {
+        self.save_to(&config_path())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Preset {
+    Countdown {
+        name: String,
+        duration: i64,
+    },
+    Interval {
+        name: String,
+        work: i64,
+        rest: i64,
+        total: i64,
+    },
+    Stopwatch {
+        name: String,
+        work: i64,
+        rest: i64,
+    },
+}
+
+/// Optional sound rules applied to the config when a preset is selected.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PresetRules {
+    pub last5: Option<bool>,
+    pub boundary: Option<bool>,
+    pub halfway: Option<bool>,
+}
+
+impl Preset {
+    pub fn name(&self) -> &str {
+        match self {
+            Preset::Countdown { name, .. }
+            | Preset::Interval { name, .. }
+            | Preset::Stopwatch { name, .. } => name,
+        }
+    }
+
+    /// Serialized in the Python-compatible shape (legacy keys are not written).
+    pub fn to_value(&self, rules: &PresetRules) -> Value {
+        let mut v = match self {
+            Preset::Countdown { name, duration } => json!({"name": name, "duration": duration}),
+            Preset::Interval {
+                name,
+                work,
+                rest,
+                total,
+            } => {
+                json!({"name": name, "type": "interval", "work": work, "rest": rest, "total": total})
+            }
+            Preset::Stopwatch { name, work, rest } => {
+                json!({"name": name, "type": "stopwatch", "work": work, "rest": rest})
+            }
+        };
+        let obj = v.as_object_mut().expect("preset is an object");
+        for (key, rule) in [
+            ("last5", rules.last5),
+            ("boundary", rules.boundary),
+            ("halfway", rules.halfway),
+        ] {
+            if let Some(b) = rule {
+                obj.insert(key.into(), Value::Bool(b));
+            }
+        }
+        v
+    }
+}
+
+/// Integer (not bool, not float) that is at least `minimum`.
+fn int_min(v: Option<&Value>, minimum: i64) -> Option<i64> {
+    v.and_then(Value::as_i64).filter(|&n| n >= minimum)
+}
+
+/// Optional bool rule: `Ok(None)` when absent, `Err` when present but not a bool.
+fn rule(obj: &serde_json::Map<String, Value>, key: &str) -> Result<Option<bool>, ()> {
+    match obj.get(key) {
+        None => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => Err(()),
+    }
+}
+
+fn parse_preset(v: &Value) -> Option<(Preset, PresetRules)> {
+    let obj = v.as_object()?;
+    let name = obj.get("name")?.as_str()?.to_string();
+    let rules = PresetRules {
+        last5: rule(obj, "last5").ok()?,
+        boundary: rule(obj, "boundary").ok()?,
+        halfway: rule(obj, "halfway").ok()?,
+    };
+    let preset = match obj.get("type").and_then(Value::as_str) {
+        Some("stopwatch") => Preset::Stopwatch {
+            name,
+            work: int_min(obj.get("work"), 1)?,
+            rest: int_min(obj.get("rest"), 0)?,
+        },
+        Some("interval") => {
+            let work = int_min(obj.get("work"), 1)?;
+            let total = int_min(obj.get("total"), 1)?;
+            if total < work {
+                return None;
+            }
+            Preset::Interval {
+                name,
+                work,
+                rest: int_min(obj.get("rest"), 0)?,
+                total,
+            }
+        }
+        _ => Preset::Countdown {
+            name,
+            duration: int_min(obj.get("duration"), 1)?,
+        },
+    };
+    Some((preset, rules))
+}
+
+/// Filters malformed entries (hand-edited config); the index points into `raw`.
+pub fn valid_presets(raw: &[Value]) -> Vec<(Preset, PresetRules, usize)> {
+    raw.iter()
+        .enumerate()
+        .filter_map(|(i, v)| parse_preset(v).map(|(p, r)| (p, r, i)))
+        .collect()
+}
+
+/// Rounds that fit into the preset's total time (at least one).
+pub fn interval_preset_rounds(work: i64, rest: i64, total: i64) -> i64 {
+    (total / (work + rest).max(1)).max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg_in(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path().join("timehud").join("config.json")
+    }
+
+    fn fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name)
+    }
+
+    fn valid(raw: &[Value]) -> Vec<Value> {
+        valid_presets(raw)
+            .iter()
+            .map(|(p, r, _)| p.to_value(r))
+            .collect()
+    }
+
+    // ---- TestRoundTrip ----
+    #[test]
+    fn save_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = cfg_in(&dir);
+        let cfg = Config {
+            font_size: 44,
+            presets: vec![json!({"name": "Plank", "duration": 60})],
+            ..Config::default()
+        };
+        cfg.save_to(&path).unwrap();
+        let loaded = Config::load_from(&path);
+        assert_eq!(loaded.font_size, 44);
+        assert_eq!(
+            loaded.presets,
+            vec![json!({"name": "Plank", "duration": 60})]
+        );
+        assert_eq!(loaded, cfg);
+    }
+
+    #[test]
+    fn unknown_keys_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, r#"{"font_size": 20, "from_the_future": true}"#).unwrap();
+        assert_eq!(Config::load_from(&path).font_size, 20);
+    }
+
+    #[test]
+    fn missing_file_gives_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::load_from(&dir.path().join("nope.json"));
+        assert_eq!(
+            cfg.presets,
+            vec![
+                json!({"name": "1 min", "duration": 60}),
+                json!({"name": "5 min", "duration": 300})
+            ]
+        );
+        assert_eq!(cfg.active_preset, "");
+    }
+
+    #[test]
+    fn unparseable_file_gives_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, "{not json").unwrap();
+        assert_eq!(Config::load_from(&path), Config::default());
+    }
+
+    // ---- TestValidPresets ----
+    #[test]
+    fn filters_malformed_entries() {
+        let raw = vec![
+            json!({"name": "ok", "duration": 90}),
+            json!({"name": "no duration"}),
+            json!({"duration": 30}),
+            json!({"name": 5, "duration": 30}),
+            json!({"name": "bad duration", "duration": "30"}),
+            json!("not a dict"),
+            json!({"name": "zero", "duration": 0}),
+        ];
+        assert_eq!(valid(&raw), vec![json!({"name": "ok", "duration": 90})]);
+    }
+
+    #[test]
+    fn bool_duration_rejected() {
+        assert!(valid_presets(&[json!({"name": "x", "duration": true})]).is_empty());
+    }
+
+    #[test]
+    fn float_duration_rejected() {
+        assert!(valid_presets(&[json!({"name": "x", "duration": 1.5})]).is_empty());
+    }
+
+    #[test]
+    fn index_points_into_raw() {
+        let raw = vec![json!("junk"), json!({"name": "a", "duration": 5})];
+        assert_eq!(valid_presets(&raw)[0].2, 1);
+    }
+
+    // ---- TestIntervalPresets ----
+    #[test]
+    fn valid_interval_preset_accepted() {
+        let p = json!({"name": "45/15 10min", "type": "interval", "work": 45, "rest": 15, "total": 600});
+        assert_eq!(valid(std::slice::from_ref(&p)), vec![p]);
+    }
+
+    #[test]
+    fn interval_zero_rest_allowed() {
+        let p =
+            json!({"name": "30/0 20min", "type": "interval", "work": 30, "rest": 0, "total": 1200});
+        assert_eq!(valid(std::slice::from_ref(&p)), vec![p]);
+    }
+
+    #[test]
+    fn malformed_interval_presets_filtered() {
+        let raw = vec![
+            json!({"name": "no total", "type": "interval", "work": 45, "rest": 15}),
+            json!({"name": "zero work", "type": "interval", "work": 0, "rest": 15, "total": 600}),
+            json!({"name": "neg rest", "type": "interval", "work": 45, "rest": -1, "total": 600}),
+            json!({"name": "total lt work", "type": "interval", "work": 45, "rest": 15, "total": 30}),
+            json!({"name": "bool work", "type": "interval", "work": true, "rest": 15, "total": 600}),
+            json!({"name": "str total", "type": "interval", "work": 45, "rest": 15, "total": "600"}),
+        ];
+        assert!(valid_presets(&raw).is_empty());
+    }
+
+    #[test]
+    fn mixed_list_keeps_both_kinds() {
+        let cd = json!({"name": "5 min", "duration": 300});
+        let iv = json!({"name": "hiit", "type": "interval", "work": 45, "rest": 15, "total": 600});
+        assert_eq!(
+            valid(&[cd.clone(), iv.clone(), json!({"junk": 1})]),
+            vec![cd, iv]
+        );
+    }
+
+    #[test]
+    fn rounds_from_total() {
+        assert_eq!(interval_preset_rounds(45, 15, 600), 10);
+    }
+
+    #[test]
+    fn rounds_zero_rest() {
+        assert_eq!(interval_preset_rounds(30, 0, 1200), 40);
+    }
+
+    #[test]
+    fn rounds_at_least_one() {
+        assert_eq!(interval_preset_rounds(45, 15, 45), 1);
+    }
+
+    #[test]
+    fn rounds_truncates_partial_cycle() {
+        assert_eq!(interval_preset_rounds(45, 15, 630), 10);
+    }
+
+    // ---- TestStopwatchPresets ----
+    #[test]
+    fn valid_stopwatch_preset_accepted() {
+        let p = json!({"name": "45/15 up", "type": "stopwatch", "work": 45, "rest": 15});
+        assert_eq!(valid(std::slice::from_ref(&p)), vec![p]);
+    }
+
+    #[test]
+    fn stopwatch_zero_rest_allowed() {
+        let p = json!({"name": "laps", "type": "stopwatch", "work": 60, "rest": 0});
+        assert_eq!(valid(std::slice::from_ref(&p)), vec![p]);
+    }
+
+    #[test]
+    fn malformed_stopwatch_presets_filtered() {
+        let raw = vec![
+            json!({"name": "no work", "type": "stopwatch"}),
+            json!({"name": "zero work", "type": "stopwatch", "work": 0, "rest": 15}),
+            json!({"name": "neg rest", "type": "stopwatch", "work": 45, "rest": -1}),
+            json!({"name": "bool", "type": "stopwatch", "work": true, "rest": 0}),
+            json!({"name": "str", "type": "stopwatch", "work": "45", "rest": 0}),
+            json!({"name": "legacy shape", "type": "stopwatch", "interval": 60}),
+        ];
+        assert!(valid_presets(&raw).is_empty());
+    }
+
+    #[test]
+    fn all_three_kinds_coexist() {
+        let cd = json!({"name": "5 min", "duration": 300});
+        let iv = json!({"name": "hiit", "type": "interval", "work": 45, "rest": 15, "total": 600});
+        let sw = json!({"name": "45/15 up", "type": "stopwatch", "work": 45, "rest": 15});
+        assert_eq!(
+            valid(&[cd.clone(), iv.clone(), sw.clone()]),
+            vec![cd, iv, sw]
+        );
+    }
+
+    // ---- TestPresetSoundRules ----
+    #[test]
+    fn sound_toggles_accepted_on_all_types() {
+        let snd = |mut v: Value| {
+            let o = v.as_object_mut().unwrap();
+            o.insert("last5".into(), json!(true));
+            o.insert("boundary".into(), json!(false));
+            o.insert("halfway".into(), json!(true));
+            v
+        };
+        let presets = vec![
+            snd(json!({"name": "cd", "duration": 300})),
+            snd(json!({"name": "iv", "type": "interval", "work": 45, "rest": 15, "total": 600})),
+            snd(json!({"name": "sw", "type": "stopwatch", "work": 45, "rest": 15})),
+        ];
+        assert_eq!(valid(&presets), presets);
+        let (_, rules, _) = &valid_presets(&presets)[0];
+        assert_eq!(
+            rules,
+            &PresetRules {
+                last5: Some(true),
+                boundary: Some(false),
+                halfway: Some(true)
+            }
+        );
+    }
+
+    #[test]
+    fn sound_fields_optional() {
+        let p = json!({"name": "plain", "duration": 300});
+        assert_eq!(valid(std::slice::from_ref(&p)), vec![p]);
+    }
+
+    #[test]
+    fn legacy_every_before_keys_ignored() {
+        let p = json!({"name": "old", "duration": 300, "every": 60, "before": 5});
+        let out = valid_presets(std::slice::from_ref(&p));
+        assert_eq!(out.len(), 1); // keys tolerated, no longer validated
+        assert_eq!(out[0].0.name(), "old");
+    }
+
+    #[test]
+    fn malformed_toggles_filtered() {
+        let raw = vec![
+            json!({"name": "bad last5", "duration": 300, "last5": "yes"}),
+            json!({"name": "bad boundary", "duration": 300, "boundary": "no"}),
+            json!({"name": "bad halfway", "duration": 300, "halfway": 1}),
+        ];
+        assert!(valid_presets(&raw).is_empty());
+    }
+
+    // ---- additional ----
+    #[test]
+    fn wrong_typed_field_falls_back_alone() {
+        let cfg = Config::from_value(&json!({"font_size": "big", "opacity": 0.5}));
+        assert_eq!(cfg.font_size, 30);
+        assert_eq!(cfg.opacity, 0.5);
+    }
+
+    #[test]
+    fn int_fields_reject_floats_and_bools() {
+        let cfg = Config::from_value(&json!({"font_size": 12.5, "margin": true, "padding": 7}));
+        assert_eq!((cfg.font_size, cfg.margin, cfg.padding), (30, 15, 7));
+    }
+
+    #[test]
+    fn unknown_keys_survive_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, r#"{"future_key": [1,2]}"#).unwrap();
+        Config::load_from(&path).save_to(&path).unwrap();
+        let raw: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["future_key"], json!([1, 2]));
+    }
+
+    #[test]
+    fn python_default_fixture_loads() {
+        let cfg = Config::load_from(&fixture("python_default.json"));
+        assert_eq!(cfg, Config::default());
+    }
+
+    #[test]
+    fn legacy_fixture() {
+        let cfg = Config::load_from(&fixture("legacy_hand_edited.json"));
+        assert_eq!(cfg.font_size, 24);
+        assert_eq!(cfg.timer_mode, Mode::Countdown);
+        assert_eq!(cfg.presets.len(), 3);
+        let names: Vec<_> = valid_presets(&cfg.presets)
+            .iter()
+            .map(|(p, _, i)| (p.name().to_string(), *i))
+            .collect();
+        assert_eq!(names, vec![("old".to_string(), 0), ("hiit".to_string(), 1)]);
+    }
+
+    #[test]
+    fn saved_file_keeps_python_keys() {
+        let py: Value =
+            serde_json::from_str(&std::fs::read_to_string(fixture("python_default.json")).unwrap())
+                .unwrap();
+        let ours = Config::default().to_value();
+        for (k, v) in py.as_object().unwrap() {
+            let got = ours.get(k).unwrap_or_else(|| panic!("missing key {k}"));
+            let same_type = std::mem::discriminant(got) == std::mem::discriminant(v);
+            assert!(same_type, "type mismatch for {k}: {got} vs {v}");
+        }
+        assert_eq!(ours["timer_mode"], json!("stopwatch"));
+    }
+
+    #[test]
+    fn timer_mode_serializes_lowercase() {
+        for (m, s) in [
+            (Mode::Stopwatch, "stopwatch"),
+            (Mode::Countdown, "countdown"),
+            (Mode::Interval, "interval"),
+        ] {
+            let cfg = Config {
+                timer_mode: m,
+                ..Config::default()
+            };
+            assert_eq!(cfg.to_value()["timer_mode"], json!(s));
+        }
+    }
+
+    #[test]
+    fn save_leaves_no_tmp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = cfg_in(&dir);
+        Config::default().save_to(&path).unwrap();
+        assert!(path.exists());
+        assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn save_to_readonly_dir_returns_err() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let res = Config::default().save_to(&dir.path().join("config.json"));
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn new_keys_defaults() {
+        let cfg = Config::default();
+        assert_eq!(cfg.clock_format, "24h");
+        assert_eq!(cfg.hotkey_toggle, "");
+        assert!(!cfg.notify_on_finish);
     }
 }

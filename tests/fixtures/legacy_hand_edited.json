@@ -1,0 +1,10 @@
+{
+  "font_size": 24,
+  "timer_mode": "countdown",
+  "presets": [
+    {"name": "old", "duration": 300, "every": 60, "before": 5},
+    {"name": "hiit", "type": "interval", "work": 45, "rest": 15, "total": 600, "boundary": false},
+    {"name": "broken", "duration": "soon"}
+  ],
+  "from_the_future": true
+}
