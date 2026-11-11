@@ -340,7 +340,11 @@ impl Hud {
     fn run(&mut self) -> anyhow::Result<()> {
         let result = self.event_loop();
         if result.is_err() {
-            // e.g. the X server went away: keep the user's settings.
+            // e.g. the X server went away: keep the user's settings, and
+            // forget an open menu (its grabs died with the connection).
+            if let Some(p) = self.popup.take() {
+                p.abandon();
+            }
             self.save();
         }
         result

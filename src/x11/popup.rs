@@ -5,7 +5,8 @@
 //! before returning `Closed` or `Chosen`. A popup that is still open must be
 //! closed with [`MenuPopup::close`]; `Drop` cannot reach the connection, so
 //! dropping an open popup leaves the grabs in place until the process exits.
-//! It logs an error (and fails debug builds) to catch that bug early.
+//! It logs an error (and fails debug builds) to catch that bug early. When
+//! the connection itself is gone, [`MenuPopup::abandon`] forgets the popup.
 
 use super::overlay::raise_window;
 use super::{X, keysym_of};
@@ -167,6 +168,13 @@ impl MenuPopup {
     /// Releases the grabs and destroys all popup windows.
     pub fn close(mut self, x: &X) {
         self.release(x);
+    }
+
+    /// Forgets an open popup without talking to X, for when the connection
+    /// is gone: the server released its grabs and windows with it.
+    pub fn abandon(mut self) {
+        self.grabbed = false;
+        self.levels.clear();
     }
 
     fn key(&mut self, x: &X, keysym: u32, fonts: &mut FontSet) -> PopupOutcome {
@@ -434,6 +442,25 @@ impl Drop for MenuPopup {
 mod tests {
     use super::*;
     use crate::menu::MenuAction;
+
+    #[test]
+    fn abandon_forgets_an_open_popup_quietly() {
+        // Drop would report leaked grabs (and fail this debug build).
+        let p = MenuPopup {
+            items: Vec::new(),
+            theme: crate::themes::get_theme("classic"),
+            scale: 1.0,
+            area: Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 100,
+            },
+            levels: Vec::new(),
+            grabbed: true,
+        };
+        p.abandon();
+    }
 
     fn act(label: &str, enabled: bool) -> MenuItem {
         MenuItem::Action {
