@@ -5,6 +5,8 @@
 //! tick when due, applies the controller's `Effect`s and presents a frame
 //! when something changed or an animation runs.
 
+mod deadlines;
+
 use crate::app::{App, Button, Effect, Input, resolved_family};
 use crate::config::Config;
 use crate::hotkey::{Combo, format_combo, parse_combo};
@@ -21,6 +23,7 @@ use crate::x11::popup::{MenuPopup, PopupOutcome};
 use crate::x11::tray::{Tray, TrayEvent};
 use crate::x11::{Canvas, Screens, X};
 use chrono::Timelike;
+use deadlines::{ACCEPT_BACKOFF, Deadlines};
 use nix::errno::Errno;
 use nix::poll::{PollFd, PollFlags, poll};
 use serde_json::Value;
@@ -34,11 +37,6 @@ use std::sync::OnceLock;
 use std::time::Instant;
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
-
-/// Config writes are debounced this long after the last `SaveSoon`.
-const SAVE_DEBOUNCE: f64 = 0.3;
-/// `Sound::idle_release` cadence.
-const IDLE_RELEASE: f64 = 1.0;
 
 static START: OnceLock<Instant> = OnceLock::new();
 
@@ -82,37 +80,6 @@ impl RaiseLimiter {
     }
 }
 
-/// How long the IPC listener stays out of the poll set after `accept`
-/// failed for a reason other than "nothing pending" (e.g. `EMFILE`).
-const ACCEPT_BACKOFF: f64 = 1.0;
-
-/// Pauses accepting after an `accept` error: the pending connection keeps
-/// the listener readable, so polling it would spin the loop.
-#[derive(Debug, Default)]
-pub struct AcceptBackoff {
-    until: Option<f64>,
-}
-
-impl AcceptBackoff {
-    /// `accept` failed at `now`.
-    pub fn failed(&mut self, now: f64) {
-        self.until = Some(now + ACCEPT_BACKOFF);
-    }
-
-    /// Whether to poll the listener at `now` (ends an expired pause).
-    pub fn listening(&mut self, now: f64) -> bool {
-        if self.until.is_some_and(|t| now >= t) {
-            self.until = None;
-        }
-        self.until.is_none()
-    }
-
-    /// When the pause ends (a poll deadline), if paused.
-    pub fn deadline(&self) -> Option<f64> {
-        self.until
-    }
-}
-
 /// Hotkey bindings and messages for unparsable hotkey fields.
 pub type HotkeySetup = (Vec<(Combo, HotkeyAction)>, Vec<String>);
 
@@ -134,13 +101,6 @@ pub fn hotkey_binds(cfg: &Config) -> HotkeySetup {
         }
     }
     (binds, errors)
-}
-
-/// Poll timeout in ms until the earliest deadline (seconds, relative to now);
-/// `None` deadlines are ignored. Rounded up, never negative, at most 1000.
-pub fn poll_timeout_ms(now: f64, deadlines: &[Option<f64>]) -> u16 {
-    let earliest = deadlines.iter().flatten().fold(now + 1.0, |a, &d| a.min(d));
-    ((earliest - now) * 1000.0).ceil().clamp(0.0, 1000.0) as u16
 }
 
 pub fn run_hud(cfg: Config, listener: UnixListener, no_tray: bool) -> anyhow::Result<()> {
@@ -179,7 +139,6 @@ struct Hud {
     grabs: Grabs,
     sound: Sound,
     listener: UnixListener,
-    accept_backoff: AcceptBackoff,
     signals: UnixStream,
     clients: Vec<Client>,
     next_client: u64,
@@ -204,13 +163,8 @@ struct Hud {
     canvas: Canvas,
     mapped: bool,
     dirty: bool,
-    /// When the next animation frame is due (`App::next_frame`).
-    ///
-    /// Invariant: every `App` mutation goes through [`Hud::apply`] (which
-    /// pulls `frame_due` earlier when an animation starts) or is followed by
-    /// [`Hud::render`] (which recomputes it); otherwise a started animation
-    /// would not wake the poll loop until the next tick.
-    frame_due: Option<f64>,
+    /// When the loop must wake up next, per reason.
+    deadlines: Deadlines,
     /// Another window went above ours; raise when `raises` allows.
     raise_pending: bool,
     /// Restacks of other windows, and whether one in the current batch of
@@ -220,9 +174,6 @@ struct Hud {
     raises: RaiseLimiter,
     /// The hotkey setup last applied (binds and parse errors).
     hotkeys: Option<HotkeySetup>,
-    next_tick: f64,
-    save_at: Option<f64>,
-    next_idle: f64,
     /// An X event read while checking for pending events before `poll`.
     backlog: Option<Event>,
     quit: bool,
@@ -306,7 +257,6 @@ impl Hud {
             grabs: Grabs::default(),
             sound: Sound::new(),
             listener,
-            accept_backoff: AcceptBackoff::default(),
             signals,
             clients: Vec::new(),
             next_client: 0,
@@ -323,22 +273,19 @@ impl Hud {
             canvas,
             mapped: true,
             dirty: false,
-            frame_due: None,
+            deadlines: Deadlines::new(now),
             raise_pending: false,
             stack_watch: StackWatch::default(),
             stack_check: false,
             raises: RaiseLimiter::default(),
             hotkeys: None,
-            next_tick: now,
-            save_at: None,
-            next_idle: now + IDLE_RELEASE,
             backlog: None,
             quit: false,
         };
         if hud.app.cfg.show_tray_icon && !no_tray {
             hud.set_tray(true);
         }
-        hud.frame_due = hud.app.next_frame(hud.now());
+        hud.deadlines.frame = hud.app.next_frame(hud.now());
         hud.sync_hotkeys(true);
         hud.x.conn.flush()?;
         Ok(hud)
@@ -561,7 +508,7 @@ impl Hud {
         for effect in fx {
             match effect {
                 Effect::Beep(b) => self.sound.play(b, &self.app.cfg),
-                Effect::SaveSoon => self.save_at = Some(self.now() + SAVE_DEBOUNCE),
+                Effect::SaveSoon => self.deadlines.save_soon(self.now()),
                 Effect::SaveNow => self.save(),
                 Effect::Move { .. } => self.sync_geometry(),
                 Effect::Resize | Effect::Redraw => self.dirty = true,
@@ -601,12 +548,11 @@ impl Hud {
         // An action may need an earlier tick (e.g. the timer just started).
         let now = self.now();
         let wall = chrono::Local::now().time();
-        self.next_tick = self
-            .next_tick
-            .min(now + self.app.next_wakeup(now, wall_frac(&wall)));
+        self.deadlines
+            .tick_by(now + self.app.next_wakeup(now, wall_frac(&wall)));
         // ... or start an animation (e.g. the auto-fold begins in a tick).
         if let Some(t) = self.app.next_frame(now) {
-            self.frame_due = Some(self.frame_due.map_or(t, |d| d.min(t)));
+            self.deadlines.frame_by(t);
         }
     }
 
@@ -621,7 +567,7 @@ impl Hud {
     }
 
     fn save(&mut self) {
-        self.save_at = None;
+        self.deadlines.save = None;
         if let Err(e) = self.app.cfg.save() {
             eprintln!("timehud: cannot save config: {e}");
         }
@@ -642,15 +588,14 @@ impl Hud {
     fn raise_if_allowed(&mut self, now: f64) {
         if !self.raise_pending || !self.mapped {
             self.raise_pending = false;
-            return;
-        }
-        if self.raises.try_raise(now) {
+        } else if self.raises.try_raise(now) {
             self.raise_pending = false;
             self.overlay.raise(&self.x);
             if let Some(p) = &self.popup {
                 p.raise(&self.x);
             }
         }
+        self.deadlines.raise = self.raises.next_allowed().filter(|_| self.raise_pending);
     }
 
     fn set_mapped(&mut self, on: bool) {
@@ -733,18 +678,17 @@ impl Hud {
     // ══ Timers, rendering, waiting ══════════════════════════════════════════
 
     fn service(&mut self, now: f64) {
-        if now >= self.next_tick {
+        if now >= self.deadlines.tick {
             let wall = chrono::Local::now().time();
             let fx = self.app.tick(now, wall);
-            self.next_tick = now + self.app.next_wakeup(now, wall_frac(&wall));
+            self.deadlines.tick = now + self.app.next_wakeup(now, wall_frac(&wall));
             self.apply(fx);
         }
-        if self.save_at.is_some_and(|t| now >= t) {
+        if self.deadlines.save_due(now) {
             self.save();
         }
-        if now >= self.next_idle {
+        if self.deadlines.idle_due(now) {
             self.sound.idle_release();
-            self.next_idle = now + IDLE_RELEASE;
         }
         self.raise_if_allowed(now);
         self.reap();
@@ -764,7 +708,7 @@ impl Hud {
         if !self.mapped {
             return;
         }
-        let due = self.frame_due.is_some_and(|t| now >= t - 0.001);
+        let due = self.deadlines.frame_due(now);
         if !self.dirty && !due {
             return;
         }
@@ -776,30 +720,15 @@ impl Hud {
             eprintln!("timehud: present failed: {e:#}");
         }
         self.dirty = false;
-        self.frame_due = self.app.next_frame(now);
+        self.deadlines.frame = self.app.next_frame(now);
     }
 
     fn timeout(&self, now: f64) -> u16 {
-        let frame = self.frame_due.filter(|_| self.mapped);
-        let raise = self
-            .raises
-            .next_allowed()
-            .filter(|_| self.raise_pending && self.mapped);
-        poll_timeout_ms(
-            now,
-            &[
-                Some(self.next_tick),
-                frame,
-                self.save_at,
-                Some(self.next_idle),
-                raise,
-                self.accept_backoff.deadline(),
-            ],
-        )
+        self.deadlines.timeout_ms(now, self.mapped)
     }
 
     fn wait(&mut self, timeout_ms: u16) -> anyhow::Result<()> {
-        let listening = self.accept_backoff.listening(self.now());
+        let listening = self.deadlines.accepting(self.now());
         // The X connection is drained at the top of the next iteration.
         let (sig_ready, listen_ready, client_ready) = {
             let in_ = PollFlags::POLLIN;
@@ -879,7 +808,7 @@ impl Hud {
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(e) => {
                     eprintln!("timehud: ipc accept: {e} (pausing for {ACCEPT_BACKOFF} s)");
-                    self.accept_backoff.failed(self.now());
+                    self.deadlines.pause_accept(self.now());
                     break;
                 }
             }
@@ -1104,19 +1033,6 @@ mod tests {
     }
 
     #[test]
-    fn accept_backoff_pauses_for_a_second() {
-        let mut b = AcceptBackoff::default();
-        assert!(b.listening(5.0));
-        assert_eq!(b.deadline(), None);
-        b.failed(5.0);
-        assert!(!b.listening(5.0));
-        assert!(!b.listening(5.99));
-        assert_eq!(b.deadline(), Some(6.0));
-        assert!(b.listening(6.0));
-        assert_eq!(b.deadline(), None, "expired pause is no poll deadline");
-    }
-
-    #[test]
     fn hotkey_binds_from_config() {
         let cfg = Config {
             hotkey_toggle: "Ctrl+Shift+Space".into(),
@@ -1139,16 +1055,5 @@ mod tests {
     #[test]
     fn hotkey_binds_default_is_empty() {
         assert_eq!(hotkey_binds(&Config::default()), (Vec::new(), Vec::new()));
-    }
-
-    #[test]
-    fn poll_timeout_picks_earliest_and_rounds_up() {
-        assert_eq!(
-            poll_timeout_ms(10.0, &[Some(10.5), None, Some(10.0161)]),
-            17
-        );
-        assert_eq!(poll_timeout_ms(10.0, &[Some(9.0)]), 0);
-        assert_eq!(poll_timeout_ms(10.0, &[None]), 1000);
-        assert_eq!(poll_timeout_ms(10.0, &[Some(99.0)]), 1000);
     }
 }
