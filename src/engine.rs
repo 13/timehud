@@ -197,14 +197,6 @@ impl TimerEngine {
         }
     }
 
-    fn phase_duration(&self, cfg: &Config) -> f64 {
-        if self.phase == Phase::Rest {
-            cfg.interval_rest as f64
-        } else {
-            cfg.interval_work as f64
-        }
-    }
-
     /// Move to the next interval phase. Returns (beep, session_done).
     fn advance_phase(&mut self, cfg: &Config) -> (Beep, bool) {
         if self.phase == Phase::Work {
@@ -255,6 +247,63 @@ impl TimerEngine {
         }
     }
 
+    /// Remaining fraction of the current work/rest phase of a cycling stopwatch.
+    fn cycle_progress(cfg: &Config, display: f64) -> Option<f64> {
+        let work = cfg.stopwatch_work as f64;
+        let rest = cfg.stopwatch_rest as f64;
+        let cycle = work + rest;
+        let pos = if cycle > 0.0 { display % cycle } else { 0.0 };
+        let in_work = pos < work;
+        let phase_dur = if in_work { work } else { rest };
+        let phase_remaining = if in_work { work - pos } else { cycle - pos };
+        (phase_dur > 0.0).then(|| (phase_remaining / phase_dur).clamp(0.0, 1.0))
+    }
+
+    /// Countdown/interval progress for `display` seconds left in `phase`.
+    fn timed_progress(cfg: &Config, phase: Phase, display: f64) -> f64 {
+        let dur = match cfg.timer_mode {
+            Mode::Countdown => cfg.countdown_duration as f64,
+            Mode::Interval if phase == Phase::Rest => cfg.interval_rest as f64,
+            Mode::Interval => cfg.interval_work as f64,
+            Mode::Stopwatch => 0.0,
+        };
+        if dur > 0.0 {
+            (display / dur).clamp(0.0, 1.0)
+        } else {
+            -1.0
+        }
+    }
+
+    /// Progress `tick()` would report right now, without changing any state
+    /// (lets the UI animate the bar every frame between ticks).
+    pub fn progress_now(&self, cfg: &Config) -> f64 {
+        match cfg.timer_mode {
+            Mode::Stopwatch if Self::cycling(cfg) => {
+                Self::cycle_progress(cfg, self.elapsed()).unwrap_or(-1.0)
+            }
+            Mode::Stopwatch => -1.0,
+            Mode::Countdown => Self::timed_progress(cfg, self.phase, self.remaining().max(0.0)),
+            Mode::Interval => {
+                let remaining = self.remaining();
+                // Mirror the phase advance `tick()` would perform (`advance_phase`).
+                let (phase, display) = if remaining <= 0.0 && self.running {
+                    if self.phase == Phase::Rest {
+                        (Phase::Work, cfg.interval_work as f64)
+                    } else if self.round >= cfg.interval_rounds {
+                        (Phase::Work, 0.0) // session over
+                    } else if cfg.interval_rest > 0 {
+                        (Phase::Rest, cfg.interval_rest as f64)
+                    } else {
+                        (Phase::Work, cfg.interval_work as f64)
+                    }
+                } else {
+                    (self.phase, remaining.max(0.0))
+                };
+                Self::timed_progress(cfg, phase, display)
+            }
+        }
+    }
+
     pub fn tick(&mut self, cfg: &Config) -> TickResult {
         let mut beeps: Vec<Beep> = Vec::new();
         let mut finished = false;
@@ -299,11 +348,8 @@ impl TimerEngine {
                     let in_work = pos < work;
                     cyc_phase = if in_work { Phase::Work } else { Phase::Rest };
                     cyc_round = (display / cycle).floor() as i64 + 1;
-                    let phase_dur = if in_work { work } else { rest };
                     let phase_remaining = if in_work { work - pos } else { cycle - pos };
-                    if phase_dur > 0.0 {
-                        cyc_progress = Some((phase_remaining / phase_dur).clamp(0.0, 1.0));
-                    }
+                    cyc_progress = Self::cycle_progress(cfg, display);
                     if self.running {
                         // Boundary beeps: every phase end is the long beep
                         let marks = Self::cycle_boundaries(cfg, display);
@@ -468,20 +514,10 @@ impl TimerEngine {
             }
         }
 
-        let mut progress = -1.0;
-        if cfg.timer_mode == Mode::Countdown && cfg.countdown_duration > 0 {
-            progress = (display / cfg.countdown_duration as f64).clamp(0.0, 1.0);
-        } else if cfg.timer_mode == Mode::Interval {
-            let dur = self.phase_duration(cfg);
-            if dur > 0.0 {
-                progress = (display / dur).clamp(0.0, 1.0);
-            }
-        }
+        let progress =
+            cyc_progress.unwrap_or_else(|| Self::timed_progress(cfg, self.phase, display));
 
         let in_interval = cfg.timer_mode == Mode::Interval;
-        if let Some(p) = cyc_progress {
-            progress = p;
-        }
         TickResult {
             display,
             state,
@@ -1332,6 +1368,72 @@ mod tests {
             e.tick(&cfg); // into rest
             c.advance(5.0);
             approx_abs(e.tick(&cfg).progress, 15.0 / 20.0, 0.01);
+        }
+    }
+
+    mod test_progress_now {
+        use super::*;
+
+        /// `progress_now` must predict `tick().progress` at the same instant.
+        fn check(cfg: &Config, steps: usize, step: f64, toggles: &[usize]) {
+            let (mut e, c) = make(cfg);
+            e.toggle(cfg);
+            for i in 0..steps {
+                if toggles.contains(&i) {
+                    e.toggle(cfg);
+                }
+                c.advance(step);
+                let predicted = e.progress_now(cfg);
+                assert_eq!(predicted, e.progress_now(cfg), "query changed state");
+                let actual = e.tick(cfg).progress;
+                assert!(
+                    (predicted - actual).abs() < 1e-12,
+                    "step {i}: progress_now {predicted} != tick {actual}"
+                );
+            }
+        }
+
+        #[test]
+        fn matches_tick_countdown() {
+            let cfg = Config {
+                timer_mode: Mode::Countdown,
+                countdown_duration: 7,
+                ..Config::default()
+            };
+            check(&cfg, 100, 0.1, &[30, 40]);
+            let auto = Config {
+                auto_restart_countdown: true,
+                ..cfg
+            };
+            check(&auto, 200, 0.1, &[]);
+        }
+
+        #[test]
+        fn matches_tick_interval_across_phases_and_end() {
+            let cfg = Config {
+                timer_mode: Mode::Interval,
+                interval_work: 3,
+                interval_rest: 2,
+                interval_rounds: 2,
+                ..Config::default()
+            };
+            check(&cfg, 150, 0.1, &[12, 20]);
+            let no_rest = Config {
+                interval_rest: 0,
+                ..cfg
+            };
+            check(&no_rest, 100, 0.1, &[]);
+        }
+
+        #[test]
+        fn matches_tick_stopwatch() {
+            check(&Config::default(), 30, 0.1, &[10]);
+            let cyc = Config {
+                stopwatch_work: 3,
+                stopwatch_rest: 2,
+                ..Config::default()
+            };
+            check(&cyc, 150, 0.1, &[7, 9]);
         }
     }
 }
