@@ -155,6 +155,7 @@ macro_rules! config_codec {
                         }
                     }
                 }
+                cfg.clamp_ranges();
                 cfg
             }
 
@@ -219,7 +220,45 @@ config_codec!(
     notify_on_finish,
 );
 
+/// Upper bound for durations in seconds (a week; above any preset the
+/// editor makes, low enough that phase arithmetic cannot overflow).
+pub const MAX_SECS: i64 = 7 * 24 * 3600;
+/// HUD font size range (the clock wheel's; the settings spin box is narrower).
+pub const FONT_SIZE_RANGE: (i64, i64) = (10, 120);
+/// Countdown duration range in seconds.
+pub const COUNTDOWN_RANGE: (i64, i64) = (1, MAX_SECS);
+
 impl Config {
+    /// Clamps numeric fields into ranges the HUD can work with (a
+    /// hand-edited `font_size: 5000` or `countdown_duration: 0` would
+    /// otherwise crash the renderer or beep every tick). Per field: an
+    /// out-of-range value moves to the nearest bound, the rest is untouched.
+    pub fn clamp_ranges(&mut self) {
+        let clamp = |v: &mut i64, (lo, hi): (i64, i64)| *v = (*v).clamp(lo, hi);
+        clamp(&mut self.font_size, FONT_SIZE_RANGE);
+        // Like the settings slider (20..100 %).
+        self.opacity = if self.opacity.is_finite() {
+            self.opacity.clamp(0.2, 1.0)
+        } else {
+            Config::default().opacity
+        };
+        clamp(&mut self.countdown_duration, COUNTDOWN_RANGE);
+        clamp(&mut self.interval_work, (1, MAX_SECS));
+        clamp(&mut self.interval_rest, (0, MAX_SECS));
+        clamp(&mut self.interval_rounds, (1, 100_000));
+        // 0 = plain stopwatch.
+        clamp(&mut self.stopwatch_work, (0, MAX_SECS));
+        clamp(&mut self.stopwatch_rest, (0, MAX_SECS));
+        // 0 = off.
+        clamp(&mut self.sound_interval, (0, MAX_SECS));
+        clamp(&mut self.sound_alert_before, (0, MAX_SECS));
+        clamp(&mut self.margin, (0, 1000));
+        clamp(&mut self.padding, (0, 100));
+        // -1 = same as padding.
+        clamp(&mut self.padding_top, (-1, 100));
+        clamp(&mut self.row_spacing, (0, 100));
+    }
+
     /// Missing or unparseable file gives defaults. An unparseable file is
     /// first copied to `<path>.bad` (overwriting) so a later save never
     /// silently destroys the user's only copy.
@@ -841,6 +880,63 @@ mod tests {
         let res = Config::default().save_to(&dir.path().join("config.json"));
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn out_of_range_values_clamped_on_load() {
+        let cfg = Config::from_value(&json!({
+            "font_size": 5000,
+            "opacity": 7.5,
+            "countdown_duration": 0,
+            "interval_work": 0,
+            "interval_rest": -3,
+            "interval_rounds": 0,
+            "stopwatch_work": -10,
+            "stopwatch_rest": -10,
+            "sound_interval": -1,
+            "sound_alert_before": -5,
+            "padding": -4,
+            "padding_top": -9,
+            "row_spacing": 999,
+            "margin": -50,
+        }));
+        assert_eq!(cfg.font_size, 120);
+        assert_eq!(cfg.opacity, 1.0);
+        assert_eq!(cfg.countdown_duration, 1);
+        assert_eq!(cfg.interval_work, 1);
+        assert_eq!(cfg.interval_rest, 0);
+        assert_eq!(cfg.interval_rounds, 1);
+        assert_eq!(cfg.stopwatch_work, 0);
+        assert_eq!(cfg.stopwatch_rest, 0);
+        assert_eq!(cfg.sound_interval, 0);
+        assert_eq!(cfg.sound_alert_before, 0);
+        assert_eq!(cfg.padding, 0);
+        assert_eq!(cfg.padding_top, -1);
+        assert_eq!(cfg.row_spacing, 100);
+        assert_eq!(cfg.margin, 0);
+        let low = Config::from_value(&json!({"font_size": 1, "opacity": 0.0}));
+        assert_eq!((low.font_size, low.opacity), (10, 0.2));
+    }
+
+    #[test]
+    fn in_range_values_survive_load() {
+        let cfg = Config {
+            font_size: 120,
+            opacity: 0.2,
+            countdown_duration: 1,
+            interval_work: 7200,
+            interval_rest: 0,
+            interval_rounds: 500,
+            stopwatch_work: 0,
+            stopwatch_rest: 0,
+            padding_top: -1,
+            ..Config::default()
+        };
+        assert_eq!(Config::from_value(&cfg.to_value()), cfg);
+        assert_eq!(
+            Config::from_value(&Config::default().to_value()),
+            Config::default()
+        );
     }
 
     #[test]

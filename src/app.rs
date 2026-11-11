@@ -4,7 +4,10 @@
 //! Positions are tracked for the visible panel (Python's window); the window
 //! itself is larger by the theme's shadow inset (`Layout::panel.x/y`).
 use crate::anim::{Ease, Tween, lerp_rgb};
-use crate::config::{Config, Mode, Preset, PresetRules, interval_preset_rounds, valid_presets};
+use crate::config::{
+    COUNTDOWN_RANGE, Config, FONT_SIZE_RANGE, Mode, Preset, PresetRules, interval_preset_rounds,
+    valid_presets,
+};
 use crate::engine::{ClockFn, Phase, State, TimerEngine};
 use crate::format::{
     clock_text, fmt_seconds, mode_button_text, mode_label, phase_label, shown_seconds,
@@ -819,8 +822,9 @@ impl App {
 
     /// Live-apply a config edited in Settings (port of `update_ui` + `_sync_*`).
     /// Not saved here: the settings flow commits with `SaveNow`.
-    pub fn preview_config(&mut self, cfg: Config, now: f64) -> Vec<Effect> {
+    pub fn preview_config(&mut self, mut cfg: Config, now: f64) -> Vec<Effect> {
         self.poll(now);
+        cfg.clamp_ranges();
         let old = std::mem::replace(&mut self.cfg, cfg);
         let mut fx = Vec::new();
         // A manual duration change ends the preset, unless the edit already
@@ -1005,7 +1009,7 @@ impl App {
         match self.layout.hit(x, y) {
             Hit::Clock => {
                 let step = if up { 2 } else { -2 };
-                let size = (self.cfg.font_size + step).clamp(10, 120);
+                let size = (self.cfg.font_size + step).clamp(FONT_SIZE_RANGE.0, FONT_SIZE_RANGE.1);
                 if size == self.cfg.font_size {
                     return Vec::new();
                 }
@@ -1030,10 +1034,12 @@ impl App {
         }
     }
 
-    /// Countdown duration ±`step` seconds from the mode label (never below 1 s).
+    /// Countdown duration ±`step` seconds from the mode label (within
+    /// [`COUNTDOWN_RANGE`]).
     fn wheel_duration(&mut self, step: i64, up: bool, now: f64) -> Vec<Effect> {
         let delta = if up {
-            step
+            step.min(COUNTDOWN_RANGE.1 - self.cfg.countdown_duration)
+                .max(0)
         } else {
             -step.min(self.cfg.countdown_duration - 1)
         };

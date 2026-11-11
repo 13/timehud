@@ -347,6 +347,28 @@ fn wheel_down_never_below_one() {
 }
 
 #[test]
+fn wheel_up_stops_at_max_countdown() {
+    use crate::config::COUNTDOWN_RANGE;
+    let mut h = mk(countdown(COUNTDOWN_RANGE.1 - 30));
+    h.wheel_at(Hit::Mode, 0.6, true);
+    assert_eq!(h.app.cfg.countdown_duration, COUNTDOWN_RANGE.1);
+}
+
+#[test]
+fn preview_config_clamps_out_of_range_values() {
+    let mut h = mk(Config::default());
+    let edited = Config {
+        font_size: 5000,
+        countdown_duration: 0,
+        ..h.app.cfg.clone()
+    };
+    let now = h.now();
+    h.app.preview_config(edited, now);
+    assert_eq!(h.app.cfg.font_size, 120);
+    assert_eq!(h.app.cfg.countdown_duration, 1);
+}
+
+#[test]
 fn wheel_on_clock_changes_font_size() {
     let mut h = mk(Config::default());
     let fx = h.wheel_at(Hit::Clock, 0.5, true);
