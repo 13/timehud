@@ -51,8 +51,10 @@ looks noticeably more polished.
 ## 4. Non-goals
 
 - Windows / macOS.
-- A native Wayland overlay (layer-shell). Wayland sessions run via XWayland as
-  today; `--wayland` stays as an "experimental, may not be on top" escape hatch.
+- A native Wayland window of any kind. The app always runs as an X11 client
+  (XWayland on Wayland sessions). `--wayland` is still accepted for
+  compatibility but only prints a warning that it is ignored. *(My call after
+  the builder check: frees the overlay to use any X11-only rendering approach.)*
 - Recreating Qt's widget look in the settings window.
 
 ## 5. Anti-goals (failure even if it "works")
@@ -124,8 +126,8 @@ in Python). While paused/idle: tick only at the next wall-clock second boundary
 - New keys (all optional, defaults keep current behavior):
   - `clock_format`: `"24h"` (default, `HH:MM:SS`) | `"24h-short"` (`HH:MM`) |
     `"12h"`.
-  - `hotkey_toggle` / `hotkey_reset` / `hotkey_visibility`: default
-    `"Ctrl+Shift+Space"`, `"Ctrl+Shift+R"`, `"Ctrl+Shift+H"`; `""` disables.
+  - `hotkey_toggle` / `hotkey_reset` / `hotkey_visibility`: default `""`
+    (disabled). Combo strings like `"Ctrl+Shift+Space"`.
   - `notify_on_finish`: `false` — desktop notification (via `notify-send`)
     when a countdown/interval session ends.
 - README's settings JSON example updated to match.
@@ -136,8 +138,8 @@ in Python). While paused/idle: tick only at the next wall-clock second boundary
 - Frameless, transparent (per-pixel alpha via picom), always on top, no
   taskbar entry, does not steal focus when shown.
 - **Above fullscreen**: on X11 use an **override-redirect** window (equivalent
-  of Qt's `X11BypassWindowManagerHint`). Unless `--wayland` is passed, force
-  the X11 backend even if `WAYLAND_DISPLAY` is set.
+  of Qt's `X11BypassWindowManagerHint`). Always use the X11 backend, even if
+  `WAYLAND_DISPLAY` is set.
 - Click-through (`click_through`): empty X11 input shape — all mouse input
   passes to the app below; toggled live from the menu / tray.
 - Window opacity = `opacity`; fade-in from 0 on start.
@@ -226,15 +228,18 @@ alphas, radius and scales must stay identical (port `test_themes.py`).
 - `show_tray_icon` toggles live; `--no-tray` overrides for the process.
 
 ### 9.4 Global hotkeys
-X11 key grabs on the root window (grab with all NumLock/CapsLock/ScrollLock
-mask combinations). Defaults Ctrl+Shift+Space / R / H → toggle / reset /
-visibility; configurable via the new hotkey keys. Always available (no longer
-an optional dependency). A failed grab (already taken) logs a warning and
-continues.
+**User decision:** exclusive X11 key grabs on the root window (grab with all
+NumLock/CapsLock/ScrollLock mask combinations), **off by default**: nothing is
+bound until the user sets combos in Settings → Hotkeys (key-capture field;
+shows Ctrl+Shift+Space / R / H as suggestions; warns that a grabbed combo no
+longer reaches other apps). Re-grab live on change. A failed grab (combo
+already taken) shows an inline error in Settings and logs a warning. The
+`timehud toggle|reset|…` subcommands (9.5) are the recommended way to bind
+keys from Awesome's rc.lua.
 
 ### 9.5 CLI and single instance
-- Flags (parity): `--position <preset>`, `--reset-config`, `--wayland`,
-  `--no-tray`, `--version`.
+- Flags (parity): `--position <preset>`, `--reset-config`, `--wayland` (no-op +
+  warning), `--no-tray`, `--version`.
 - **New**: single instance via a Unix socket in `$XDG_RUNTIME_DIR`. Running
   `timehud` again while one is running toggles its visibility. Subcommands
   `timehud toggle | reset | show | hide | quit` control the running instance —
@@ -301,10 +306,19 @@ presets…"). Sections: **Display**, **Timer**, **Presets**, **Sound**,
   icon to `~/.local/share/icons/hicolor/scalable/apps`, desktop entry to
   `~/.local/share/applications`.
 - `packaging/aur/PKGBUILD`: builds from source with cargo.
-- CI (`.github/workflows`): `cargo fmt --check`, `cargo clippy -D warnings`,
-  `cargo test` on push; on `v*` tag build a release binary tarball and attach
-  it to a GitHub Release. The AppImage workflow is dropped.
-- Git: initialize the repo in `/home/ben/repo/timehud2`.
+- **User decision: new repo, CI on GitHub and Gitea.** `timehud2` is a fresh
+  git repo. Whether it later replaces `13/timehud` or the AUR `timehud`
+  package is decided later. The PKGBUILD here is a source build
+  (`arch=('x86_64')`) with `url`/`source` as placeholders until a remote
+  exists.
+- CI (`.github/workflows`, run by GitHub-hosted runners **and** the user's
+  self-hosted Gitea runner, branching on `github.server_url` like the Python
+  repo's workflows): install a Rust toolchain explicitly via rustup (the Gitea
+  runner has none; no GitHub-only actions without a per-host branch), install
+  X11/GL/ALSA dev libs, then `cargo fmt --check`, `cargo clippy -D warnings`,
+  `cargo test`. On `v*` tag: build a release binary tarball and publish a
+  release on whichever host ran it, mirroring how the Python repo's
+  `build-appimage.yml` handles both. The AppImage workflow is dropped.
 
 ## 13. Testing
 
@@ -312,7 +326,10 @@ presets…"). Sections: **Display**, **Timer**, **Presets**, **Sound**,
 - Pure functions extracted and unit-tested: position presets, resize anchor
   delta, drag snapping, mode-label text, preset menu labels, preset
   validation/rounds, ceil display, wheel-step logic, config round-trip
-  (including loading a real Python-written config and per-field fallback).
+  (no user config exists on this machine, so fixtures are generated from the
+  Python `Config` defaults plus hand-edited/legacy variants — e.g. presets
+  with legacy `every`/`before` keys, wrong-typed fields — to test per-field
+  fallback; my call).
 - Manual verification on this machine: overlay above a fullscreen mpv/browser
   video in Awesome; tray icon in Awesome's systray; global hotkeys; click-
   through; beeps; measure startup time and RSS against the targets in 3.3 and
