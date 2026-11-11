@@ -875,6 +875,46 @@ fn border_progress_frames_follow_perimeter() {
     assert!((FRAME..0.5).contains(&dt), "border frame after {dt} s");
 }
 
+/// Running interval with `progress_style` border, fade-in over, laid out.
+fn running_interval(work: i64, rest: i64) -> Harness {
+    let mut h = mk(Config {
+        timer_mode: Mode::Interval,
+        interval_work: work,
+        interval_rest: rest,
+        interval_rounds: 8,
+        progress_style: "border".into(),
+        font_size: 48,
+        ..Config::default()
+    });
+    let now = h.now();
+    h.app.toggle_timer(now);
+    h.advance(1.05);
+    h.tick();
+    h.app.frame(h.now());
+    h
+}
+
+#[test]
+fn progress_frames_follow_running_phase_not_shortest() {
+    let h = running_interval(600, 10);
+    let now = h.now();
+    let dt = h.app.next_frame(now).unwrap() - now;
+    let p = h.app.layout.panel;
+    let want = 0.5 * 600.0 / f64::from(2 * (p.w + p.h));
+    assert!(
+        (dt - want).abs() < 1e-9,
+        "work frame after {dt} s, want {want}"
+    );
+}
+
+#[test]
+fn progress_only_frames_capped_below_animation_rate() {
+    let h = running_interval(20, 10);
+    let now = h.now();
+    let dt = h.app.next_frame(now).unwrap() - now;
+    assert!((dt - PROGRESS_FRAME).abs() < 1e-9, "frame after {dt} s");
+}
+
 #[test]
 fn tweens_frame_at_full_rate() {
     let mut h = running_countdown();

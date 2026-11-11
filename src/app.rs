@@ -42,6 +42,9 @@ const FINAL_SECONDS: f64 = 6.5;
 const MODE_GREY: Rgb = Rgb(0x99, 0x99, 0x99);
 /// Frame interval while a tween animates (~60 fps).
 pub const FRAME: f64 = 0.016;
+/// Shortest interval between frames that only advance the progress bar
+/// (~24 fps): smooth enough for a half-pixel step, far cheaper than `FRAME`.
+pub const PROGRESS_FRAME: f64 = 0.042;
 const MODES: [Mode; 3] = [Mode::Stopwatch, Mode::Countdown, Mode::Interval];
 
 struct Drag {
@@ -274,17 +277,13 @@ impl App {
         None
     }
 
-    /// Seconds for the running bar to move ~0.5 device px (at least `FRAME`).
+    /// Seconds for the running bar to move ~0.5 device px in the phase it is
+    /// draining now (at least `PROGRESS_FRAME`).
     fn progress_frame_interval(&self) -> f64 {
         let cfg = &self.cfg;
-        // Shortest phase the bar can be draining (it moves 1/phase per second).
-        let phases: &[i64] = match cfg.timer_mode {
-            Mode::Countdown => &[cfg.countdown_duration],
-            Mode::Interval => &[cfg.interval_work, cfg.interval_rest],
-            Mode::Stopwatch => &[cfg.stopwatch_work, cfg.stopwatch_rest],
-        };
-        let Some(phase) = phases.iter().copied().filter(|d| *d > 0).min() else {
-            return FRAME;
+        // The bar moves 1/phase per second.
+        let Some(phase) = self.engine.phase_length(cfg) else {
+            return PROGRESS_FRAME;
         };
         let p = self.layout.panel;
         // Upper bounds of the drawn length: the panel width for the line, the
@@ -294,7 +293,7 @@ impl App {
         } else {
             p.w
         };
-        (0.5 * phase as f64 / f64::from(length.max(1))).max(FRAME)
+        (0.5 * phase / f64::from(length.max(1))).max(PROGRESS_FRAME)
     }
 
     /// Seconds until `tick` is next needed: 100 ms while running, else the next

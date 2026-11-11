@@ -274,6 +274,28 @@ impl TimerEngine {
         }
     }
 
+    /// Seconds in the phase the progress bar is draining right now (the
+    /// whole countdown, the current interval or cycle phase); `None` without
+    /// a timed phase (plain stopwatch).
+    pub fn phase_length(&self, cfg: &Config) -> Option<f64> {
+        let len = match cfg.timer_mode {
+            Mode::Countdown => cfg.countdown_duration,
+            Mode::Interval if self.phase == Phase::Rest => cfg.interval_rest,
+            Mode::Interval => cfg.interval_work,
+            Mode::Stopwatch if Self::cycling(cfg) => {
+                let work = cfg.stopwatch_work as f64;
+                let cycle = work + cfg.stopwatch_rest.max(0) as f64;
+                if self.elapsed() % cycle < work {
+                    cfg.stopwatch_work
+                } else {
+                    cfg.stopwatch_rest
+                }
+            }
+            Mode::Stopwatch => 0,
+        };
+        (len > 0).then_some(len as f64)
+    }
+
     /// Progress `tick()` would report right now, without changing any state
     /// (lets the UI animate the bar every frame between ticks).
     pub fn progress_now(&self, cfg: &Config) -> f64 {
@@ -1434,6 +1456,48 @@ mod tests {
                 ..Config::default()
             };
             check(&cyc, 150, 0.1, &[7, 9]);
+        }
+
+        #[test]
+        fn phase_length_follows_running_phase() {
+            let cfg = Config {
+                timer_mode: Mode::Interval,
+                interval_work: 20,
+                interval_rest: 10,
+                interval_rounds: 3,
+                ..Config::default()
+            };
+            let (mut e, c) = make(&cfg);
+            e.toggle(&cfg);
+            c.advance(5.0);
+            e.tick(&cfg);
+            assert_eq!(e.phase_length(&cfg), Some(20.0));
+            c.advance(17.0);
+            e.tick(&cfg);
+            assert_eq!(e.phase_length(&cfg), Some(10.0));
+
+            let cd = Config {
+                timer_mode: Mode::Countdown,
+                countdown_duration: 300,
+                ..Config::default()
+            };
+            assert_eq!(make(&cd).0.phase_length(&cd), Some(300.0));
+
+            let cyc = Config {
+                stopwatch_work: 30,
+                stopwatch_rest: 6,
+                ..Config::default()
+            };
+            let (mut e, c) = make(&cyc);
+            e.toggle(&cyc);
+            c.advance(10.0);
+            assert_eq!(e.phase_length(&cyc), Some(30.0));
+            c.advance(22.0);
+            assert_eq!(e.phase_length(&cyc), Some(6.0));
+            assert_eq!(
+                make(&Config::default()).0.phase_length(&Config::default()),
+                None
+            );
         }
     }
 }
