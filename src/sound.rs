@@ -91,12 +91,93 @@ fn beep_name(beep: Beep) -> &'static str {
     }
 }
 
-/// A fully decoded user sound file.
+/// A decoded user sound file (at most [`MAX_CLIP_SECS`]), shared by every
+/// play through `Arc` so nothing is copied per beep.
 #[derive(Debug)]
 pub struct Decoded {
     channels: ChannelCount,
     rate: SampleRate,
     samples: Vec<f32>,
+}
+
+impl Decoded {
+    fn duration(&self) -> Duration {
+        clip_duration(self.samples.len(), self.channels, self.rate)
+    }
+}
+
+/// Longest `sound_file` audio kept in memory and played.
+const MAX_CLIP_SECS: usize = 30;
+
+/// Interleaved samples in [`MAX_CLIP_SECS`] of audio.
+fn max_samples(channels: ChannelCount, rate: SampleRate) -> usize {
+    MAX_CLIP_SECS * rate.get() as usize * channels.get() as usize
+}
+
+/// The first `max` items, and whether more followed (i.e. it was cut).
+fn take_capped(mut samples: impl Iterator<Item = f32>, max: usize) -> (Vec<f32>, bool) {
+    let kept: Vec<f32> = samples.by_ref().take(max).collect();
+    let cut = kept.len() == max && samples.next().is_some();
+    (kept, cut)
+}
+
+/// Play time of `len` interleaved samples.
+fn clip_duration(len: usize, channels: ChannelCount, rate: SampleRate) -> Duration {
+    let frames = len as f64 / f64::from(channels.get());
+    Duration::from_secs_f64(frames / f64::from(rate.get()))
+}
+
+/// The device may be released once [`IDLE_RELEASE`] has passed since the
+/// last clip *ended* (`busy_until`), so long clips are never cut off.
+fn release_due(busy_until: Instant, now: Instant) -> bool {
+    now >= busy_until + IDLE_RELEASE
+}
+
+/// A rodio source reading a shared [`Decoded`] without copying it.
+struct SharedSamples {
+    decoded: Arc<Decoded>,
+    pos: usize,
+}
+
+impl SharedSamples {
+    fn new(decoded: Arc<Decoded>) -> SharedSamples {
+        SharedSamples { decoded, pos: 0 }
+    }
+}
+
+impl Iterator for SharedSamples {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<f32> {
+        let s = self.decoded.samples.get(self.pos).copied()?;
+        self.pos += 1;
+        Some(s)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let left = self.decoded.samples.len() - self.pos;
+        (left, Some(left))
+    }
+}
+
+impl rodio::Source for SharedSamples {
+    fn current_span_len(&self) -> Option<usize> {
+        // Same convention as rodio's `SamplesBuffer`: one span, 0 when done.
+        let len = self.decoded.samples.len();
+        Some(if self.pos >= len { 0 } else { len })
+    }
+
+    fn channels(&self) -> ChannelCount {
+        self.decoded.channels
+    }
+
+    fn sample_rate(&self) -> SampleRate {
+        self.decoded.rate
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        Some(self.decoded.duration())
+    }
 }
 
 #[derive(Debug)]
@@ -112,9 +193,16 @@ fn decode_file(path: &Path) -> Result<Decoded, String> {
     let dec = Decoder::try_from(File::open(path).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
     let (channels, rate) = (dec.channels(), dec.sample_rate());
-    let samples: Vec<f32> = dec.collect();
+    let (samples, cut) = take_capped(dec, max_samples(channels, rate));
     if samples.is_empty() {
         return Err("no samples".into());
+    }
+    if cut {
+        // Logged once: the result is cached by path + mtime.
+        eprintln!(
+            "timehud: sound_file {} is longer than {MAX_CLIP_SECS} s; playing only the first {MAX_CLIP_SECS} s",
+            path.display()
+        );
     }
     Ok(Decoded {
         channels,
@@ -170,22 +258,22 @@ enum Msg {
     Idle,
 }
 
-/// Worker-side state: the lazily opened device and last-use time.
+/// Worker-side state: the lazily opened device and when its last clip ends.
 struct Worker {
     sink: Option<MixerDeviceSink>,
-    last_used: Instant,
+    busy_until: Instant,
 }
 
 impl Worker {
     fn new() -> Worker {
         Worker {
             sink: None,
-            last_used: Instant::now(),
+            busy_until: Instant::now(),
         }
     }
 
     fn idle_release(&mut self) {
-        if self.sink.is_some() && self.last_used.elapsed() >= IDLE_RELEASE {
+        if self.sink.is_some() && release_due(self.busy_until, Instant::now()) {
             self.sink = None;
         }
     }
@@ -194,7 +282,6 @@ impl Worker {
     /// Returns the name of the path used.
     fn play(&mut self, beep: Beep, sound_file: &str) -> Result<&'static str, String> {
         let source = resolve_file(sound_file, beep);
-        self.last_used = Instant::now();
         if self.sink.is_none() {
             match DeviceSinkBuilder::open_default_sink() {
                 Ok(mut s) => {
@@ -209,23 +296,30 @@ impl Worker {
         }
         let sink = self.sink.as_ref().expect("sink just opened");
         let player = Player::connect_new(sink.mixer());
-        match source {
+        let length = match source {
             Source::File(_, d) => {
-                player.append(SamplesBuffer::new(d.channels, d.rate, d.samples.clone()))
+                let length = d.duration();
+                player.append(SharedSamples::new(d));
+                length
             }
             Source::Builtin(b) => {
                 let f: Vec<f32> = builtin_samples(b)
                     .into_iter()
                     .map(|s| s as f32 / 32768.0)
                     .collect();
-                player.append(SamplesBuffer::new(
+                let buf = SamplesBuffer::new(
                     ChannelCount::new(1).unwrap(),
                     SampleRate::new(SAMPLE_RATE).unwrap(),
                     f,
-                ));
+                );
+                let length = buf.total_duration().unwrap_or_default();
+                player.append(buf);
+                length
             }
-        }
+        };
         player.detach();
+        // Keep the device open at least until this clip has finished.
+        self.busy_until = self.busy_until.max(Instant::now() + length);
         Ok("rodio")
     }
 }
@@ -396,6 +490,62 @@ mod tests {
             resolve_source(&cfg, Beep::default()),
             Source::File(..)
         ));
+    }
+
+    #[test]
+    fn decode_cap_is_thirty_seconds_of_frames() {
+        let stereo = ChannelCount::new(2).unwrap();
+        let rate = SampleRate::new(48000).unwrap();
+        assert_eq!(max_samples(stereo, rate), 30 * 48000 * 2);
+    }
+
+    #[test]
+    fn take_capped_truncates_only_beyond_the_limit() {
+        assert_eq!(
+            take_capped((0..10).map(|i| i as f32), 4),
+            (vec![0., 1., 2., 3.], true)
+        );
+        let (all, cut) = take_capped((0..4).map(|i| i as f32), 4);
+        assert_eq!((all.len(), cut), (4, false));
+    }
+
+    #[test]
+    fn clip_duration_from_frames() {
+        let stereo = ChannelCount::new(2).unwrap();
+        let rate = SampleRate::new(44100).unwrap();
+        assert_eq!(
+            clip_duration(44100 * 2 * 3, stereo, rate),
+            Duration::from_secs(3)
+        );
+        assert_eq!(
+            clip_duration(22050, ChannelCount::new(1).unwrap(), rate),
+            Duration::from_millis(500)
+        );
+    }
+
+    #[test]
+    fn release_waits_for_clip_end_plus_idle() {
+        let start = Instant::now();
+        // A 25 s clip started at `start`: still playing at +20 s.
+        let busy_until = start + Duration::from_secs(25);
+        assert!(!release_due(busy_until, start + Duration::from_secs(20)));
+        assert!(!release_due(busy_until, start + Duration::from_secs(34)));
+        assert!(release_due(busy_until, start + Duration::from_secs(35)));
+    }
+
+    #[test]
+    fn shared_samples_play_without_copying() {
+        let d = Arc::new(Decoded {
+            channels: ChannelCount::new(1).unwrap(),
+            rate: SampleRate::new(SAMPLE_RATE).unwrap(),
+            samples: vec![0.1, 0.2, 0.3],
+        });
+        let a = SharedSamples::new(d.clone());
+        let b = SharedSamples::new(d.clone());
+        assert!(Arc::ptr_eq(&a.decoded, &d) && Arc::ptr_eq(&b.decoded, &d));
+        assert_eq!(Arc::strong_count(&d), 3);
+        assert_eq!(a.total_duration(), Some(d.duration()));
+        assert_eq!(b.collect::<Vec<f32>>(), vec![0.1, 0.2, 0.3]);
     }
 
     /// Manual: plays long, short, double through the real output path.

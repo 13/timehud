@@ -14,9 +14,9 @@ pub enum HotkeyAction {
     Visibility,
 }
 
-/// Lock (CapsLock) and Mod2 (NumLock) combinations grabbed for every combo,
-/// so the hotkey works whatever their state.
-const LOCK_VARIANTS: [u16; 4] = [0, 2, 16, 2 | 16];
+/// Lock (CapsLock), Mod2 (NumLock) and Mod5 (ScrollLock) combinations
+/// grabbed for every combo, so the hotkey works whatever their state.
+const LOCK_VARIANTS: [u16; 8] = [0, 2, 16, 2 | 16, 128, 2 | 128, 16 | 128, 2 | 16 | 128];
 /// Modifiers that distinguish combos (Shift, Control, Mod1, Mod4).
 const RELEVANT_MODS: u16 = 1 | 4 | 8 | 64;
 
@@ -137,8 +137,22 @@ mod tests {
             g.match_event(&press(65, 5 | 2 | 16 | 256)),
             Some(HotkeyAction::Toggle)
         );
+        // ScrollLock (Mod5) neither.
+        assert_eq!(
+            g.match_event(&press(65, 5 | 128 | 2)),
+            Some(HotkeyAction::Toggle)
+        );
         assert_eq!(g.match_event(&press(65, 4)), None);
         assert_eq!(g.match_event(&press(66, 5)), None);
+    }
+
+    #[test]
+    fn lock_variants_cover_caps_num_scroll_lock() {
+        // Every combination of Lock (2), Mod2/NumLock (16), Mod5/ScrollLock (128).
+        let mut v = LOCK_VARIANTS.to_vec();
+        v.sort_unstable();
+        assert_eq!(v, [0, 2, 16, 18, 128, 130, 144, 146]);
+        assert!(LOCK_VARIANTS.iter().all(|l| l & RELEVANT_MODS == 0));
     }
 
     #[test]

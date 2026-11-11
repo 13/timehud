@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Default)]
@@ -115,6 +116,13 @@ impl Default for Config {
 }
 
 /// `$XDG_CONFIG_HOME/timehud/config.json`, default `~/.config/timehud/config.json`.
+/// `path` with `suffix` appended to its file name (`config.json.bad`).
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut p = path.as_os_str().to_owned();
+    p.push(suffix);
+    PathBuf::from(p)
+}
+
 pub fn config_path() -> PathBuf {
     let base = match std::env::var_os("XDG_CONFIG_HOME") {
         Some(v) if !v.is_empty() => PathBuf::from(v),
@@ -212,26 +220,57 @@ config_codec!(
 );
 
 impl Config {
-    /// Missing or unparseable file gives defaults.
+    /// Missing or unparseable file gives defaults. An unparseable file is
+    /// first copied to `<path>.bad` (overwriting) so a later save never
+    /// silently destroys the user's only copy.
     pub fn load_from(path: &Path) -> Config {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-            .map(|v| Config::from_value(&v))
-            .unwrap_or_default()
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!("timehud: cannot read {}: {e}", path.display());
+                }
+                return Config::default();
+            }
+        };
+        match serde_json::from_slice::<Value>(&bytes) {
+            Ok(v) => Config::from_value(&v),
+            Err(e) => {
+                let bad = with_suffix(path, ".bad");
+                match std::fs::write(&bad, &bytes) {
+                    Ok(()) => eprintln!(
+                        "timehud: {} is not valid JSON ({e}); saved a copy as {} and using defaults",
+                        path.display(),
+                        bad.display()
+                    ),
+                    Err(we) => eprintln!(
+                        "timehud: {} is not valid JSON ({e}); could not back it up to {}: {we}",
+                        path.display(),
+                        bad.display()
+                    ),
+                }
+                Config::default()
+            }
+        }
     }
 
-    /// Atomic: writes `<path>.tmp`, then renames over `path`. Creates the directory.
+    /// Atomic: writes and syncs `<path>.tmp`, then renames over `path`.
+    /// A symlinked `path` is resolved first, so the link's target is
+    /// replaced and the link itself kept. Creates the directory.
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let mut tmp = path.as_os_str().to_owned();
-        tmp.push(".tmp");
-        let tmp = PathBuf::from(tmp);
+        let tmp = with_suffix(&path, ".tmp");
         let text = serde_json::to_string_pretty(&self.to_value()).map_err(std::io::Error::other)?;
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, path).inspect_err(|_| {
+        let written = (|| {
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(text.as_bytes())?;
+            f.sync_all()?;
+            std::fs::rename(&tmp, &path)
+        })();
+        written.inspect_err(|_| {
             let _ = std::fs::remove_file(&tmp);
         })
     }
@@ -442,6 +481,54 @@ mod tests {
         let path = dir.path().join("config.json");
         std::fs::write(&path, "{not json").unwrap();
         assert_eq!(Config::load_from(&path), Config::default());
+    }
+
+    #[test]
+    fn unparseable_file_backed_up_before_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let bad = dir.path().join("config.json.bad");
+        std::fs::write(&bad, "stale").unwrap();
+        let original = b"{\"font_size\": 40,, \xff}";
+        std::fs::write(&path, original).unwrap();
+        let cfg = Config::load_from(&path);
+        assert_eq!(cfg, Config::default());
+        assert_eq!(std::fs::read(&bad).unwrap(), original);
+        cfg.save_to(&path).unwrap();
+        // The backup survives the save that replaced the broken file.
+        assert_eq!(std::fs::read(&bad).unwrap(), original);
+    }
+
+    #[test]
+    fn valid_or_missing_file_makes_no_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        Config::load_from(&path);
+        std::fs::write(&path, r#"{"font_size": 20}"#).unwrap();
+        Config::load_from(&path);
+        assert!(!dir.path().join("config.json.bad").exists());
+    }
+
+    #[test]
+    fn symlinked_config_updated_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("dotfiles").join("timehud.json");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, r#"{"font_size": 20}"#).unwrap();
+        let link = cfg_in(&dir);
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let cfg = Config {
+            font_size: 44,
+            ..Config::load_from(&link)
+        };
+        cfg.save_to(&link).unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+        assert_eq!(std::fs::read_link(&link).unwrap(), target);
+        assert_eq!(Config::load_from(&target).font_size, 44);
+        // No temp file left next to the link or the target.
+        assert!(!link.with_extension("json.tmp").exists());
+        assert!(!target.with_extension("json.tmp").exists());
     }
 
     // ---- TestValidPresets ----
