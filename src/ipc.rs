@@ -271,9 +271,13 @@ impl Conn {
         self.stream.as_raw_fd()
     }
 
-    /// Parse every complete line available now. Returns `Err(UnexpectedEof)`
-    /// once the peer has closed and all buffered requests were delivered.
-    pub fn read_requests(&mut self) -> io::Result<Vec<Request>> {
+    /// Parse every complete line available now, in order: a request, or
+    /// for a line that is not one (garbage, or an unknown request from a
+    /// newer peer) the parse error, so the caller can answer it and keep
+    /// the connection. `Err` is for the connection itself: an overlong
+    /// line, a socket error, or `UnexpectedEof` once the peer has closed
+    /// and all buffered lines were delivered.
+    pub fn read_requests(&mut self) -> io::Result<Vec<Result<Request, String>>> {
         use std::io::Read;
         let mut chunk = [0u8; CHUNK];
         for _ in 0..MAX_CHUNKS_PER_CALL {
@@ -298,10 +302,7 @@ impl Conn {
             if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
-            out.push(
-                serde_json::from_slice(line)
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
-            );
+            out.push(serde_json::from_slice(line).map_err(|e| e.to_string()));
         }
         if self.buf.len() > MAX_LINE {
             return Err(too_long());
@@ -575,10 +576,29 @@ mod tests {
             .unwrap();
         assert_eq!(
             c.read_requests().unwrap(),
-            vec![Request::Show, Request::Hide]
+            vec![Ok(Request::Show), Ok(Request::Hide)]
         );
         b.write_all(b"it\"}\n").unwrap();
-        assert_eq!(c.read_requests().unwrap(), vec![Request::Quit]);
+        assert_eq!(c.read_requests().unwrap(), vec![Ok(Request::Quit)]);
+    }
+
+    #[test]
+    fn conn_reports_bad_lines_without_losing_the_rest() {
+        let (a, mut b) = UnixStream::pair().unwrap();
+        let mut c = Conn::new(a).unwrap();
+        b.write_all(
+            b"{\"cmd\":\"show\"}\n{\"cmd\":\"from-the-future\"}\nnot json\n{\"cmd\":\"hide\"}\n",
+        )
+        .unwrap();
+        let got = c.read_requests().unwrap();
+        assert_eq!(got.len(), 4);
+        assert_eq!(got[0], Ok(Request::Show));
+        assert!(got[1].as_ref().unwrap_err().contains("from-the-future"));
+        assert!(got[2].is_err());
+        assert_eq!(got[3], Ok(Request::Hide));
+        // The connection is still usable.
+        b.write_all(b"{\"cmd\":\"quit\"}\n").unwrap();
+        assert_eq!(c.read_requests().unwrap(), vec![Ok(Request::Quit)]);
     }
 
     #[test]

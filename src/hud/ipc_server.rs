@@ -51,16 +51,25 @@ impl Hud {
             return;
         };
         match client.conn.read_requests() {
-            Ok(reqs) => {
-                for req in reqs {
-                    if let Some(reply) = self.handle_request(id, req) {
+            Ok(lines) => {
+                for line in lines {
+                    // A bad line (e.g. a request this HUD does not know) is
+                    // answered, not fatal: for the settings connection,
+                    // dropping it would mean an implicit Cancel.
+                    let reply = match line {
+                        Ok(req) => self.handle_request(id, req),
+                        Err(e) => Some(IpcEvent::Error {
+                            message: format!("bad request: {e}"),
+                        }),
+                    };
+                    if let Some(reply) = reply {
                         self.send_to(id, &reply);
                     }
                 }
             }
             Err(e) => {
                 // EOF (incl. liveness probes that connect and close at once),
-                // garbage, or a broken socket: drop the client.
+                // an overlong line, or a broken socket: drop the client.
                 if e.kind() == io::ErrorKind::InvalidData {
                     let message = format!("bad request: {e}");
                     self.send_to(id, &IpcEvent::Error { message });
