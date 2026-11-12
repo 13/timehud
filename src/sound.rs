@@ -4,6 +4,7 @@
 //! lazily opens the rodio output, drops it after 10 s idle, and falls back to
 //! an external player (paplay/aplay/ffplay/mpv) if no device can be opened.
 
+use std::cell::Cell;
 use std::f64::consts::PI;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -91,13 +92,14 @@ fn beep_name(beep: Beep) -> &'static str {
     }
 }
 
-/// A decoded user sound file (at most [`MAX_CLIP_SECS`]), shared by every
-/// play through `Arc` so nothing is copied per beep.
+/// A decoded user sound file (16-bit, at most stereo, within
+/// [`MAX_CLIP_SECS`] and [`MAX_CLIP_BYTES`]), shared by every play through
+/// `Arc` so nothing is copied per beep.
 #[derive(Debug)]
 pub struct Decoded {
     channels: ChannelCount,
     rate: SampleRate,
-    samples: Vec<f32>,
+    samples: Vec<i16>,
 }
 
 impl Decoded {
@@ -108,17 +110,57 @@ impl Decoded {
 
 /// Longest `sound_file` audio kept in memory and played.
 const MAX_CLIP_SECS: usize = 30;
+/// Memory cap for the decoded clip (~17 s of 48 kHz stereo, 30 s of mono).
+const MAX_CLIP_BYTES: usize = 3 << 20;
 
-/// Interleaved samples in [`MAX_CLIP_SECS`] of audio.
-fn max_samples(channels: ChannelCount, rate: SampleRate) -> usize {
-    MAX_CLIP_SECS * rate.get() as usize * channels.get() as usize
+/// Frames kept of a clip with `channels` (after downmixing) at `rate`:
+/// [`MAX_CLIP_SECS`], or less if that exceeds [`MAX_CLIP_BYTES`].
+fn max_frames(channels: u16, rate: SampleRate) -> usize {
+    let frame_bytes = 2 * usize::from(channels);
+    (MAX_CLIP_SECS * rate.get() as usize).min(MAX_CLIP_BYTES / frame_bytes)
 }
 
-/// The first `max` items, and whether more followed (i.e. it was cut).
-fn take_capped(mut samples: impl Iterator<Item = f32>, max: usize) -> (Vec<f32>, bool) {
-    let kept: Vec<f32> = samples.by_ref().take(max).collect();
-    let cut = kept.len() == max && samples.next().is_some();
-    (kept, cut)
+/// f32 sample in [-1, 1] to 16-bit.
+fn to_i16(s: f32) -> i16 {
+    (s.clamp(-1.0, 1.0) * 32767.0).round() as i16
+}
+
+/// Converts interleaved f32 `samples` with `channels` to 16-bit, downmixing
+/// more than two channels to stereo (even channels left, odd right) and
+/// keeping at most `max_frames` frames. Returns the samples, the output
+/// channel count and whether audio was cut.
+fn compact(
+    mut samples: impl Iterator<Item = f32>,
+    channels: u16,
+    max_frames: usize,
+) -> (Vec<i16>, u16, bool) {
+    let channels = channels.max(1);
+    let out_ch = channels.min(2);
+    let mut out = Vec::new();
+    let mut frame = Vec::with_capacity(usize::from(channels));
+    let mut frames = 0;
+    loop {
+        frame.clear();
+        frame.extend(samples.by_ref().take(usize::from(channels)));
+        if frame.is_empty() {
+            return (out, out_ch, false);
+        }
+        if frames == max_frames {
+            return (out, out_ch, true);
+        }
+        if channels <= 2 {
+            out.extend(frame.iter().map(|s| to_i16(*s)));
+            // A trailing partial frame is padded so channels stay aligned.
+            out.extend(std::iter::repeat_n(0, usize::from(channels) - frame.len()));
+        } else {
+            for side in 0..2 {
+                let ch: Vec<f32> = frame.iter().skip(side).step_by(2).copied().collect();
+                let mean = ch.iter().sum::<f32>() / ch.len().max(1) as f32;
+                out.push(to_i16(mean));
+            }
+        }
+        frames += 1;
+    }
 }
 
 /// Play time of `len` interleaved samples.
@@ -151,7 +193,7 @@ impl Iterator for SharedSamples {
     fn next(&mut self) -> Option<f32> {
         let s = self.decoded.samples.get(self.pos).copied()?;
         self.pos += 1;
-        Some(s)
+        Some(f32::from(s) / 32768.0)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -192,15 +234,18 @@ static FILE_CACHE: Mutex<Option<CacheEntry>> = Mutex::new(None);
 fn decode_file(path: &Path) -> Result<Decoded, String> {
     let dec = Decoder::try_from(File::open(path).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
-    let (channels, rate) = (dec.channels(), dec.sample_rate());
-    let (samples, cut) = take_capped(dec, max_samples(channels, rate));
+    let (channels, rate) = (dec.channels().get(), dec.sample_rate());
+    let max = max_frames(channels.min(2), rate);
+    let (samples, out_ch, cut) = compact(dec, channels, max);
     if samples.is_empty() {
         return Err("no samples".into());
     }
+    let channels = ChannelCount::new(out_ch).expect("at least one channel");
     if cut {
         // Logged once: the result is cached by path + mtime.
+        let secs = clip_duration(samples.len(), channels, rate).as_secs_f32();
         eprintln!(
-            "timehud: sound_file {} is longer than {MAX_CLIP_SECS} s; playing only the first {MAX_CLIP_SECS} s",
+            "timehud: sound_file {} is too long; playing only the first {secs:.1} s",
             path.display()
         );
     }
@@ -209,6 +254,11 @@ fn decode_file(path: &Path) -> Result<Decoded, String> {
         rate,
         samples,
     })
+}
+
+/// Drops the cached clip (sound disabled or no `sound_file`).
+fn forget_file() {
+    *FILE_CACHE.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// Decode `path`, cached by path + mtime (failures are cached too, so the
@@ -222,6 +272,8 @@ fn load_file(path: &Path) -> Option<Arc<Decoded>> {
     {
         return d.clone();
     }
+    // Release the previous clip before decoding the new one.
+    *cache = None;
     let decoded = match decode_file(path) {
         Ok(d) => Some(Arc::new(d)),
         Err(e) => {
@@ -242,19 +294,19 @@ pub fn resolve_source(cfg: &Config, beep: Beep) -> Source {
 }
 
 fn resolve_file(sound_file: &str, beep: Beep) -> Source {
-    if !sound_file.is_empty() {
-        let path = Path::new(sound_file);
-        if path.exists()
-            && let Some(d) = load_file(path)
-        {
-            return Source::File(path.to_path_buf(), d);
-        }
+    let path = Path::new(sound_file);
+    if sound_file.is_empty() || !path.exists() {
+        forget_file();
+    } else if let Some(d) = load_file(path) {
+        return Source::File(path.to_path_buf(), d);
     }
     Source::Builtin(beep)
 }
 
 enum Msg {
     Play(Beep, String),
+    /// Sound was disabled: drop the cached clip.
+    Forget,
     Idle,
 }
 
@@ -374,6 +426,8 @@ fn play_with_player(source: &Source) -> Result<(), String> {
 
 pub struct Sound {
     tx: Sender<Msg>,
+    /// Whether the worker may hold a decoded `sound_file` (last play named one).
+    file_cached: Cell<bool>,
 }
 
 impl Default for Sound {
@@ -397,18 +451,26 @@ impl Sound {
                                 eprintln!("timehud: sound failed: {e}");
                             }
                         }
+                        Msg::Forget => forget_file(),
                         Msg::Idle => worker.idle_release(),
                     }
                 }
             })
             .expect("spawn sound thread");
-        Sound { tx }
+        Sound {
+            tx,
+            file_cached: Cell::new(false),
+        }
     }
 
-    /// Non-blocking; does nothing when `sound_enabled` is off.
+    /// Non-blocking; plays nothing when `sound_enabled` is off (and then
+    /// releases a cached `sound_file` clip).
     pub fn play(&self, beep: Beep, cfg: &Config) {
         if cfg.sound_enabled {
             let _ = self.tx.send(Msg::Play(beep, cfg.sound_file.clone()));
+            self.file_cached.set(!cfg.sound_file.is_empty());
+        } else if self.file_cached.replace(false) {
+            let _ = self.tx.send(Msg::Forget);
         }
     }
 
@@ -459,6 +521,7 @@ mod tests {
 
     #[test]
     fn bad_sound_file_falls_back() {
+        let _guard = CACHE_TEST.lock().unwrap_or_else(|e| e.into_inner());
         let mut cfg = Config {
             sound_file: "/nonexistent.ogg".into(),
             ..Config::default()
@@ -479,6 +542,7 @@ mod tests {
 
     #[test]
     fn valid_sound_file_is_used() {
+        let _guard = CACHE_TEST.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let wav = dir.path().join("ok.wav");
         std::fs::write(&wav, wav_bytes(&beep_samples(440., 0.1))).unwrap();
@@ -493,20 +557,77 @@ mod tests {
     }
 
     #[test]
-    fn decode_cap_is_thirty_seconds_of_frames() {
-        let stereo = ChannelCount::new(2).unwrap();
+    fn decode_cap_is_thirty_seconds_or_three_megabytes() {
         let rate = SampleRate::new(48000).unwrap();
-        assert_eq!(max_samples(stereo, rate), 30 * 48000 * 2);
+        // Mono 48 kHz: 30 s is 2.9 MB of i16.
+        assert_eq!(max_frames(1, rate), 30 * 48000);
+        // Stereo 48 kHz: the byte cap wins (~16 s).
+        assert_eq!(max_frames(2, rate), MAX_CLIP_BYTES / 4);
+        assert!(max_frames(2, rate) * 4 <= MAX_CLIP_BYTES);
     }
 
     #[test]
-    fn take_capped_truncates_only_beyond_the_limit() {
+    fn compact_converts_and_truncates_only_beyond_the_limit() {
+        let ramp = || [0.0f32, 0.5, -0.5, 1.0, -1.0, 2.0].into_iter();
+        let (s, ch, cut) = compact(ramp(), 1, 4);
+        assert_eq!((s, ch, cut), (vec![0, 16384, -16384, 32767], 1, true));
+        let (s, ch, cut) = compact(ramp(), 2, 3);
+        assert_eq!(s.len(), 6);
+        assert_eq!((ch, cut), (2, false));
+        assert_eq!(s[5], 32767, "clamped");
+    }
+
+    #[test]
+    fn compact_downmixes_to_stereo() {
+        // Two 4-channel frames: (L, R, L, R).
+        let frames = [0.5f32, -0.5, 0.25, -0.25, 0.0, 0.0, 1.0, 1.0];
+        let (s, ch, cut) = compact(frames.into_iter(), 4, 10);
+        assert_eq!((ch, cut), (2, false));
         assert_eq!(
-            take_capped((0..10).map(|i| i as f32), 4),
-            (vec![0., 1., 2., 3.], true)
+            s,
+            vec![to_i16(0.375), to_i16(-0.375), to_i16(0.5), to_i16(0.5)]
         );
-        let (all, cut) = take_capped((0..4).map(|i| i as f32), 4);
-        assert_eq!((all.len(), cut), (4, false));
+    }
+
+    #[test]
+    fn compact_pads_a_trailing_partial_frame() {
+        let (s, ch, _) = compact([0.5f32, 0.5, 0.5].into_iter(), 2, 10);
+        assert_eq!((s.len(), ch), (4, 2));
+        assert_eq!(s[3], 0);
+    }
+
+    /// Serializes tests that inspect the process-wide [`FILE_CACHE`].
+    static CACHE_TEST: Mutex<()> = Mutex::new(());
+
+    fn cached_path() -> Option<PathBuf> {
+        let cache = FILE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        cache.as_ref().map(|(p, _, _)| p.clone())
+    }
+
+    #[test]
+    fn cached_clip_is_dropped_when_the_file_is_unset_or_changed() {
+        let _guard = CACHE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.wav"), dir.path().join("b.wav"));
+        for p in [&a, &b] {
+            std::fs::write(p, wav_bytes(&beep_samples(440., 0.1))).unwrap();
+        }
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        assert!(matches!(
+            resolve_file(&s(&a), Beep::default()),
+            Source::File(..)
+        ));
+        assert_eq!(cached_path(), Some(a.clone()));
+        let Source::File(_, d) = resolve_file(&s(&b), Beep::default()) else {
+            panic!("b decodes");
+        };
+        assert_eq!(cached_path(), Some(b.clone()));
+        assert_eq!(d.samples.len(), 4410, "16-bit mono kept as is");
+        resolve_file("", Beep::default());
+        assert_eq!(cached_path(), None);
+        resolve_file(&s(&a), Beep::default());
+        resolve_file(&s(&dir.path().join("gone.wav")), Beep::default());
+        assert_eq!(cached_path(), None, "a missing file drops the clip too");
     }
 
     #[test]
@@ -538,14 +659,18 @@ mod tests {
         let d = Arc::new(Decoded {
             channels: ChannelCount::new(1).unwrap(),
             rate: SampleRate::new(SAMPLE_RATE).unwrap(),
-            samples: vec![0.1, 0.2, 0.3],
+            samples: vec![3277, 6554, 9830],
         });
         let a = SharedSamples::new(d.clone());
         let b = SharedSamples::new(d.clone());
         assert!(Arc::ptr_eq(&a.decoded, &d) && Arc::ptr_eq(&b.decoded, &d));
         assert_eq!(Arc::strong_count(&d), 3);
         assert_eq!(a.total_duration(), Some(d.duration()));
-        assert_eq!(b.collect::<Vec<f32>>(), vec![0.1, 0.2, 0.3]);
+        let played: Vec<f32> = b.collect();
+        assert_eq!(played.len(), 3);
+        for (got, want) in played.iter().zip([0.1, 0.2, 0.3]) {
+            assert!((got - want).abs() < 1e-3, "{got} vs {want}");
+        }
     }
 
     /// Manual: plays long, short, double through the real output path.
