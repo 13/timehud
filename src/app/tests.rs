@@ -150,7 +150,7 @@ fn mode_toggle_clears_preset() {
     h.app.perform(&MenuAction::ApplyPreset(0), now);
     let fx = h.press(Hit::BtnMode, Button::Left);
     assert_eq!(h.app.cfg.active_preset, "");
-    assert_eq!(h.app.cfg.timer_mode, Mode::Interval);
+    assert_eq!(h.app.cfg.timer_mode, Mode::Stopwatch); // wrapped past the last preset
     assert!(fx.contains(&Effect::SaveSoon));
 }
 
@@ -333,8 +333,8 @@ fn wheel_on_mode_right_edge_adjusts_countdown() {
     assert_eq!(h.app.cfg.countdown_duration, 361);
     // left part cycles the mode instead
     h.wheel_at(Hit::Mode, 0.2, false);
-    assert_eq!(h.app.cfg.timer_mode, Mode::Interval);
-    assert_eq!(h.app.cfg.countdown_duration, 361);
+    assert_eq!(h.app.cfg.active_preset, "1 min"); // plain countdown -> first preset
+    assert_eq!(h.app.cfg.countdown_duration, 60);
 }
 
 #[test]
@@ -402,7 +402,31 @@ fn wheel_on_timer_cycles_mode() {
     h.wheel_at(Hit::Timer, 0.5, true);
     assert_eq!(h.app.cfg.timer_mode, Mode::Stopwatch);
     h.wheel_at(Hit::Timer, 0.5, true);
-    assert_eq!(h.app.cfg.timer_mode, Mode::Interval);
+    assert_eq!(h.app.cfg.active_preset, "5 min"); // wrapped to the last preset
+    assert_eq!(h.app.cfg.timer_mode, Mode::Countdown);
+}
+
+#[test]
+fn cycle_visits_enabled_presets_and_reaches_interval_only_through_them() {
+    let mut h = mk(with_presets(vec![
+        json!({"name": "a", "duration": 60}),
+        json!({"name": "off", "duration": 90, "enabled": false}),
+        json!({"name": "hiit", "type": "interval", "work": 20, "rest": 10, "total": 120}),
+    ]));
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        h.wheel_at(Hit::Timer, 0.5, false);
+        seen.push((h.app.cfg.timer_mode, h.app.cfg.active_preset.clone()));
+    }
+    assert_eq!(
+        seen,
+        [
+            (Mode::Countdown, String::new()),
+            (Mode::Countdown, "a".into()),
+            (Mode::Interval, "hiit".into()),
+            (Mode::Stopwatch, String::new()),
+        ]
+    );
 }
 
 #[test]
@@ -418,20 +442,7 @@ fn right_click_opens_menu() {
     assert!(fx.contains(&Effect::OpenMenu {
         root_x: 100,
         root_y: 200,
-        include_window_actions: true
     }));
-    let mut h = mk(Config {
-        show_tray_icon: false,
-        ..Config::default()
-    });
-    let fx = h.press(Hit::Timer, Button::Right);
-    assert!(fx.iter().any(|e| matches!(
-        e,
-        Effect::OpenMenu {
-            include_window_actions: false,
-            ..
-        }
-    )));
     assert!(!h.app.engine.running());
 }
 
@@ -681,9 +692,6 @@ fn preset_position_top_right() {
 fn menu_actions() {
     let mut h = mk(Config::default());
     let now = h.now();
-    let fx = h.app.perform(&MenuAction::ToggleClickThrough, now);
-    assert!(h.app.cfg.click_through);
-    assert!(fx.contains(&Effect::SetClickThrough(true)) && fx.contains(&Effect::SaveSoon));
     let fx = h.app.perform(&MenuAction::ManagePresets, now);
     assert_eq!(
         fx,
@@ -706,15 +714,8 @@ fn menu_actions() {
     let p = h.app.layout.panel;
     let (wx, wy) = h.app.window_pos();
     assert_eq!((wx + p.x, wy + p.y + p.h), (15, 1080 - 15));
-    h.app.font_loader = |_| FontSet::bundled();
-    h.app.perform(&MenuAction::SetTheme("glass"), now);
-    assert_eq!(h.app.cfg.theme, "glass");
-    assert_eq!(h.app.font_family, "Noto Sans");
     assert_eq!(h.app.toggle_visibility(), [Effect::SetVisible(false)]);
-    assert_eq!(
-        h.app.perform(&MenuAction::ToggleVisibility, now),
-        [Effect::SetVisible(true)]
-    );
+    assert_eq!(h.app.toggle_visibility(), [Effect::SetVisible(true)]);
 }
 
 #[test]
@@ -850,7 +851,7 @@ fn pause_reset_and_mode_change_update_color_immediately() {
     h.advance(1.0);
     h.tick();
     h.press(Hit::BtnMode, Button::Left);
-    assert_eq!(h.app.cfg.timer_mode, Mode::Interval);
+    assert_eq!(h.app.cfg.timer_mode, Mode::Countdown);
     assert_eq!(h.app.color_target, pause);
 }
 

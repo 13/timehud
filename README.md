@@ -102,8 +102,8 @@ awful.key({ modkey, "Control" }, "h",     function() awful.spawn("timehud") end,
 |--------|--------|
 | Single click | Start / pause timer |
 | Double click | Reset timer to zero |
-| Middle click on timer or mode label | Next mode (Stopwatch → Countdown → Interval) |
-| Scroll wheel on timer or mode label | Toggle Stopwatch ↔ Countdown ↔ Interval mode |
+| Middle click on timer or mode label | Next stop: plain Stopwatch → plain Countdown → each enabled preset → back to Stopwatch |
+| Scroll wheel on timer or mode label | Step through the same stops (up = previous, down = next) |
 | Scroll wheel on the clock | Change font size |
 | Scroll wheel on the right of the countdown mode label | Adjust countdown duration (±1 min, far right ±1 s) |
 | Drag | Move the overlay (position is saved) |
@@ -119,17 +119,18 @@ The same menu opens from the tray icon.
   (work/rest cycles counting upward forever) presets; **Save current as
   preset…** saves the current countdown, interval or cycling-stopwatch setup
   (disabled for a plain stopwatch); **Manage presets…** opens Settings
-- **Theme** – switch between built-in looks
-- **Click-Through: ON/OFF** – toggle mouse pass-through *
 - **Opacity** – 30 / 50 / 70 / 85 / 95 / 100 %
 - **Position** – Top Left, Top Right, Bottom Left, Bottom Right, Top Center,
   Bottom Center
-- **Show/Hide Overlay** *
 - **Quit**
 
-\* Shown in the tray menu, and in the right-click menu only while the tray
-icon is enabled (so click-through can always be turned off again and a hidden
-overlay brought back).
+Theme and click-through live in Settings; show/hide is `timehud show` / `timehud hide` or
+the global hotkey.
+
+A preset can be switched off in Settings → Presets (the *enabled* checkbox,
+stored as `"enabled": false` in its entry). Disabled presets stay in the list
+but are skipped by the scroll/middle-click cycle and hidden from the Presets
+menu.
 
 ### Keyboard control
 

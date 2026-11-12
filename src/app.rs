@@ -6,7 +6,7 @@
 use crate::anim::{Ease, Tween, lerp_rgb};
 use crate::config::{
     COUNTDOWN_RANGE, Config, FONT_SIZE_RANGE, Mode, Preset, PresetRules, active_preset_matches,
-    valid_presets,
+    enabled_presets, valid_presets,
 };
 use crate::engine::{ClockFn, Phase, State, TimerEngine};
 use crate::format::{
@@ -17,7 +17,7 @@ use crate::layout::{Rect, clamp_into, preset_position, resize_anchor_delta, snap
 use crate::menu::{MenuAction, preset_savable};
 use crate::render::{Frame, Hit, Layout, View, measure, render_into};
 use crate::text::FontSet;
-use crate::themes::{Rgb, apply_theme, get_theme, parse_hex};
+use crate::themes::{Rgb, get_theme, parse_hex};
 use std::cell::RefCell;
 
 mod events;
@@ -46,7 +46,6 @@ pub const FRAME: f64 = 0.016;
 /// Shortest interval between frames that only advance the progress bar
 /// (~24 fps): smooth enough for a half-pixel step, far cheaper than `FRAME`.
 pub const PROGRESS_FRAME: f64 = 0.042;
-const MODES: [Mode; 3] = [Mode::Stopwatch, Mode::Countdown, Mode::Interval];
 
 struct Drag {
     /// Pointer offset from the panel's top-left.
@@ -823,14 +822,36 @@ impl App {
         }
     }
 
-    /// Switch mode by `dir` steps through stopwatch → countdown → interval.
+    /// Step `dir` stops through stopwatch → countdown → the enabled presets.
     fn step_mode(&mut self, dir: i32, now: f64) -> Vec<Effect> {
-        let cur = MODES
-            .iter()
-            .position(|m| *m == self.cfg.timer_mode)
-            .unwrap_or(0) as i32;
-        let new = MODES[(cur + dir).rem_euclid(MODES.len() as i32) as usize];
-        self.set_mode(new, now)
+        self.poll(now);
+        // Stops: plain stopwatch, plain countdown, then each enabled preset.
+        let presets = enabled_presets(&self.cfg.presets);
+        let len = 2 + presets.len() as i32;
+        let active = (!self.cfg.active_preset.is_empty())
+            .then(|| {
+                presets
+                    .iter()
+                    .position(|(p, _, _)| p.name() == self.cfg.active_preset)
+            })
+            .flatten();
+        let cur = match (active, self.cfg.timer_mode) {
+            (Some(i), _) => 2 + i as i32,
+            (None, Mode::Countdown) => 1,
+            (None, _) => 0,
+        };
+        match (cur + dir).rem_euclid(len) {
+            0 => self.perform(&MenuAction::ApplyStopwatch, now),
+            1 => {
+                self.cfg.active_preset.clear();
+                self.engine.set_mode(&mut self.cfg, Mode::Countdown);
+                self.changed(now)
+            }
+            n => {
+                let raw = presets[(n - 2) as usize].2;
+                self.apply_preset(raw, now)
+            }
+        }
     }
 
     pub fn perform(&mut self, action: &MenuAction, now: f64) -> Vec<Effect> {
@@ -849,18 +870,6 @@ impl App {
                 self.changed(now)
             }
             MenuAction::ApplyPreset(index) => self.apply_preset(*index, now),
-            MenuAction::SetTheme(name) => {
-                apply_theme(&mut self.cfg, name);
-                self.restyle();
-                self.changed(now)
-            }
-            MenuAction::ToggleClickThrough => {
-                self.cfg.click_through = !self.cfg.click_through;
-                vec![
-                    Effect::SetClickThrough(self.cfg.click_through),
-                    Effect::SaveSoon,
-                ]
-            }
             MenuAction::SetOpacity(v) => {
                 self.cfg.opacity = *v;
                 vec![Effect::SaveSoon, Effect::Redraw]
@@ -872,7 +881,6 @@ impl App {
                 self.panel_pos = self.preset_pos();
                 vec![self.move_effect(), Effect::SaveSoon]
             }
-            MenuAction::ToggleVisibility => self.toggle_visibility(),
             MenuAction::Quit => vec![Effect::Quit], // shutdown saves
         }
     }
@@ -924,6 +932,7 @@ impl App {
             last5: Some(cfg.alert_last_5_seconds),
             boundary: Some(cfg.phase_beeps),
             halfway: Some(cfg.halfway_beep),
+            disabled: false,
         };
         let value = preset.to_value(&rules);
         if valid_presets(std::slice::from_ref(&value)).is_empty() {
@@ -1067,11 +1076,7 @@ impl App {
         let hit = self.layout.hit(x, y);
         let last_timer_press = self.last_timer_press.take();
         match (b, hit) {
-            (Button::Right, _) => vec![Effect::OpenMenu {
-                root_x,
-                root_y,
-                include_window_actions: self.cfg.show_tray_icon,
-            }],
+            (Button::Right, _) => vec![Effect::OpenMenu { root_x, root_y }],
             (Button::Middle, Hit::Timer | Hit::Mode) => self.step_mode(1, now),
             (Button::Middle, _) => Vec::new(),
             (Button::Left, Hit::Timer) => {

@@ -32,6 +32,8 @@ pub struct PresetEditor {
     pub boundary: bool,
     pub halfway: bool,
     pub last5: bool,
+    /// Offered by the scroll cycle and the presets menu.
+    pub enabled: bool,
 }
 
 impl PresetEditor {
@@ -50,6 +52,7 @@ impl PresetEditor {
             boundary: cfg.phase_beeps,
             halfway: cfg.halfway_beep,
             last5: cfg.alert_last_5_seconds,
+            enabled: true,
         }
     }
 }
@@ -86,6 +89,7 @@ pub fn preset_from_editor(e: &PresetEditor) -> Result<(Preset, PresetRules), Str
         last5: Some(e.last5),
         boundary: Some(e.boundary),
         halfway: Some(e.halfway),
+        disabled: !e.enabled,
     };
     Ok((preset, rules))
 }
@@ -98,6 +102,7 @@ pub fn editor_from_preset(p: &Preset, r: &PresetRules, last5_default: bool) -> P
         boundary: r.boundary.unwrap_or(true),
         halfway: r.halfway.unwrap_or(false),
         last5: r.last5.unwrap_or(last5_default),
+        enabled: !r.disabled,
         ..PresetEditor::for_config(&Config::default())
     };
     match p {
@@ -356,12 +361,22 @@ pub fn section(ui: &mut Ui, st: &mut PresetsState, cfg: &mut Config) {
                             Align2::LEFT_CENTER,
                             p.name(),
                             FontId::proportional(14.0),
-                            if selected { Color32::WHITE } else { TEXT },
+                            if selected {
+                                Color32::WHITE
+                            } else if rules.disabled {
+                                WEAK
+                            } else {
+                                TEXT
+                            },
                         );
                         painter.text(
                             rect.right_center() - Vec2::new(10.0, 0.0),
                             Align2::RIGHT_CENTER,
-                            detail(p),
+                            if rules.disabled {
+                                format!("off  {}", detail(p))
+                            } else {
+                                detail(p)
+                            },
                             FontId::monospace(13.0),
                             if selected { ACCENT } else { WEAK },
                         );
@@ -461,6 +476,11 @@ pub fn section(ui: &mut Ui, st: &mut PresetsState, cfg: &mut Config) {
                 }
             }
 
+            ui.label("Cycle");
+            ui.checkbox(&mut e.enabled, "enabled")
+                .on_hover_text("Include in the scroll cycle and the Presets menu");
+            ui.end_row();
+
             ui.label("Beeps");
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
@@ -544,6 +564,7 @@ mod tests {
             boundary: true,
             halfway: false,
             last5: false,
+            enabled: true,
         }
     }
 
@@ -620,7 +641,8 @@ mod tests {
             PresetRules {
                 last5: Some(true),
                 boundary: Some(true),
-                halfway: Some(true)
+                halfway: Some(true),
+                disabled: false,
             }
         );
         let back = editor_from_preset(&p, &r, false);

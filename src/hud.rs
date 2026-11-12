@@ -477,7 +477,7 @@ impl Hud {
                     let fx = self.app.toggle_visibility();
                     self.apply(fx);
                 }
-                Some(TrayEvent::Menu { root_x, root_y }) => self.open_menu(root_x, root_y, true),
+                Some(TrayEvent::Menu { root_x, root_y }) => self.open_menu(root_x, root_y),
                 None => {}
             }
         }
@@ -576,11 +576,7 @@ impl Hud {
                         self.set_tray(v);
                     }
                 }
-                Effect::OpenMenu {
-                    root_x,
-                    root_y,
-                    include_window_actions,
-                } => self.open_menu(root_x, root_y, include_window_actions && !self.no_tray),
+                Effect::OpenMenu { root_x, root_y } => self.open_menu(root_x, root_y),
                 Effect::OpenSettings { tab } => self.open_settings(tab),
                 Effect::OpenSavePreset => {
                     if let Some(child) = spawn_self(&["save-preset"]) {
@@ -721,12 +717,12 @@ impl Hud {
         }
     }
 
-    fn open_menu(&mut self, root_x: i32, root_y: i32, include_window_actions: bool) {
+    fn open_menu(&mut self, root_x: i32, root_y: i32) {
         if let Some(p) = self.popup.take() {
             p.close(&self.x);
         }
         let fonts = self.menu_fonts.get_or_insert_with(FontSet::bundled);
-        let items = build_menu(&self.app.cfg, include_window_actions);
+        let items = build_menu(&self.app.cfg);
         let area = self.screens.work_area_at(root_x, root_y);
         let shaped = !self.compositor.active();
         match MenuPopup::open(&self.x, items, root_x, root_y, area, shaped, fonts) {

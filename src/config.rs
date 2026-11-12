@@ -389,6 +389,8 @@ pub struct PresetRules {
     pub last5: Option<bool>,
     pub boundary: Option<bool>,
     pub halfway: Option<bool>,
+    /// Left out of the scroll cycle and the presets menu (`"enabled": false`).
+    pub disabled: bool,
 }
 
 impl Preset {
@@ -426,14 +428,17 @@ impl Preset {
                 obj.insert(key.into(), Value::Bool(b));
             }
         }
+        if rules.disabled {
+            obj.insert("enabled".into(), Value::Bool(false));
+        }
         v
     }
 }
 
 /// The keys a preset's shape and rules may use; anything else in a preset
 /// object is the user's and survives edits.
-pub const PRESET_KEYS: [&str; 9] = [
-    "name", "type", "duration", "work", "rest", "total", "last5", "boundary", "halfway",
+pub const PRESET_KEYS: [&str; 10] = [
+    "name", "type", "duration", "work", "rest", "total", "last5", "boundary", "halfway", "enabled",
 ];
 
 impl Preset {
@@ -540,6 +545,8 @@ fn parse_preset(v: &Value) -> Option<(Preset, PresetRules)> {
         last5: rule(obj, "last5").ok()?,
         boundary: rule(obj, "boundary").ok()?,
         halfway: rule(obj, "halfway").ok()?,
+        // Lenient: anything but a literal `false` leaves the preset enabled.
+        disabled: obj.get("enabled") == Some(&Value::Bool(false)),
     };
     let preset = match obj.get("type").and_then(Value::as_str) {
         Some("stopwatch") => Preset::Stopwatch {
@@ -574,6 +581,13 @@ pub fn valid_presets(raw: &[Value]) -> Vec<(Preset, PresetRules, usize)> {
         .enumerate()
         .filter_map(|(i, v)| parse_preset(v).map(|(p, r)| (p, r, i)))
         .collect()
+}
+
+/// The valid presets that are enabled (the scroll cycle and the presets menu).
+pub fn enabled_presets(raw: &[Value]) -> Vec<(Preset, PresetRules, usize)> {
+    let mut list = valid_presets(raw);
+    list.retain(|(_, r, _)| !r.disabled);
+    list
 }
 
 /// Rounds that fit into the preset's total time (at least one).
@@ -615,6 +629,7 @@ mod tests {
             last5: None,
             boundary: Some(false),
             halfway: None,
+            disabled: false,
         };
         p.merge_into(&rules, &mut raw);
         assert_eq!(
@@ -870,6 +885,29 @@ mod tests {
     }
 
     #[test]
+    fn enabled_flag_round_trips_and_filters() {
+        let raw = [
+            json!({"name": "a", "duration": 60}),
+            json!({"name": "b", "duration": 60, "enabled": false}),
+            json!({"name": "c", "duration": 60, "enabled": "no"}),
+        ];
+        let names: Vec<_> = enabled_presets(&raw)
+            .iter()
+            .map(|(p, _, _)| p.name().to_string())
+            .collect();
+        assert_eq!(names, ["a", "c"]);
+        let (p, rules, _) = &valid_presets(&raw)[1];
+        assert!(rules.disabled);
+        assert_eq!(p.to_value(rules)["enabled"], json!(false));
+        let (p, rules, _) = &valid_presets(&raw)[0];
+        assert!(p.to_value(rules).get("enabled").is_none());
+        // merge_into drops the key when the preset is enabled again
+        let mut v = raw[1].clone();
+        p.merge_into(rules, &mut v);
+        assert!(v.get("enabled").is_none());
+    }
+
+    #[test]
     fn malformed_interval_presets_filtered() {
         let raw = vec![
             json!({"name": "no total", "type": "interval", "work": 45, "rest": 15}),
@@ -971,7 +1009,8 @@ mod tests {
             &PresetRules {
                 last5: Some(true),
                 boundary: Some(false),
-                halfway: Some(true)
+                halfway: Some(true),
+                disabled: false,
             }
         );
     }

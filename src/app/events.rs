@@ -126,7 +126,6 @@ pub enum Effect {
     OpenMenu {
         root_x: i32,
         root_y: i32,
-        include_window_actions: bool,
     },
     OpenSettings {
         tab: Option<String>,

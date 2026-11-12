@@ -9,19 +9,15 @@ pub enum MenuAction {
     ApplyPreset(usize),
     SavePreset,
     ManagePresets,
-    SetTheme(&'static str),
-    ToggleClickThrough,
     SetOpacity(f64),
     SetPosition(&'static str),
-    ToggleVisibility,
     Quit,
 }
 
-use crate::config::{Config, Mode, Preset, valid_presets};
+use crate::config::{Config, Mode, Preset, enabled_presets};
 use crate::format::preset_menu_label;
 use crate::layout::{POSITIONS, Rect};
 use crate::text::FontSet;
-use crate::themes::THEMES;
 
 /// One menu entry; submenus own their children.
 #[derive(Clone, Debug, PartialEq)]
@@ -98,7 +94,7 @@ fn presets_menu(cfg: &Config) -> MenuItem {
         MenuAction::ApplyStopwatch,
         cfg.timer_mode == Mode::Stopwatch,
     )];
-    let presets = valid_presets(&cfg.presets);
+    let presets = enabled_presets(&cfg.presets);
     if !presets.is_empty() {
         items.push(MenuItem::Separator);
         for (p, _, idx) in &presets {
@@ -147,28 +143,13 @@ fn opacity_menu(cfg: &Config) -> MenuItem {
 }
 
 /// Port of `menus.populate_context_menu`.
-pub fn build_menu(cfg: &Config, include_window_actions: bool) -> Vec<MenuItem> {
+pub fn build_menu(cfg: &Config) -> Vec<MenuItem> {
     let mut m = vec![
         action("Settings…", MenuAction::OpenSettings),
         MenuItem::Separator,
         presets_menu(cfg),
-        submenu(
-            "Theme",
-            THEMES
-                .iter()
-                .map(|t| check(t.label, MenuAction::SetTheme(t.name), t.name == cfg.theme))
-                .collect(),
-        ),
         MenuItem::Separator,
     ];
-    if include_window_actions {
-        let label = if cfg.click_through {
-            "Click-Through: ON"
-        } else {
-            "Click-Through: OFF"
-        };
-        m.push(action(label, MenuAction::ToggleClickThrough));
-    }
     m.push(opacity_menu(cfg));
     m.push(submenu(
         "Position",
@@ -183,10 +164,6 @@ pub fn build_menu(cfg: &Config, include_window_actions: bool) -> Vec<MenuItem> {
             })
             .collect(),
     ));
-    if include_window_actions {
-        m.push(MenuItem::Separator);
-        m.push(action("Show/Hide Overlay", MenuAction::ToggleVisibility));
-    }
     m.push(action("Quit", MenuAction::Quit));
     m
 }
@@ -455,42 +432,35 @@ mod tests {
     }
 
     #[test]
-    fn menu_structure_with_window_actions() {
-        let m = build_menu(&Config::default(), true);
+    fn menu_structure() {
+        let m = build_menu(&Config::default());
         assert_eq!(
             labels(&m),
             [
                 "Settings…",
                 "─",
                 "Presets",
-                "Theme",
                 "─",
-                "Click-Through: OFF",
                 "Opacity",
                 "Position",
-                "─",
-                "Show/Hide Overlay",
                 "Quit"
             ]
         );
     }
 
     #[test]
-    fn menu_without_window_actions() {
-        let m = build_menu(&Config::default(), false);
-        let l = labels(&m);
-        assert!(!l.iter().any(|s| s.starts_with("Click-Through")));
-        assert!(!l.contains(&"Show/Hide Overlay"));
-        assert_eq!(l.last(), Some(&"Quit"));
-    }
-
-    #[test]
-    fn click_through_on_label() {
+    fn disabled_presets_leave_the_menu() {
         let cfg = Config {
-            click_through: true,
+            presets: vec![
+                serde_json::json!({"name": "a", "duration": 60}),
+                serde_json::json!({"name": "b", "duration": 90, "enabled": false}),
+            ],
             ..Config::default()
         };
-        assert!(labels(&build_menu(&cfg, true)).contains(&"Click-Through: ON"));
+        let m = build_menu(&cfg);
+        let l = labels(sub(&m, "Presets"));
+        assert!(l.iter().any(|s| s.starts_with('a')));
+        assert!(!l.iter().any(|s| s.starts_with('b')));
     }
 
     #[test]
@@ -500,7 +470,7 @@ mod tests {
             stopwatch_work: 0,
             ..Config::default()
         };
-        let m = build_menu(&cfg, true);
+        let m = build_menu(&cfg);
         let save = sub(&m, "Presets")
             .iter()
             .find(|i| label_of(i) == Some("Save current as preset…"))
@@ -510,7 +480,7 @@ mod tests {
             timer_mode: Mode::Countdown,
             ..cfg
         };
-        let m = build_menu(&cfg, true);
+        let m = build_menu(&cfg);
         let save = sub(&m, "Presets")
             .iter()
             .find(|i| label_of(i) == Some("Save current as preset…"))
@@ -530,7 +500,7 @@ mod tests {
             ],
             ..Config::default()
         };
-        let m = build_menu(&cfg, true);
+        let m = build_menu(&cfg);
         let p = sub(&m, "Presets");
         let plank = p
             .iter()
@@ -558,42 +528,31 @@ mod tests {
             opacity: 0.42,
             ..Config::default()
         };
-        let m = build_menu(&cfg, true);
+        let m = build_menu(&cfg);
         let op = sub(&m, "Opacity");
         assert_eq!(op.len(), 7);
         let last = op.last().unwrap();
         assert_eq!(label_of(last), Some("Current: 42%"));
         assert_eq!(checked(last), Some(true));
-        let m = build_menu(
-            &Config {
-                opacity: 0.85,
-                ..Config::default()
-            },
-            true,
-        );
+        let m = build_menu(&Config {
+            opacity: 0.85,
+            ..Config::default()
+        });
         let op = sub(&m, "Opacity");
         assert_eq!(op.len(), 6);
         assert_eq!(op.iter().filter(|i| checked(i) == Some(true)).count(), 1);
     }
 
     #[test]
-    fn theme_items_six_one_checked() {
-        let m = build_menu(&Config::default(), true);
-        let t = sub(&m, "Theme");
-        assert_eq!(t.len(), 6);
-        assert_eq!(t.iter().filter(|i| checked(i) == Some(true)).count(), 1);
-    }
-
-    #[test]
     fn position_labels_titlecased() {
-        let m = build_menu(&Config::default(), true);
+        let m = build_menu(&Config::default());
         assert_eq!(labels(sub(&m, "Position"))[0], "Top Left");
         assert_eq!(labels(sub(&m, "Position"))[5], "Bottom Center");
     }
 
     #[test]
     fn layout_rows_match_items() {
-        let m = build_menu(&Config::default(), true);
+        let m = build_menu(&Config::default());
         let mut fonts = FontSet::bundled();
         let l = layout_menu(&m, &mut fonts, 1.0);
         assert_eq!(l.rows.len(), m.len());
