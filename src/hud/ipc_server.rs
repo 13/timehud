@@ -21,6 +21,36 @@ pub(super) struct SettingsSession {
     pub(super) session: Session,
 }
 
+const NOT_SETTINGS: &str = "not the settings connection (send settings-hello first)";
+const ALREADY_OPEN: &str = "settings are already open";
+
+/// What happens to a request before dispatch.
+#[derive(Debug, PartialEq)]
+enum Gate {
+    Pass,
+    /// A settings-only request from another connection.
+    NotSettings,
+    /// A second settings window said hello; `other` (the open one) is
+    /// raised instead.
+    AlreadyOpen {
+        other: u64,
+    },
+}
+
+/// Checks a request from connection `id` against the settings session
+/// (held by connection `settings`, if any).
+fn gate(req: &Request, settings: Option<u64>, id: u64) -> Gate {
+    match (req, settings) {
+        (Request::Preview { .. } | Request::Commit { .. } | Request::Cancel, s)
+            if s != Some(id) =>
+        {
+            Gate::NotSettings
+        }
+        (Request::SettingsHello, Some(other)) if other != id => Gate::AlreadyOpen { other },
+        _ => Gate::Pass,
+    }
+}
+
 impl Hud {
     pub(super) fn accept(&mut self) {
         loop {
@@ -113,44 +143,27 @@ impl Hud {
 
     fn handle_request(&mut self, id: u64, req: Request) -> Option<IpcEvent> {
         let now = self.now();
-        let is_settings = self.settings.as_ref().is_some_and(|s| s.conn_id == id);
-        let settings_only = matches!(
-            req,
-            Request::Preview { .. } | Request::Commit { .. } | Request::Cancel
-        );
-        if settings_only && !is_settings {
-            return Some(IpcEvent::Error {
-                message: "not the settings connection (send settings-hello first)".into(),
-            });
+        match gate(&req, self.settings.as_ref().map(|s| s.conn_id), id) {
+            Gate::Pass => {}
+            Gate::NotSettings => {
+                return Some(IpcEvent::Error {
+                    message: NOT_SETTINGS.into(),
+                });
+            }
+            Gate::AlreadyOpen { other } => {
+                self.send_to(other, &IpcEvent::Focus { tab: None });
+                return Some(IpcEvent::Error {
+                    message: ALREADY_OPEN.into(),
+                });
+            }
         }
-        // Ok(effects) to apply and acknowledge, or the refusal to report.
-        let fx: Result<Vec<Effect>, String> = match req {
-            Request::Toggle => Ok(self.app.toggle_timer(now)),
-            Request::Start => Ok(self.app.start_timer(now)),
-            Request::Pause => Ok(self.app.pause_timer(now)),
-            Request::SetMode { mode } => Ok(self.app.set_mode(mode, now)),
-            Request::SetCountdown { seconds } => self.app.set_countdown(seconds, now),
-            Request::ApplyPreset { name } => self.app.apply_preset_named(&name, now),
+        let fx = match req {
             Request::Status => {
                 return Some(IpcEvent::Status {
                     status: self.app.status(),
                 });
             }
-            Request::Reset => Ok(self.app.reset_timer(now)),
-            Request::Show => Ok(self.app.set_visible(true)),
-            Request::Hide => Ok(self.app.set_visible(false)),
-            Request::ToggleVisibility => Ok(self.app.toggle_visibility()),
-            Request::Quit => Ok(vec![Effect::Quit]),
-            Request::SavePreset { name } => self.app.save_preset(&name),
             Request::SettingsHello => {
-                if let Some(other) = self.settings.as_ref().map(|s| s.conn_id)
-                    && other != id
-                {
-                    self.send_to(other, &IpcEvent::Focus { tab: None });
-                    return Some(IpcEvent::Error {
-                        message: "settings are already open".into(),
-                    });
-                }
                 let config = self.app.cfg.to_value();
                 self.settings = Some(SettingsSession {
                     conn_id: id,
@@ -181,6 +194,7 @@ impl Hud {
                 self.settings_cancel();
                 return None;
             }
+            control => self.app.request(control, now),
         };
         match fx {
             Ok(fx) => {
@@ -248,6 +262,51 @@ impl Hud {
                 rev,
             };
             self.send_to(id, &push);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn preview() -> Request {
+        Request::Preview {
+            config: json!({}),
+            rev: 0,
+        }
+    }
+
+    #[test]
+    fn settings_only_requests_need_the_settings_connection() {
+        let commit = Request::Commit {
+            config: json!({}),
+            rev: 0,
+        };
+        for req in [preview(), commit, Request::Cancel] {
+            assert_eq!(gate(&req, None, 1), Gate::NotSettings, "{req:?}");
+            assert_eq!(gate(&req, Some(2), 1), Gate::NotSettings, "{req:?}");
+            assert_eq!(gate(&req, Some(1), 1), Gate::Pass, "{req:?}");
+        }
+    }
+
+    #[test]
+    fn a_second_settings_hello_raises_the_open_window() {
+        assert_eq!(gate(&Request::SettingsHello, None, 1), Gate::Pass);
+        // The same connection saying hello again restarts its session.
+        assert_eq!(gate(&Request::SettingsHello, Some(1), 1), Gate::Pass);
+        assert_eq!(
+            gate(&Request::SettingsHello, Some(1), 2),
+            Gate::AlreadyOpen { other: 1 }
+        );
+    }
+
+    #[test]
+    fn control_requests_pass_from_anyone() {
+        for req in [Request::Toggle, Request::Status, Request::Quit] {
+            assert_eq!(gate(&req, Some(1), 2), Gate::Pass, "{req:?}");
+            assert_eq!(gate(&req, None, 2), Gate::Pass, "{req:?}");
         }
     }
 }

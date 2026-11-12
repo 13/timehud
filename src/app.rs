@@ -12,6 +12,7 @@ use crate::engine::{ClockFn, Phase, State, TimerEngine};
 use crate::format::{
     clock_text, fmt_seconds, mode_button_text, mode_label, phase_label, shown_seconds,
 };
+use crate::ipc::Request;
 use crate::layout::{Rect, clamp_into, preset_position, resize_anchor_delta, snap_drag};
 use crate::menu::{MenuAction, preset_savable};
 use crate::render::{Frame, Hit, Layout, View, measure, render_into};
@@ -794,6 +795,32 @@ impl App {
     pub fn set_visible(&mut self, v: bool) -> Vec<Effect> {
         self.visible = v;
         vec![Effect::SetVisible(v)]
+    }
+
+    /// A control request from another process (`timehud start` etc.):
+    /// `Ok(effects)` to apply and acknowledge, or the refusal to report.
+    /// Status and the settings-session requests are the HUD's own
+    /// (`hud/ipc_server.rs`) and are refused here.
+    pub fn request(&mut self, req: Request, now: f64) -> Result<Vec<Effect>, String> {
+        match req {
+            Request::Toggle => Ok(self.toggle_timer(now)),
+            Request::Start => Ok(self.start_timer(now)),
+            Request::Pause => Ok(self.pause_timer(now)),
+            Request::Reset => Ok(self.reset_timer(now)),
+            Request::SetMode { mode } => Ok(self.set_mode(mode, now)),
+            Request::SetCountdown { seconds } => self.set_countdown(seconds, now),
+            Request::ApplyPreset { name } => self.apply_preset_named(&name, now),
+            Request::SavePreset { name } => self.save_preset(&name),
+            Request::Show => Ok(self.set_visible(true)),
+            Request::Hide => Ok(self.set_visible(false)),
+            Request::ToggleVisibility => Ok(self.toggle_visibility()),
+            Request::Quit => Ok(vec![Effect::Quit]),
+            Request::Status
+            | Request::SettingsHello
+            | Request::Preview { .. }
+            | Request::Commit { .. }
+            | Request::Cancel => Err("not a control request".into()),
+        }
     }
 
     /// Switch mode by `dir` steps through stopwatch → countdown → interval.

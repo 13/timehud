@@ -1,4 +1,5 @@
 use super::*;
+use crate::ipc::Request;
 use serde_json::json;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -1270,4 +1271,167 @@ fn shadows_off_keeps_the_panel_in_place() {
         (wx + with.panel.x, wy + with.panel.y),
         "the panel stays put"
     );
+}
+
+#[test]
+fn requests_drive_the_timer() {
+    let mut h = mk(Config::default());
+    let now = h.now();
+    let state = |h: &Harness| h.app.status().state;
+    assert_eq!(h.app.request(Request::Start, now), Ok(vec![Effect::Redraw]));
+    assert_eq!(state(&h), "running");
+    h.advance(1.0);
+    let now = h.now();
+    assert_eq!(
+        h.app.request(Request::Start, now),
+        Ok(vec![]),
+        "already running"
+    );
+    assert_eq!(h.app.request(Request::Pause, now), Ok(vec![Effect::Redraw]));
+    assert_eq!(state(&h), "paused");
+    assert_eq!(
+        h.app.request(Request::Pause, now),
+        Ok(vec![]),
+        "already paused"
+    );
+    assert_eq!(
+        h.app.request(Request::Toggle, now),
+        Ok(vec![Effect::Redraw])
+    );
+    assert_eq!(state(&h), "running");
+    assert_eq!(
+        h.app.request(Request::Toggle, now),
+        Ok(vec![Effect::Redraw])
+    );
+    assert_eq!(state(&h), "paused");
+    assert_eq!(h.app.request(Request::Reset, now), Ok(vec![Effect::Redraw]));
+    assert_eq!(state(&h), "idle");
+}
+
+#[test]
+fn requests_change_the_setup_and_save() {
+    let mut h = mk(Config::default());
+    let now = h.now();
+    let fx = h
+        .app
+        .request(
+            Request::SetMode {
+                mode: Mode::Interval,
+            },
+            now,
+        )
+        .unwrap();
+    assert!(
+        fx.contains(&Effect::SaveSoon) && fx.contains(&Effect::Redraw),
+        "{fx:?}"
+    );
+    assert_eq!(h.app.cfg.timer_mode, Mode::Interval);
+    assert_eq!(
+        h.app.request(
+            Request::SetMode {
+                mode: Mode::Interval
+            },
+            now
+        ),
+        Ok(vec![]),
+        "same mode: no-op"
+    );
+    let fx = h
+        .app
+        .request(Request::SetCountdown { seconds: 90 }, now)
+        .unwrap();
+    assert!(fx.contains(&Effect::SaveSoon), "{fx:?}");
+    assert_eq!(
+        (h.app.cfg.timer_mode, h.app.cfg.countdown_duration),
+        (Mode::Countdown, 90)
+    );
+    let fx = h
+        .app
+        .request(
+            Request::ApplyPreset {
+                name: "5 MIN".into(),
+            },
+            now,
+        )
+        .unwrap();
+    assert!(fx.contains(&Effect::SaveSoon), "{fx:?}");
+    assert_eq!(h.app.cfg.active_preset, "5 min");
+    let fx = h
+        .app
+        .request(Request::SavePreset { name: "x".into() }, now)
+        .unwrap();
+    assert!(!fx.is_empty());
+    assert!(h.app.apply_preset_named("x", now).is_ok());
+}
+
+#[test]
+fn requests_refuse_bad_values_with_a_reason() {
+    let mut h = mk(Config::default());
+    let now = h.now();
+    let before = h.app.cfg.to_value();
+    let range = "a countdown must last 1 s to 168:00:00";
+    for seconds in [0, -5, COUNTDOWN_RANGE.1 + 1] {
+        assert_eq!(
+            h.app.request(Request::SetCountdown { seconds }, now),
+            Err(range.into())
+        );
+    }
+    assert_eq!(
+        h.app.request(
+            Request::ApplyPreset {
+                name: " Tea ".into()
+            },
+            now
+        ),
+        Err("no preset named 'Tea' (have: 1 min, 5 min)".into())
+    );
+    assert_eq!(
+        h.app
+            .request(Request::SavePreset { name: "  ".into() }, now),
+        Err("the preset name is empty".into())
+    );
+    assert_eq!(
+        h.app
+            .request(Request::SavePreset { name: "sw".into() }, now),
+        Err("a plain stopwatch cannot be saved as a preset".into())
+    );
+    assert_eq!(h.app.cfg.to_value(), before, "refusals change nothing");
+
+    let mut h = mk(with_presets(vec![]));
+    assert_eq!(
+        h.app
+            .request(Request::ApplyPreset { name: "x".into() }, now),
+        Err("no preset named 'x' (there are no presets)".into())
+    );
+    // Modes are an enum: an unknown one never reaches the HUD's dispatch,
+    // the request line fails to decode ("bad request: ...").
+    assert!(serde_json::from_str::<Request>(r#"{"cmd":"set-mode","mode":"lap"}"#).is_err());
+    assert!(serde_json::from_str::<Request>(r#"{"cmd":"set-mode","mode":"interval"}"#).is_ok());
+}
+
+#[test]
+fn requests_for_the_window_and_the_process() {
+    let mut h = mk(Config::default());
+    let now = h.now();
+    assert_eq!(
+        h.app.request(Request::Hide, now),
+        Ok(vec![Effect::SetVisible(false)])
+    );
+    assert_eq!(
+        h.app.request(Request::ToggleVisibility, now),
+        Ok(vec![Effect::SetVisible(true)])
+    );
+    assert_eq!(
+        h.app.request(Request::ToggleVisibility, now),
+        Ok(vec![Effect::SetVisible(false)])
+    );
+    assert_eq!(
+        h.app.request(Request::Show, now),
+        Ok(vec![Effect::SetVisible(true)])
+    );
+    assert_eq!(h.app.request(Request::Quit, now), Ok(vec![Effect::Quit]));
+    // The HUD answers these itself (status, settings session).
+    for req in [Request::Status, Request::SettingsHello, Request::Cancel] {
+        assert_eq!(h.app.request(req, now), Err("not a control request".into()));
+    }
 }
