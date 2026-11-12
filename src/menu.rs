@@ -61,7 +61,7 @@ fn submenu(label: &str, items: Vec<MenuItem>) -> MenuItem {
 }
 
 /// "top-left" -> "Top Left" (Python `str.title`).
-fn position_label(p: &str) -> String {
+pub(crate) fn position_label(p: &str) -> String {
     p.split('-')
         .map(|w| {
             let mut c = w.chars();

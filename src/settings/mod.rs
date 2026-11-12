@@ -7,13 +7,13 @@ mod save_preset;
 pub use save_preset::run_save_preset;
 
 use crate::config::{
-    COUNTDOWN_RANGE, Config, FONT_SIZE_RANGE, Mode, OPACITY_RANGE, PADDING_RANGE,
-    PADDING_TOP_RANGE, REST_RANGE, ROUNDS_RANGE, ROW_SPACING_RANGE, SOUND_SECS_RANGE, WORK_RANGE,
-    config_path,
+    COUNTDOWN_RANGE, Config, FONT_SIZE_RANGE, MARGIN_RANGE, Mode, OPACITY_RANGE, PADDING_RANGE,
+    REST_RANGE, ROUNDS_RANGE, ROW_SPACING_RANGE, SOUND_SECS_RANGE, WORK_RANGE, config_path,
 };
 use crate::hotkey::{duplicate_combos, egui_to_combo, format_combo, is_modifier_key};
 use crate::ipc::{Event, Request, socket_path};
 use crate::layout::POSITIONS;
+use crate::menu::position_label;
 use crate::settings_session::adopt_hud_config;
 use crate::themes::{THEMES, apply_theme, parse_hex};
 use eframe::egui::{
@@ -595,8 +595,8 @@ struct SettingsApp {
     cfg: Config,
     /// What the HUD last received from us.
     sent: Config,
-    /// HUD values as of the start or the last Apply, kept current by HUD
-    /// pushes for keys not edited here (`settings_session`).
+    /// HUD values as of the start, kept current by HUD pushes for keys not
+    /// edited here (`settings_session`).
     base: Config,
     /// Revision of the last HUD push received, echoed in Preview/Commit so
     /// the HUD can tell values sent before a push from edits.
@@ -891,33 +891,37 @@ impl SettingsApp {
         card(ui, "Layout", |ui| {
             form(ui, "display-layout", |ui| {
                 ui.label("Position");
+                let current = if cfg.custom_x >= 0 && cfg.custom_y >= 0 {
+                    "Custom (dragged)".to_string()
+                } else {
+                    position_label(&cfg.position)
+                };
                 egui::ComboBox::from_id_salt("position")
-                    .selected_text(cfg.position.as_str())
+                    .selected_text(current)
                     .show_ui(ui, |ui| {
                         for p in POSITIONS {
-                            if ui.selectable_label(cfg.position == p, p).clicked() {
+                            if ui
+                                .selectable_label(cfg.position == p, position_label(p))
+                                .clicked()
+                            {
                                 cfg.position = p.into();
                                 cfg.custom_x = -1;
                                 cfg.custom_y = -1;
                             }
                         }
-                    });
+                    })
+                    .response
+                    .on_hover_text("Screen corner or edge; dragging the HUD overrides it");
+                ui.end_row();
+
+                ui.label("Screen margin");
+                spin(ui, &mut cfg.margin, MARGIN_RANGE, " px")
+                    .on_hover_text("Distance from the screen edge");
                 ui.end_row();
 
                 ui.label("Padding");
                 spin(ui, &mut cfg.padding, PADDING_RANGE, " px")
                     .on_hover_text("Space between the window border and the text");
-                ui.end_row();
-
-                ui.label("Top padding");
-                sentinel_spin(
-                    ui,
-                    &mut cfg.padding_top,
-                    PADDING_TOP_RANGE,
-                    "px",
-                    "same as padding",
-                )
-                .on_hover_text("Top padding override; 'same as padding' follows the value above");
                 ui.end_row();
 
                 ui.label("Row spacing");
@@ -929,36 +933,31 @@ impl SettingsApp {
         ui.add_space(10.0);
         card(ui, "Show", |ui| {
             ui.horizontal(|ui| {
-                ui.checkbox(&mut cfg.show_clock, "System clock");
-                egui::ComboBox::from_id_salt("clock-format")
-                    .width(170.0)
-                    .selected_text(clock_format_label(&cfg.clock_format))
-                    .show_ui(ui, |ui| {
-                        for (value, label) in CLOCK_FORMATS {
-                            if ui
-                                .selectable_label(cfg.clock_format == value, label)
-                                .clicked()
-                            {
-                                cfg.clock_format = value.into();
-                            }
-                        }
-                    })
-                    .response
-                    .on_hover_text("Clock format");
+                ui.checkbox(&mut cfg.show_clock, "Clock");
+                ui.add_enabled_ui(cfg.show_clock, |ui| {
+                    choice(ui, "clock-format", &mut cfg.clock_format, &CLOCK_FORMATS)
+                        .on_hover_text("Clock format");
+                });
             });
-            if ui
-                .checkbox(&mut cfg.show_timer, "Timer  (stopwatch / countdown)")
-                .changed()
-                && !cfg.show_timer
-            {
+            if ui.checkbox(&mut cfg.show_timer, "Timer").changed() && !cfg.show_timer {
                 cfg.show_controls = false;
             }
-            ui.checkbox(&mut cfg.show_controls, "Timer controls (start/stop/reset)");
-            ui.checkbox(&mut cfg.show_tray_icon, "System tray icon");
-            ui.checkbox(
-                &mut cfg.click_through,
-                "Click-through (mouse passes to windows below)",
-            );
+            ui.add_enabled_ui(cfg.show_timer, |ui| {
+                ui.checkbox(&mut cfg.show_controls, "Start / pause / reset buttons");
+            });
+        });
+        ui.add_space(10.0);
+        card(ui, "Behavior", |ui| {
+            ui.checkbox(&mut cfg.show_tray_icon, "Tray icon");
+            ui.checkbox(&mut cfg.click_through, "Click-through")
+                .on_hover_text("Mouse clicks pass through the HUD to the windows below");
+            if lockout_risk(cfg) {
+                warning(
+                    ui,
+                    "With click-through on and no tray icon, the HUD cannot be clicked: \
+                     turn click-through off again via `timehud settings`.",
+                );
+            }
         });
     }
 
@@ -975,30 +974,24 @@ impl SettingsApp {
             form(ui, "timer-mode", |ui| {
                 ui.label("Default mode");
                 egui::ComboBox::from_id_salt("mode")
-                    .selected_text(cfg.timer_mode.name())
+                    .selected_text(cfg.timer_mode.label())
                     .show_ui(ui, |ui| {
                         for m in Mode::ALL {
-                            ui.selectable_value(&mut cfg.timer_mode, m, m.name());
+                            ui.selectable_value(&mut cfg.timer_mode, m, m.label());
                         }
                     });
                 ui.end_row();
 
-                ui.label("Progress bar");
-                egui::ComboBox::from_id_salt("progress")
-                    .selected_text(cfg.progress_style.as_str())
-                    .show_ui(ui, |ui| {
-                        for p in ["line", "border", "off"] {
-                            if ui.selectable_label(cfg.progress_style == p, p).clicked() {
-                                cfg.progress_style = p.into();
-                            }
-                        }
-                    })
-                    .response
-                    .on_hover_text(
-                        "line = bar under the timer, border = progress traced around the window",
-                    );
+                ui.label("Progress");
+                choice(ui, "progress", &mut cfg.progress_style, &PROGRESS_STYLES)
+                    .on_hover_text("How a countdown or interval shows the time left");
                 ui.end_row();
             });
+            ui.checkbox(
+                &mut cfg.notify_on_finish,
+                "Desktop notification when a countdown or interval session ends",
+            )
+            .on_hover_text("Sent with notify-send");
         });
         ui.add_space(10.0);
         card(ui, "Countdown", |ui| {
@@ -1013,13 +1006,8 @@ impl SettingsApp {
             });
             ui.checkbox(
                 &mut cfg.auto_restart_countdown,
-                "Restart countdown automatically",
+                "Start again automatically when it reaches zero",
             );
-            ui.checkbox(
-                &mut cfg.notify_on_finish,
-                "Desktop notification when the timer runs out",
-            )
-            .on_hover_text("Countdown or interval session end, via notify-send");
         });
         ui.add_space(10.0);
         card(ui, "Interval", |ui| {
@@ -1031,7 +1019,15 @@ impl SettingsApp {
                 spin(ui, &mut cfg.interval_rest, REST_RANGE, " s");
                 ui.end_row();
                 ui.label("Rounds");
-                spin(ui, &mut cfg.interval_rounds, ROUNDS_RANGE, "");
+                ui.horizontal(|ui| {
+                    spin(ui, &mut cfg.interval_rounds, ROUNDS_RANGE, "");
+                    let total = interval_session_secs(
+                        cfg.interval_work,
+                        cfg.interval_rest,
+                        cfg.interval_rounds,
+                    );
+                    note(ui, format!("{} total", countdown_note(total)));
+                });
                 ui.end_row();
             });
         });
@@ -1050,55 +1046,75 @@ impl SettingsApp {
 
     fn sound(&mut self, ui: &mut Ui) {
         let cfg = &mut self.cfg;
-        card(ui, "Alerts", |ui| {
-            ui.checkbox(&mut cfg.sound_enabled, "Enable periodic sound alerts");
+        card(ui, "", |ui| {
             ui.checkbox(
-                &mut cfg.alert_last_5_seconds,
-                "Alert last 5 seconds with short beeps (countdown)",
-            );
-            ui.add_space(4.0);
-            form(ui, "sound-form", |ui| {
-                ui.label("Alert every");
-                sentinel_spin(ui, &mut cfg.sound_interval, SOUND_SECS_RANGE, "s", "off")
-                    .on_hover_text("Play a beep every N seconds of active timer (off = never)");
-                ui.end_row();
-
-                ui.label("Double beep before");
-                ui.horizontal(|ui| {
-                    spin(ui, &mut cfg.sound_alert_before, SOUND_SECS_RANGE, " s")
-                        .on_hover_text("Play a double short beep N seconds before the main alert");
-                    note(ui, "0 to disable");
-                });
-                ui.end_row();
-            });
+                &mut cfg.sound_enabled,
+                RichText::new("Play sounds").strong(),
+            )
+            .on_hover_text("Master switch: off mutes every beep");
         });
         ui.add_space(10.0);
-        card(ui, "Sound file", |ui| {
-            let row = Vec2::new(ui.available_width(), 28.0);
-            ui.allocate_ui_with_layout(row, Layout::right_to_left(Align::Center), |ui| {
-                if let Some(prog) = self.picker {
-                    let busy = self.picked.is_some();
-                    if ui
-                        .add_enabled(!busy, egui::Button::new("Browse…"))
-                        .clicked()
-                    {
-                        let (tx, rx) = channel();
-                        let current = cfg.sound_file.clone();
-                        let ctx = ui.ctx().clone();
-                        std::thread::spawn(move || {
-                            let _ = tx.send(run_picker(prog, &current));
-                            ctx.request_repaint();
-                        });
-                        self.picked = Some(rx);
+        ui.add_enabled_ui(cfg.sound_enabled, |ui| {
+            card(ui, "Beeps", |ui| {
+                ui.checkbox(
+                    &mut cfg.alert_last_5_seconds,
+                    "Short beeps in the last 5 seconds of a countdown or phase",
+                );
+                ui.add_space(4.0);
+                form(ui, "sound-form", |ui| {
+                    ui.label("Beep every");
+                    sentinel_spin(ui, &mut cfg.sound_interval, SOUND_SECS_RANGE, "s", "off")
+                        .on_hover_text(
+                            "A beep every N seconds of running stopwatch or countdown \
+                             (not in interval or cycling timers)",
+                        );
+                    ui.end_row();
+
+                    ui.label("Warning beep");
+                    ui.add_enabled_ui(cfg.sound_interval > 0, |ui| {
+                        sentinel_spin(
+                            ui,
+                            &mut cfg.sound_alert_before,
+                            SOUND_SECS_RANGE,
+                            "s before",
+                            "off",
+                        )
+                        .on_hover_text("A double short beep N seconds before each periodic beep");
+                    });
+                    ui.end_row();
+                });
+            });
+            ui.add_space(10.0);
+            card(ui, "Custom sound", |ui| {
+                let row = Vec2::new(ui.available_width(), 28.0);
+                ui.allocate_ui_with_layout(row, Layout::right_to_left(Align::Center), |ui| {
+                    if let Some(prog) = self.picker {
+                        let busy = self.picked.is_some();
+                        if ui
+                            .add_enabled(!busy, egui::Button::new("Browse…"))
+                            .clicked()
+                        {
+                            let (tx, rx) = channel();
+                            let current = cfg.sound_file.clone();
+                            let ctx = ui.ctx().clone();
+                            std::thread::spawn(move || {
+                                let _ = tx.send(run_picker(prog, &current));
+                                ctx.request_repaint();
+                            });
+                            self.picked = Some(rx);
+                        }
                     }
-                }
-                ui.add(
-                    egui::TextEdit::singleline(&mut cfg.sound_file)
-                        .hint_text("Leave empty to use built-in beep")
-                        .desired_width(ui.available_width()),
+                    ui.add(
+                        egui::TextEdit::singleline(&mut cfg.sound_file)
+                            .hint_text("Empty = built-in beep")
+                            .desired_width(ui.available_width()),
+                    );
+                });
+                note(
+                    ui,
+                    "Plays instead of every built-in beep. WAV, MP3, OGG or FLAC.",
                 );
             });
-            note(ui, "WAV, MP3, OGG or FLAC.");
         });
     }
 
@@ -1196,25 +1212,7 @@ impl SettingsApp {
             }
         });
         ui.add_space(10.0);
-        Frame::new()
-            .fill(WARN.gamma_multiply(0.08))
-            .stroke(Stroke::new(1.0, WARN.gamma_multiply(0.35)))
-            .corner_radius(CornerRadius::same(ROUND))
-            .inner_margin(Margin::same(12))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    ui.label(RichText::new("Heads-up: ").strong().color(WARN));
-                    let (head, rest) = HOTKEY_WARNING
-                        .split_once('`')
-                        .unwrap_or((HOTKEY_WARNING, ""));
-                    let (code, tail) = rest.split_once('`').unwrap_or(("", rest));
-                    ui.label(RichText::new(head).color(TEXT));
-                    ui.label(RichText::new(code).code().color(ACCENT));
-                    ui.label(RichText::new(tail).color(TEXT));
-                });
-            });
+        warning(ui, HOTKEY_WARNING);
         if self.hotkey_values() != before {
             self.hotkey_errors.clear();
         }
@@ -1249,7 +1247,7 @@ impl SettingsApp {
             });
             ui.add_space(6.0);
             ui.label(RichText::new("A lightweight, always-on-top system overlay.").color(WEAK));
-            ui.label(RichText::new("Clock, Stopwatch & Countdown.").color(WEAK));
+            ui.label(RichText::new("Clock, stopwatch, countdown & interval timer.").color(WEAK));
             ui.add_space(14.0);
             if ui.link(RichText::new(REPO_URL).color(ACCENT)).clicked() {
                 let _ = Command::new("xdg-open")
@@ -1327,19 +1325,87 @@ impl SettingsApp {
     }
 }
 
-/// `clock_format` values and their labels (see `format::clock_text`).
-const CLOCK_FORMATS: [(&str, &str); 3] = [
-    ("24h", "24-hour  13:05:09"),
-    ("24h-short", "24-hour  13:05"),
-    ("12h", "12-hour  01:05:09 PM"),
-];
+/// A string setting's `(value, label)` pairs, and the value the HUD treats
+/// an unknown one as.
+struct Choices {
+    items: &'static [(&'static str, &'static str)],
+    unknown_as: &'static str,
+}
 
-/// Label for a `clock_format`; unknown values render like `24h`.
-fn clock_format_label(value: &str) -> &'static str {
-    CLOCK_FORMATS
-        .iter()
-        .find(|(v, _)| *v == value)
-        .map_or(CLOCK_FORMATS[0].1, |(_, l)| l)
+/// `clock_format` (unknown renders like 24h, see `format::clock_text`).
+const CLOCK_FORMATS: Choices = Choices {
+    items: &[
+        ("24h", "24-hour  13:05:09"),
+        ("24h-short", "24-hour  13:05"),
+        ("12h", "12-hour  01:05:09 PM"),
+    ],
+    unknown_as: "24h",
+};
+
+/// `progress_style` (unknown draws no progress, see `render::View`).
+const PROGRESS_STYLES: Choices = Choices {
+    items: &[
+        ("line", "Bar under the timer"),
+        ("border", "Around the window"),
+        ("off", "Off"),
+    ],
+    unknown_as: "off",
+};
+
+/// Label for `value` in `table`; an unknown value shows what it acts as.
+fn choice_label(table: &Choices, value: &str) -> &'static str {
+    let find = |v: &str| table.items.iter().find(|(x, _)| *x == v).map(|e| e.1);
+    find(value).or_else(|| find(table.unknown_as)).unwrap_or("")
+}
+
+/// Combo box over a [`Choices`] table, editing `value`.
+fn choice(ui: &mut Ui, id: &str, value: &mut String, table: &Choices) -> egui::Response {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(choice_label(table, value))
+        .show_ui(ui, |ui| {
+            for (v, label) in table.items {
+                if ui.selectable_label(value == v, *label).clicked() {
+                    *value = (*v).into();
+                }
+            }
+        })
+        .response
+}
+
+/// Length of an interval session: `rounds` work phases with a rest between
+/// each pair (the engine ends after the last work phase, no trailing rest).
+fn interval_session_secs(work: i64, rest: i64, rounds: i64) -> i64 {
+    let rounds = rounds.max(1);
+    work.saturating_mul(rounds)
+        .saturating_add(rest.saturating_mul(rounds - 1))
+}
+
+/// Click-through with no tray icon leaves no mouse path back to the HUD.
+fn lockout_risk(cfg: &Config) -> bool {
+    cfg.click_through && !cfg.show_tray_icon
+}
+
+/// An amber callout; text between backticks shows as code.
+fn warning(ui: &mut Ui, text: &str) {
+    Frame::new()
+        .fill(WARN.gamma_multiply(0.08))
+        .stroke(Stroke::new(1.0, WARN.gamma_multiply(0.35)))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                for (i, part) in text.split('`').enumerate() {
+                    let t = RichText::new(part);
+                    ui.label(if i % 2 == 1 {
+                        t.code().color(ACCENT)
+                    } else {
+                        t.color(TEXT)
+                    });
+                }
+            });
+        });
 }
 
 impl eframe::App for SettingsApp {
@@ -1372,19 +1438,6 @@ impl eframe::App for SettingsApp {
                         let config = self.cfg.to_value();
                         let rev = self.rev;
                         self.finish(&ctx, Request::Commit { config, rev });
-                    }
-                    if ui
-                        .add(egui::Button::new("Apply").min_size(Vec2::new(84.0, 30.0)))
-                        .clicked()
-                    {
-                        let req = Request::Commit {
-                            config: self.cfg.to_value(),
-                            rev: self.rev,
-                        };
-                        if self.send(&req) {
-                            self.sent = self.cfg.clone();
-                            self.base = self.cfg.clone();
-                        }
                     }
                     if ui
                         .add(egui::Button::new("Cancel").min_size(Vec2::new(84.0, 30.0)))
@@ -1592,11 +1645,50 @@ mod tests {
     }
 
     #[test]
-    fn clock_format_labels() {
-        assert_eq!(clock_format_label("12h"), "12-hour  01:05:09 PM");
-        assert_eq!(clock_format_label("24h-short"), "24-hour  13:05");
-        // Unknown values behave like 24h (format::clock_text).
-        assert_eq!(clock_format_label("bogus"), clock_format_label("24h"));
+    fn choice_labels() {
+        let clock = |v| choice_label(&CLOCK_FORMATS, v);
+        assert_eq!(clock("12h"), "12-hour  01:05:09 PM");
+        assert_eq!(clock("24h-short"), "24-hour  13:05");
+        // Unknown values show what the HUD does with them.
+        assert_eq!(clock("bogus"), clock("24h"));
+        let progress = |v| choice_label(&PROGRESS_STYLES, v);
+        assert_eq!(progress("border"), "Around the window");
+        assert_eq!(progress("bogus"), "Off");
+    }
+
+    #[test]
+    fn choice_tables_cover_their_fallbacks() {
+        for t in [&CLOCK_FORMATS, &PROGRESS_STYLES] {
+            assert!(t.items.iter().any(|(v, _)| *v == t.unknown_as));
+        }
+        // The progress styles the HUD draws are all offered.
+        for v in ["line", "border", "off"] {
+            assert!(PROGRESS_STYLES.items.iter().any(|(x, _)| *x == v));
+        }
+        assert_eq!(
+            choice_label(&CLOCK_FORMATS, Config::default().clock_format.as_str()),
+            "24-hour  13:05:09"
+        );
+    }
+
+    #[test]
+    fn interval_total_has_no_trailing_rest() {
+        // 3 rounds: W R W R W (engine::tests, "no trailing rest").
+        assert_eq!(interval_session_secs(40, 20, 3), 3 * 40 + 2 * 20);
+        assert_eq!(interval_session_secs(40, 20, 1), 40);
+        assert_eq!(interval_session_secs(i64::MAX, 1, 2), i64::MAX);
+    }
+
+    #[test]
+    fn lockout_needs_click_through_without_tray() {
+        let cfg = |click_through, show_tray_icon| Config {
+            click_through,
+            show_tray_icon,
+            ..Config::default()
+        };
+        assert!(lockout_risk(&cfg(true, false)));
+        assert!(!lockout_risk(&cfg(true, true)));
+        assert!(!lockout_risk(&cfg(false, false)));
     }
 
     #[test]

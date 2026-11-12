@@ -23,6 +23,15 @@ impl Mode {
             Mode::Interval => "interval",
         }
     }
+
+    /// Display name for the settings windows.
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::Stopwatch => "Stopwatch",
+            Mode::Countdown => "Countdown",
+            Mode::Interval => "Interval",
+        }
+    }
 }
 
 impl std::str::FromStr for Mode {

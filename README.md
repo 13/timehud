@@ -219,7 +219,12 @@ The Python app also always uses `~/.config/timehud/config.json` and ignores
 ```
 
 `custom_x` / `custom_y` of `-1` mean "use `position`"; `padding_top` of `-1`
-means "same as `padding`"; `progress_style` is `line`, `border` or `off`.
+means "same as `padding`" (file only; the Settings window leaves it alone);
+`progress_style` is `line`, `border` or `off`.
+
+The Settings window previews every change live on the HUD: **OK** saves,
+**Cancel** (or closing the window) reverts. **Sound → Play sounds** is the
+master switch (`sound_enabled`); off mutes every beep.
 
 - `clock_format` – `24h` (`13:05:09`, default), `24h-short` (`13:05`) or
   `12h` (`01:05:09 PM`); any other value behaves like `24h`.

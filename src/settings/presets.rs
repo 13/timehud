@@ -434,10 +434,10 @@ pub fn section(ui: &mut Ui, st: &mut PresetsState, cfg: &mut Config) {
 
             ui.label("Type");
             egui::ComboBox::from_id_salt("preset-kind")
-                .selected_text(e.kind.name())
+                .selected_text(e.kind.label())
                 .show_ui(ui, |ui| {
                     for k in Mode::ALL {
-                        ui.selectable_value(&mut e.kind, k, k.name());
+                        ui.selectable_value(&mut e.kind, k, k.label());
                     }
                 });
             ui.end_row();
