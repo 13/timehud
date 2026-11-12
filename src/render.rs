@@ -64,6 +64,92 @@ impl Layout {
 
 const SHADOW_LAYERS: u32 = 6;
 
+/// A theme compared by identity (themes are statics).
+#[derive(Clone, Copy)]
+struct ThemeRef(&'static Theme);
+
+impl PartialEq for ThemeRef {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self.0, other.0)
+    }
+}
+
+/// The `View` inputs of the static layer: everything but the bar's length
+/// and colour and the opacity. It is both the cache key of [`Frame`] and the
+/// only input of [`plan`] and [`draw_static`], so nothing they draw can be
+/// missing from the key.
+#[derive(Clone, PartialEq)]
+struct StaticView {
+    theme: ThemeRef,
+    scale: f32,
+    /// Not drawn from, but a new family means a different `FontSet`.
+    font_family: String,
+    font_size: i64,
+    row_spacing: i64,
+    padding: i64,
+    padding_top: i64,
+    show_clock: bool,
+    show_timer: bool,
+    /// `progress_style == "line"` (the bar gets its own row).
+    progress_line: bool,
+    color_bg: Rgb,
+    color_clock: Rgb,
+    clock: String,
+    timer: String,
+    timer_color: Rgb,
+    timer_px_mul: f32,
+    mode_text: String,
+    mode_color: Rgb,
+    show_controls_row: bool,
+    controls_pos: f32,
+    running: bool,
+    mode_btn: &'static str,
+    hover_btn: Option<Hit>,
+    progress_shown: bool,
+}
+
+impl StaticView {
+    fn of(v: &View) -> StaticView {
+        let cfg = v.cfg;
+        StaticView {
+            theme: ThemeRef(v.theme),
+            scale: v.scale,
+            font_family: cfg.font_family.clone(),
+            font_size: cfg.font_size,
+            row_spacing: cfg.row_spacing,
+            padding: cfg.padding,
+            padding_top: cfg.padding_top,
+            show_clock: cfg.show_clock,
+            show_timer: cfg.show_timer,
+            progress_line: cfg.progress_style == "line",
+            color_bg: hex(&cfg.color_bg, Rgb(0, 0, 0)),
+            color_clock: hex(&cfg.color_clock, Rgb(0, 255, 136)),
+            clock: v.clock.clone(),
+            timer: v.timer.clone(),
+            timer_color: v.timer_color,
+            timer_px_mul: v.timer_px_mul,
+            mode_text: v.mode_text.clone(),
+            mode_color: v.mode_color,
+            show_controls_row: v.show_controls_row,
+            controls_pos: v.controls_pos,
+            running: v.running,
+            mode_btn: v.mode_btn,
+            hover_btn: v.hover_btn,
+            progress_shown: v.progress >= 0.0,
+        }
+    }
+
+    fn pos(&self) -> f32 {
+        self.controls_pos.clamp(0.0, 1.0)
+    }
+
+    /// Width of the mode row text, letter spacing included.
+    fn mode_width(&self, fonts: &mut FontSet, px: f32, spacing: f32) -> f32 {
+        let n = self.mode_text.chars().count().max(1) as f32;
+        fonts.measure(&self.mode_text, px, true) + (n - 1.0) * spacing
+    }
+}
+
 /// Resolved geometry shared by `measure` and `render`.
 struct Plan {
     layout: Layout,
@@ -89,29 +175,83 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn plan(view: &View, fonts: &mut FontSet) -> Plan {
-    let (cfg, theme, s) = (view.cfg, view.theme, view.scale);
-    let fs = cfg.font_size as f32;
+/// Button sizes at the unfolded position.
+struct Buttons {
+    h: i32,
+    w: [i32; 3],
+    gap: i32,
+}
+
+impl Buttons {
+    fn new(sv: &StaticView) -> Buttons {
+        let s = sv.scale;
+        let h = px(((sv.font_size - 15).max(16)) as f32, s);
+        Buttons {
+            h,
+            w: [h + px(3.0, s), h + px(3.0, s), h + px(8.0, s)],
+            gap: px(6.0, s),
+        }
+    }
+
+    fn total_w(&self) -> i32 {
+        self.w.iter().sum::<i32>() + 2 * self.gap
+    }
+
+    /// The three button rects, centred in the panel `x..x + panel_w`, at
+    /// `y`, height scaled by the fold position `pos`.
+    fn rects(&self, x: i32, panel_w: i32, y: i32, pos: f32) -> [Rect; 3] {
+        let mut bx = x + (panel_w - self.total_w()) / 2;
+        let bh = (self.h as f32 * pos).round() as i32;
+        self.w.map(|bw| {
+            let r = rect(bx, y, bw, bh);
+            bx += bw + self.gap;
+            r
+        })
+    }
+}
+
+/// Stacks rows top to bottom with a uniform gap between them.
+struct Stack {
+    y: i32,
+    gap: i32,
+    first: bool,
+}
+
+impl Stack {
+    /// Top of the next row of height `h`.
+    fn next(&mut self, h: i32) -> i32 {
+        if !self.first {
+            self.y += self.gap;
+        }
+        self.first = false;
+        let at = self.y;
+        self.y += h;
+        at
+    }
+}
+
+fn plan(sv: &StaticView, fonts: &mut FontSet) -> Plan {
+    let (theme, s) = (sv.theme.0, sv.scale);
+    let fs = sv.font_size as f32;
     let clock_px = (fs * theme.clock_scale * s).floor().max(1.0);
     let timer_px = (fs * theme.timer_scale * s).floor().max(1.0);
     let mode_px = ((fs * 0.42).floor().max(11.0) * s).floor();
-    let gap = px(cfg.row_spacing as f32, s);
-    let pad = cfg.padding;
-    let pad_top = if cfg.padding_top >= 0 {
-        cfg.padding_top
+    let gap = px(sv.row_spacing as f32, s);
+    let pad_top = if sv.padding_top >= 0 {
+        sv.padding_top
     } else {
-        pad
+        sv.padding
     };
     let inset = if theme.shadow_alpha > 0 {
         px(12.0, s)
     } else {
         0
     };
-    let (mx, top) = (px((pad + 4) as f32, s), px(pad_top as f32, s));
+    let (mx, top) = (px((sv.padding + 4) as f32, s), px(pad_top as f32, s));
 
-    let show_timer = cfg.show_timer;
-    let ctrl_on = show_timer && view.show_controls_row;
-    let pos = view.controls_pos.clamp(0.0, 1.0);
+    let show_timer = sv.show_timer;
+    let ctrl_on = show_timer && sv.show_controls_row;
+    let pos = sv.pos();
     let bottom = if ctrl_on {
         (px(8.0, s) as f32 * pos + gap as f32 * (1.0 - pos)).round() as i32
     } else {
@@ -121,48 +261,36 @@ fn plan(view: &View, fonts: &mut FontSet) -> Plan {
     let clock_h = fonts.ink_height(clock_px).round() as i32;
     let timer_h = fonts.ink_height(timer_px).round() as i32 + 4;
     let mode_h = fonts.ink_height(mode_px).round() as i32;
-    let btn_h = px(((cfg.font_size - 15).max(16)) as f32, s);
-    let btn_w = [btn_h + px(3.0, s), btn_h + px(3.0, s), btn_h + px(8.0, s)];
-    let btn_gap = px(6.0, s);
-    let ctrl_inner_h = btn_h + px(2.0, s);
+    let buttons = Buttons::new(sv);
+    let ctrl_inner_h = buttons.h + px(2.0, s);
 
-    let mode_ls = 2.0 * s;
-    let mode_chars = view.mode_text.chars().count().max(1) as f32;
     let mut content_w = 0f32;
-    if cfg.show_clock {
-        content_w = content_w.max(fonts.measure(&view.clock, clock_px, true));
+    if sv.show_clock {
+        content_w = content_w.max(fonts.measure(&sv.clock, clock_px, true));
     }
     if show_timer {
-        content_w = content_w.max(fonts.measure(&view.timer, timer_px, true));
-        content_w = content_w
-            .max(fonts.measure(&view.mode_text, mode_px, true) + (mode_chars - 1.0) * mode_ls);
+        content_w = content_w.max(fonts.measure(&sv.timer, timer_px, true));
+        content_w = content_w.max(sv.mode_width(fonts, mode_px, 2.0 * s));
     }
     if ctrl_on {
-        content_w = content_w.max((btn_w.iter().sum::<i32>() + 2 * btn_gap) as f32);
+        content_w = content_w.max(buttons.total_w() as f32);
     }
     let w = content_w.ceil() as i32 + 2 * mx + 2 * inset;
     let panel_w = w - 2 * inset;
-    let cx = inset + mx;
     let row_w = panel_w - 2 * mx;
+    let row = |y: i32, h: i32| rect(inset + mx, y, row_w, h);
 
-    // Stack the visible rows top to bottom with a uniform gap.
-    let mut y = inset + top;
-    let mut first = true;
-    let mut next = |h: i32| {
-        if !first {
-            y += gap;
-        }
-        first = false;
-        let at = y;
-        y += h;
-        at
+    let mut stack = Stack {
+        y: inset + top,
+        gap,
+        first: true,
     };
     let mut clock_baseline = None;
     let mut clock_row = None;
-    if cfg.show_clock {
-        let at = next(clock_h);
+    if sv.show_clock {
+        let at = stack.next(clock_h);
         clock_baseline = Some((at + clock_h) as f32);
-        clock_row = Some(rect(cx, at, row_w, clock_h));
+        clock_row = Some(row(at, clock_h));
     }
     let mut sep_y = None;
     let mut timer_row = None;
@@ -172,51 +300,37 @@ fn plan(view: &View, fonts: &mut FontSet) -> Plan {
     let mut mode_baseline = 0.0;
     if show_timer {
         if theme.show_separator {
-            sep_y = Some(next(1));
+            sep_y = Some(stack.next(1));
         }
-        timer_row = Some(rect(cx, next(timer_h), row_w, timer_h));
-        if cfg.progress_style == "line" && view.progress >= 0.0 {
-            progress_row = Some(rect(cx, next(px(3.0, s)), row_w, px(3.0, s)));
+        timer_row = Some(row(stack.next(timer_h), timer_h));
+        if sv.progress_line && sv.progress_shown {
+            progress_row = Some(row(stack.next(px(3.0, s)), px(3.0, s)));
         }
-        let at = next(mode_h);
+        let at = stack.next(mode_h);
         mode_baseline = (at + mode_h) as f32;
-        mode_row = Some(rect(cx, at, row_w, mode_h));
+        mode_row = Some(row(at, mode_h));
         if ctrl_on {
             let h = (ctrl_inner_h as f32 * pos).round() as i32;
-            ctrl_row = Some(rect(cx, next(h), row_w, h));
+            ctrl_row = Some(row(stack.next(h), h));
         }
     }
-    let h = y + bottom + inset;
+    let h = stack.y + bottom + inset;
 
     // Buttons: centred, full size at the unfolded position.
-    let total = btn_w.iter().sum::<i32>() + 2 * btn_gap;
-    let mut bx = inset + (panel_w - total) / 2;
     let by = ctrl_row.map_or(0, |r| r.y + (px(2.0, s) as f32 * pos).round() as i32);
-    let bh = (btn_h as f32 * pos).round() as i32;
-    let mut btn_rects = [rect(0, 0, 0, 0); 3];
-    for (i, bw) in btn_w.iter().enumerate() {
-        btn_rects[i] = rect(bx, by, *bw, bh);
-        bx += bw + btn_gap;
-    }
+    let btn_rects = buttons.rects(inset, panel_w, by, pos);
 
     let mut regions = Vec::new();
     if ctrl_row.is_some() {
-        for (hit, r) in [Hit::BtnStart, Hit::BtnReset, Hit::BtnMode]
-            .into_iter()
-            .zip(btn_rects)
-        {
-            regions.push((hit, r));
-        }
+        regions.extend(
+            [Hit::BtnStart, Hit::BtnReset, Hit::BtnMode]
+                .into_iter()
+                .zip(btn_rects),
+        );
     }
-    if let Some(r) = clock_row {
-        regions.push((Hit::Clock, r));
-    }
-    if let Some(r) = timer_row {
-        regions.push((Hit::Timer, r));
-    }
-    if let Some(r) = mode_row {
-        regions.push((Hit::Mode, r));
-    }
+    regions.extend(clock_row.map(|r| (Hit::Clock, r)));
+    regions.extend(timer_row.map(|r| (Hit::Timer, r)));
+    regions.extend(mode_row.map(|r| (Hit::Mode, r)));
     Plan {
         layout: Layout {
             w,
@@ -241,7 +355,7 @@ fn plan(view: &View, fonts: &mut FontSet) -> Plan {
 
 /// Window size and hit regions, without drawing.
 pub fn measure(view: &View, fonts: &mut FontSet) -> Layout {
-    plan(view, fonts).layout
+    plan(&StaticView::of(view), fonts).layout
 }
 
 fn color(c: Rgb, a: f32) -> Color {
@@ -396,8 +510,8 @@ fn draw_icon(pm: &mut Pixmap, kind: Hit, running: bool, r: Rect, c: Color, s: f3
     }
 }
 
-fn draw_buttons(view: &View, pl: &Plan, fonts: &mut FontSet, pm: &mut Pixmap) {
-    let pos = view.controls_pos.clamp(0.0, 1.0);
+fn draw_buttons(sv: &StaticView, pl: &Plan, fonts: &mut FontSet, pm: &mut Pixmap) {
+    let pos = sv.pos();
     if pl.ctrl_row.is_none() || pos <= 0.0 {
         return;
     }
@@ -408,7 +522,7 @@ fn draw_buttons(view: &View, pl: &Plan, fonts: &mut FontSet, pm: &mut Pixmap) {
         if r.h <= 0 {
             continue;
         }
-        let hover = view.hover_btn == Some(hit);
+        let hover = sv.hover_btn == Some(hit);
         let bg = if hover { 38 } else { 18 };
         let a = |v: u8| (v as f32 * pos).round() as u8;
         fill_rrect(
@@ -430,13 +544,13 @@ fn draw_buttons(view: &View, pl: &Plan, fonts: &mut FontSet, pm: &mut Pixmap) {
         let fg = Color::from_rgba8(fg, fg, fg, a(255));
         if hit == Hit::BtnMode {
             let bpx = (10.0 * s).floor().max(1.0);
-            let tw = fonts.measure(view.mode_btn, bpx, false);
+            let tw = fonts.measure(sv.mode_btn, bpx, false);
             let ink = fonts.ink_height(bpx);
             let x = r.x as f32 + (r.w as f32 - tw) / 2.0;
             let base = r.y as f32 + (r.h as f32 + ink) / 2.0;
-            fonts.draw(pm, view.mode_btn, x, base, bpx, fg, false, 0.0);
+            fonts.draw(pm, sv.mode_btn, x, base, bpx, fg, false, 0.0);
         } else {
-            draw_icon(pm, hit, view.running, r, fg, s);
+            draw_icon(pm, hit, sv.running, r, fg, s);
         }
     }
 }
@@ -479,72 +593,8 @@ pub struct Frame {
     /// The last frame drawn; `None` if no pixmap could be allocated.
     pub pixmap: Option<Pixmap>,
     base: Option<Pixmap>,
-    key: Option<StaticKey>,
+    key: Option<StaticView>,
     plan: Option<Plan>,
-}
-
-/// The `View` inputs of the static layer (all but the bar's length and the
-/// opacity).
-#[derive(PartialEq)]
-struct StaticKey {
-    cfg: Config,
-    theme: *const Theme,
-    scale: f32,
-    clock: String,
-    timer: String,
-    timer_color: Rgb,
-    timer_px_mul: f32,
-    mode_text: String,
-    mode_color: Rgb,
-    show_controls_row: bool,
-    controls_pos: f32,
-    running: bool,
-    mode_btn: &'static str,
-    hover_btn: Option<Hit>,
-    progress_shown: bool,
-    progress_color: Rgb,
-}
-
-impl StaticKey {
-    fn matches(&self, v: &View) -> bool {
-        self.theme == std::ptr::from_ref(v.theme)
-            && self.scale == v.scale
-            && self.clock == v.clock
-            && self.timer == v.timer
-            && self.timer_color == v.timer_color
-            && self.timer_px_mul == v.timer_px_mul
-            && self.mode_text == v.mode_text
-            && self.mode_color == v.mode_color
-            && self.show_controls_row == v.show_controls_row
-            && self.controls_pos == v.controls_pos
-            && self.running == v.running
-            && self.mode_btn == v.mode_btn
-            && self.hover_btn == v.hover_btn
-            && self.progress_shown == (v.progress >= 0.0)
-            && self.progress_color == v.progress_color
-            && self.cfg == *v.cfg
-    }
-
-    fn of(v: &View) -> StaticKey {
-        StaticKey {
-            cfg: v.cfg.clone(),
-            theme: std::ptr::from_ref(v.theme),
-            scale: v.scale,
-            clock: v.clock.clone(),
-            timer: v.timer.clone(),
-            timer_color: v.timer_color,
-            timer_px_mul: v.timer_px_mul,
-            mode_text: v.mode_text.clone(),
-            mode_color: v.mode_color,
-            show_controls_row: v.show_controls_row,
-            controls_pos: v.controls_pos,
-            running: v.running,
-            mode_btn: v.mode_btn,
-            hover_btn: v.hover_btn,
-            progress_shown: v.progress >= 0.0,
-            progress_color: v.progress_color,
-        }
-    }
 }
 
 /// Copies `src` into `dst`, reusing `dst`'s pixmap when the size matches.
@@ -558,24 +608,21 @@ fn copy_into(dst: &mut Option<Pixmap>, src: &Pixmap) {
 }
 
 /// Draw one frame into `frame.pixmap`, redrawing the static layer only when
-/// a `View` input other than the bar length or opacity changed. Leaves
-/// `None` when no pixmap of the layout's size can be allocated; the layout
-/// is returned anyway.
+/// a [`StaticView`] input changed. Leaves `None` when no pixmap of the
+/// layout's size can be allocated; the layout is returned anyway.
 pub fn render_into(view: &View, fonts: &mut FontSet, frame: &mut Frame) -> Layout {
-    let fresh = match (&frame.key, &frame.plan) {
-        (Some(k), Some(_)) if frame.base.is_some() => !k.matches(view),
-        _ => true,
-    };
-    if fresh {
-        let pl = plan(view, fonts);
+    let sv = StaticView::of(view);
+    let cached = frame.base.is_some() && frame.plan.is_some() && frame.key.as_ref() == Some(&sv);
+    if !cached {
+        let pl = plan(&sv, fonts);
         let (w, h) = (pl.layout.w.max(1) as u32, pl.layout.h.max(1) as u32);
         match &mut frame.base {
             Some(pm) if pm.width() == w && pm.height() == h => pm.fill(Color::TRANSPARENT),
             base => *base = Pixmap::new(w, h),
         }
         if let Some(base) = &mut frame.base {
-            draw_static(view, &pl, fonts, base);
-            frame.key = Some(StaticKey::of(view));
+            draw_static(&sv, &pl, fonts, base);
+            frame.key = Some(sv);
         } else {
             frame.key = None;
         }
@@ -600,23 +647,27 @@ pub fn render_into(view: &View, fonts: &mut FontSet, frame: &mut Frame) -> Layou
 }
 
 /// Everything but the progress bar fill and the opacity.
-fn draw_static(view: &View, pl: &Plan, fonts: &mut FontSet, pm: &mut Pixmap) {
-    let (cfg, theme, s) = (view.cfg, view.theme, pl.s);
-    let lay = &pl.layout;
-    let panel = lay.panel;
+fn draw_static(sv: &StaticView, pl: &Plan, fonts: &mut FontSet, pm: &mut Pixmap) {
+    draw_panel(sv, pl, pm);
+    draw_rows(sv, pl, fonts, pm);
+    draw_buttons(sv, pl, fonts, pm);
+}
+
+/// Shadow, background, border, top edge and separator.
+fn draw_panel(sv: &StaticView, pl: &Plan, pm: &mut Pixmap) {
+    let (theme, s) = (sv.theme.0, pl.s);
+    let panel = pl.layout.panel;
     let rad = theme.radius * s;
-    let inset = panel.x;
     let pf = (
         panel.x as f32,
         panel.y as f32,
         panel.w as f32,
         panel.h as f32,
     );
-
     if theme.shadow_alpha > 0 {
-        draw_shadow(pm, panel, inset, rad, theme.shadow_alpha);
+        draw_shadow(pm, panel, panel.x, rad, theme.shadow_alpha);
     }
-    let bg = hex(&cfg.color_bg, Rgb(0, 0, 0));
+    let bg = sv.color_bg;
     fill_rrect(
         pm,
         pf,
@@ -637,56 +688,60 @@ fn draw_static(view: &View, pl: &Plan, fonts: &mut FontSet, pm: &mut Pixmap) {
         }
     }
     if let Some(y) = pl.sep_y {
-        let mx = (cfg.padding + 4) as f32 * s;
+        let mx = (sv.padding + 4) as f32 * s;
         if let Some(rc) = tiny_skia::Rect::from_xywh(pf.0 + mx, y as f32, pf.2 - 2.0 * mx, 1.0) {
             pm.fill_rect(rc, &paint(white(35)), Transform::identity(), None);
         }
     }
+}
 
-    let centre = pf.0 + pf.2 / 2.0;
-    let clock_c = color(hex(&cfg.color_clock, Rgb(0, 255, 136)), theme.clock_alpha);
+/// Clock, timer, the bar's track and the mode text, centred in the panel.
+fn draw_rows(sv: &StaticView, pl: &Plan, fonts: &mut FontSet, pm: &mut Pixmap) {
+    let panel = pl.layout.panel;
+    let centre = panel.x as f32 + panel.w as f32 / 2.0;
     if let Some(base) = pl.clock_baseline {
-        let tw = fonts.measure(&view.clock, pl.clock_px, true);
-        let x = centre - tw / 2.0;
-        fonts.draw(pm, &view.clock, x, base, pl.clock_px, clock_c, true, 0.0);
-    }
-    if let Some(row) = pl.timer_row {
-        // Pulse: integer px size, scaled about the row centre; other rows stay put.
-        let tpx = (pl.timer_px * view.timer_px_mul).round().max(1.0);
-        let ink = fonts.ink_height(tpx);
-        let base = row.y as f32 + (row.h as f32 + ink) / 2.0;
-        let tw = fonts.measure(&view.timer, tpx, true);
+        let c = color(sv.color_clock, sv.theme.0.clock_alpha);
+        let tw = fonts.measure(&sv.clock, pl.clock_px, true);
         fonts.draw(
             pm,
-            &view.timer,
+            &sv.clock,
             centre - tw / 2.0,
             base,
-            tpx,
-            color(view.timer_color, 1.0),
+            pl.clock_px,
+            c,
             true,
             0.0,
         );
     }
+    if let Some(row) = pl.timer_row {
+        // Pulse: integer px size, scaled about the row centre; other rows stay put.
+        let tpx = (pl.timer_px * sv.timer_px_mul).round().max(1.0);
+        let ink = fonts.ink_height(tpx);
+        let base = row.y as f32 + (row.h as f32 + ink) / 2.0;
+        let tw = fonts.measure(&sv.timer, tpx, true);
+        let c = color(sv.timer_color, 1.0);
+        fonts.draw(pm, &sv.timer, centre - tw / 2.0, base, tpx, c, true, 0.0);
+    }
     if let Some(row) = pl.progress_row {
         let r = (row.x as f32, row.y as f32, row.w as f32, row.h as f32);
-        fill_rrect(pm, r, 1.5 * s, &paint(white(30)));
+        fill_rrect(pm, r, 1.5 * pl.s, &paint(white(30)));
     }
     if pl.mode_row.is_some() {
-        let ls = 2.0 * s;
-        let n = view.mode_text.chars().count().max(1) as f32;
-        let tw = fonts.measure(&view.mode_text, pl.mode_px, true) + (n - 1.0) * ls;
+        let ls = 2.0 * pl.s;
+        let tw = sv.mode_width(fonts, pl.mode_px, ls);
+        let c = color(sv.mode_color, 1.0);
+        let x = centre - tw / 2.0;
         fonts.draw(
             pm,
-            &view.mode_text,
-            centre - tw / 2.0,
+            &sv.mode_text,
+            x,
             pl.mode_baseline,
             pl.mode_px,
-            color(view.mode_color, 1.0),
+            c,
             true,
             ls,
         );
     }
-    draw_buttons(view, pl, fonts, pm);
 }
 
 /// The progress bar fill (line or border) and the window opacity.
