@@ -17,13 +17,15 @@ pub struct Tooltip {
     win: u32,
     gc: u32,
     text: String,
+    /// The window's current geometry.
+    rect: Rect,
     anchor: Rect,
     area: Rect,
 }
 
 impl Tooltip {
     /// Maps a tooltip saying `text` next to `anchor` (the icon, root
-    /// coordinates), inside `area`.
+    /// coordinates), inside `area`. It is drawn on its `Expose`.
     pub fn open(
         x: &X,
         text: &str,
@@ -40,35 +42,41 @@ impl Tooltip {
             true,
         )?;
         x.conn.map_window(win)?;
-        let t = Tooltip {
+        Ok(Tooltip {
             win,
             gc,
             text: text.to_string(),
+            rect,
             anchor,
             area,
-        };
-        t.redraw(x, fonts);
-        Ok(t)
+        })
     }
 
     pub fn window(&self) -> u32 {
         self.win
     }
 
-    /// Shows new text (resized and re-placed); a no-op if it is unchanged.
+    /// Shows new text (re-placed, resized if needed); a no-op if it is
+    /// unchanged. A resize clears the window and brings an `Expose` (which
+    /// redraws), so only a same-size update draws right away.
     pub fn set_text(&mut self, x: &X, text: &str, fonts: &mut FontSet) {
         if text == self.text {
             return;
         }
         text.clone_into(&mut self.text);
         let r = place(x, text, self.anchor, self.area, fonts);
-        let aux = ConfigureWindowAux::new()
-            .x(r.x)
-            .y(r.y)
-            .width(r.w as u32)
-            .height(r.h as u32);
-        let _ = x.conn.configure_window(self.win, &aux);
-        self.redraw(x, fonts);
+        let old = std::mem::replace(&mut self.rect, r);
+        let resized = (r.w, r.h) != (old.w, old.h);
+        if r != old {
+            let mut aux = ConfigureWindowAux::new().x(r.x).y(r.y);
+            if resized {
+                aux = aux.width(r.w.max(1) as u32).height(r.h.max(1) as u32);
+            }
+            let _ = x.conn.configure_window(self.win, &aux);
+        }
+        if !resized {
+            self.redraw(x, fonts);
+        }
     }
 
     pub fn redraw(&self, x: &X, fonts: &mut FontSet) {

@@ -764,6 +764,14 @@ impl Hud {
         if self.deadlines.save_due(now) {
             self.save();
         }
+        if let Some(p) = self.popup.as_mut()
+            && let Err(e) = p.retry_grab(&self.x)
+        {
+            eprintln!("timehud: {e:#}");
+            if let Some(p) = self.popup.take() {
+                p.close(&self.x);
+            }
+        }
         self.raise_if_allowed(now);
         self.reap();
     }
@@ -798,7 +806,12 @@ impl Hud {
     }
 
     fn timeout(&self, now: f64) -> u16 {
-        self.deadlines.timeout_ms(now, self.mapped)
+        let ms = self.deadlines.timeout_ms(now, self.mapped);
+        // An open menu still waiting for its grab retries soon.
+        match self.popup.as_ref().and_then(MenuPopup::grab_retry_in) {
+            Some(d) => ms.min(d.as_micros().div_ceil(1000).min(1000) as u16),
+            None => ms,
+        }
     }
 
     fn wait(&mut self, timeout_ms: u16) -> anyhow::Result<()> {

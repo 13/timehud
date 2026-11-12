@@ -7,6 +7,10 @@
 //! dropping an open popup leaves the grabs in place until the process exits.
 //! It logs an error (and fails debug builds) to catch that bug early. When
 //! the connection itself is gone, [`MenuPopup::abandon`] forgets the popup.
+//!
+//! When another client still holds a grab, the menu opens anyway and the
+//! event loop retries the grab ([`MenuPopup::grab_retry_in`],
+//! [`MenuPopup::retry_grab`]) instead of sleeping.
 
 use super::X;
 use super::overlay::raise_window;
@@ -15,7 +19,7 @@ use crate::menu::{MenuAction, MenuItem, MenuLayout, layout_menu, render_menu};
 use crate::text::FontSet;
 use crate::themes::Theme;
 use anyhow::bail;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{ConnectionExt as _, EventMask, GrabMode, GrabStatus};
@@ -55,7 +59,10 @@ pub struct MenuPopup {
     scale: f32,
     area: Rect,
     levels: Vec<Level>,
+    /// The pointer grab is held (the keyboard one may be too).
     grabbed: bool,
+    /// Grab not complete yet: retries left and when the next one is due.
+    grab_retry: Option<(u32, Instant)>,
 }
 
 fn items_at<'a>(mut items: &'a [MenuItem], path: &[usize]) -> &'a [MenuItem] {
@@ -89,14 +96,16 @@ const KEY_RIGHT: u32 = 0xff53;
 const KEY_DOWN: u32 = 0xff54;
 
 /// Another client's grab (e.g. the WM's) may still be active right after the
-/// triggering click; retry briefly.
+/// triggering click; retry briefly (from the event loop, see
+/// [`MenuPopup::retry_grab`]).
 const GRAB_TRIES: u32 = 20;
 const GRAB_RETRY: Duration = Duration::from_millis(10);
 
 impl MenuPopup {
     /// Opens the menu at the pointer position (kept on-screen) and grabs the
-    /// pointer (owner events) and keyboard. On failure nothing stays grabbed
-    /// or mapped.
+    /// pointer (owner events) and keyboard; if another client holds a grab,
+    /// the grab is retried by [`MenuPopup::retry_grab`]. On failure nothing
+    /// stays grabbed or mapped.
     /// `area` is the work area of the monitor at the pointer.
     pub fn open(
         x: &X,
@@ -114,17 +123,51 @@ impl MenuPopup {
             area,
             levels: Vec::new(),
             grabbed: false,
+            grab_retry: None,
         };
         let result = p
             .push_level(x, Vec::new(), (root_x, root_y), fonts)
-            .and_then(|()| p.grab(x));
+            .and_then(|()| p.try_grab(x));
         match result {
-            Ok(()) => Ok(p),
+            Ok(held) => {
+                if !held {
+                    p.grab_retry = Some((GRAB_TRIES - 1, Instant::now() + GRAB_RETRY));
+                }
+                Ok(p)
+            }
             Err(e) => {
                 p.release(x);
                 Err(e)
             }
         }
+    }
+
+    /// Time until the next grab attempt is due; `None` once the grab is held.
+    pub fn grab_retry_in(&self) -> Option<Duration> {
+        let (_, at) = self.grab_retry?;
+        Some(at.saturating_duration_since(Instant::now()))
+    }
+
+    /// Retries an incomplete grab if due. Errors (then [`MenuPopup::close`]
+    /// it) when the grab failed for good.
+    pub fn retry_grab(&mut self, x: &X) -> anyhow::Result<()> {
+        let Some((left, at)) = self.grab_retry else {
+            return Ok(());
+        };
+        let now = Instant::now();
+        if now < at {
+            return Ok(());
+        }
+        self.grab_retry = None;
+        if !self.try_grab(x)? {
+            if left == 0 {
+                bail!(
+                    "cannot grab the pointer/keyboard for the menu (another client holds a grab)"
+                );
+            }
+            self.grab_retry = Some((left - 1, now + GRAB_RETRY));
+        }
+        Ok(())
     }
 
     /// All popup windows (for [`super::overlay::restack_needed`]).
@@ -315,7 +358,8 @@ impl MenuPopup {
         self.push_level(x, path, (px, y), fonts)
     }
 
-    /// Creates, maps and draws a level at `pos` (clamped into the work area).
+    /// Creates and maps a level at `pos` (clamped into the work area); it is
+    /// drawn on its `Expose`.
     fn push_level(
         &mut self,
         x: &X,
@@ -352,7 +396,6 @@ impl MenuPopup {
             x: px,
             y: py,
         });
-        self.redraw(x, self.levels.len() - 1, fonts);
         Ok(())
     }
 
@@ -373,47 +416,43 @@ impl MenuPopup {
         let _ = x.conn.flush();
     }
 
-    fn grab(&mut self, x: &X) -> anyhow::Result<()> {
+    /// One attempt at the pointer grab (unless held), then the keyboard
+    /// grab; true when both are held.
+    fn try_grab(&mut self, x: &X) -> anyhow::Result<bool> {
         let win = self.levels[0].win;
-        let mask = EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION;
-        let mut pointer = false;
-        for _ in 0..GRAB_TRIES {
-            if !pointer {
-                let r = x
-                    .conn
-                    .grab_pointer(
-                        true,
-                        win,
-                        mask,
-                        GrabMode::ASYNC,
-                        GrabMode::ASYNC,
-                        x11rb::NONE,
-                        x11rb::NONE,
-                        x11rb::CURRENT_TIME,
-                    )?
-                    .reply()?;
-                pointer = r.status == GrabStatus::SUCCESS;
-                // Mark as soon as anything is held so `release` undoes it.
-                self.grabbed |= pointer;
+        if !self.grabbed {
+            let mask =
+                EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION;
+            let r = x
+                .conn
+                .grab_pointer(
+                    true,
+                    win,
+                    mask,
+                    GrabMode::ASYNC,
+                    GrabMode::ASYNC,
+                    x11rb::NONE,
+                    x11rb::NONE,
+                    x11rb::CURRENT_TIME,
+                )?
+                .reply()?;
+            // Mark as soon as anything is held so `release` undoes it.
+            self.grabbed = r.status == GrabStatus::SUCCESS;
+            if !self.grabbed {
+                return Ok(false);
             }
-            if pointer {
-                let r = x
-                    .conn
-                    .grab_keyboard(
-                        true,
-                        win,
-                        x11rb::CURRENT_TIME,
-                        GrabMode::ASYNC,
-                        GrabMode::ASYNC,
-                    )?
-                    .reply()?;
-                if r.status == GrabStatus::SUCCESS {
-                    return Ok(());
-                }
-            }
-            std::thread::sleep(GRAB_RETRY);
         }
-        bail!("cannot grab the pointer/keyboard for the menu (another client holds a grab)")
+        let r = x
+            .conn
+            .grab_keyboard(
+                true,
+                win,
+                x11rb::CURRENT_TIME,
+                GrabMode::ASYNC,
+                GrabMode::ASYNC,
+            )?
+            .reply()?;
+        Ok(r.status == GrabStatus::SUCCESS)
     }
 
     /// Ungrabs and destroys every window. Idempotent.
@@ -423,6 +462,7 @@ impl MenuPopup {
             let _ = x.conn.ungrab_keyboard(x11rb::CURRENT_TIME);
             self.grabbed = false;
         }
+        self.grab_retry = None;
         self.truncate(x, 0);
     }
 }
@@ -456,6 +496,7 @@ mod tests {
             },
             levels: Vec::new(),
             grabbed: true,
+            grab_retry: None,
         };
         p.abandon();
     }
