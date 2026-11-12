@@ -8,6 +8,12 @@ use ab_glyph::{Font, FontArc, FontRef, FontVec, PxScale};
 
 static BUNDLED: &[u8] = include_bytes!("../assets/JetBrainsMono-Bold.ttf");
 const GENERIC_ALIASES: [&str; 4] = ["monospace", "sans", "sans-serif", "serif"];
+/// Upper bound on cached glyph bitmaps (one frame at the largest font size
+/// and 2x scale needs ~2 MB); least recently used glyphs are
+/// evicted past it (font-size changes and pulse animations add sizes).
+const CACHE_CAP: usize = 4 << 20;
+/// Bookkeeping bytes charged per cached glyph on top of its bitmap.
+const GLYPH_OVERHEAD: usize = 64;
 
 /// A rasterized glyph: coverage bitmap and its offset from the pen
 /// position on the baseline (y down).
@@ -17,6 +23,14 @@ struct Glyph {
     width: usize,
     height: usize,
     coverage: Vec<u8>,
+    /// `FontSet::clock` value of the last use (LRU eviction).
+    used: u64,
+}
+
+impl Glyph {
+    fn bytes(&self) -> usize {
+        self.coverage.len() + GLYPH_OVERHEAD
+    }
 }
 
 /// A font plus its bitmap cache. Outlines are parsed lazily per glyph
@@ -31,6 +45,9 @@ pub struct FontSet {
     /// Unscaled advance of the widest ASCII digit.
     digit_advance: f32,
     cache: HashMap<(char, u32), Glyph>,
+    cache_bytes: usize,
+    cache_cap: usize,
+    clock: u64,
 }
 
 /// The bundled font, parsed once and shared by every `FontSet` (HUD,
@@ -71,6 +88,9 @@ impl FontSet {
             eight_height: (eight.max.y - eight.min.y).abs(),
             digit_advance,
             cache: HashMap::new(),
+            cache_bytes: 0,
+            cache_cap: CACHE_CAP,
+            clock: 0,
         })
     }
 
@@ -99,6 +119,7 @@ impl FontSet {
                 width: 0,
                 height: 0,
                 coverage: Vec::new(),
+                used: 0,
             };
         };
         let b = outline.px_bounds();
@@ -115,15 +136,47 @@ impl FontSet {
             width,
             height,
             coverage,
+            used: 0,
         }
     }
 
+    /// The cached bitmap of `c` at `px`, rasterizing (and evicting the least
+    /// recently used glyphs past `cache_cap`) on a miss.
     fn glyph(&mut self, c: char, px: f32) -> &Glyph {
-        if !self.cache.contains_key(&(c, px as u32)) {
+        self.clock += 1;
+        let key = (c, px as u32);
+        if !self.cache.contains_key(&key) {
             let g = self.rasterize(c, px);
-            self.cache.insert((c, px as u32), g);
+            self.cache_bytes += g.bytes();
+            self.cache.insert(key, g);
+            if self.cache_bytes > self.cache_cap {
+                self.evict(key);
+            }
         }
-        &self.cache[&(c, px as u32)]
+        let g = self.cache.get_mut(&key).expect("glyph cached");
+        g.used = self.clock;
+        g
+    }
+
+    /// Drops least recently used glyphs (never `keep`) down to 3/4 of the cap,
+    /// so eviction does not run again on the next miss.
+    fn evict(&mut self, keep: (char, u32)) {
+        let low = self.cache_cap / 4 * 3;
+        let mut by_age: Vec<((char, u32), u64)> = self
+            .cache
+            .iter()
+            .filter(|(k, _)| **k != keep)
+            .map(|(k, g)| (*k, g.used))
+            .collect();
+        by_age.sort_unstable_by_key(|(_, used)| *used);
+        for (k, _) in by_age {
+            if self.cache_bytes <= low {
+                break;
+            }
+            if let Some(g) = self.cache.remove(&k) {
+                self.cache_bytes -= g.bytes();
+            }
+        }
     }
 
     /// Height of the '8' glyph's bounding box (Qt `tightBoundingRect("8")`).
@@ -291,6 +344,61 @@ mod tests {
             ((bottom - top + 1) as f32 - ink).abs() <= 2.0,
             "{top}..{bottom} vs {ink}"
         );
+    }
+
+    fn draw_sizes(f: &mut FontSet, sizes: impl Iterator<Item = u32>) {
+        let mut pm = tiny_skia::Pixmap::new(8, 8).unwrap();
+        for px in sizes {
+            f.draw(
+                &mut pm,
+                "0123456789:",
+                0.,
+                0.,
+                px as f32,
+                tiny_skia::Color::WHITE,
+                true,
+                0.,
+            );
+        }
+    }
+
+    /// A font with a small cache cap, so tests reach it quickly.
+    fn small_cache() -> FontSet {
+        let mut f = FontSet::bundled();
+        f.cache_cap = 64 << 10;
+        f
+    }
+
+    #[test]
+    fn glyph_cache_is_bounded() {
+        let mut f = small_cache();
+        draw_sizes(&mut f, 20..160);
+        assert!(f.cache_bytes <= f.cache_cap, "{}", f.cache_bytes);
+        let total: usize = f.cache.values().map(Glyph::bytes).sum();
+        assert_eq!(total, f.cache_bytes, "byte count stays in sync");
+        // The most recent size survived eviction; the oldest did not.
+        assert!(f.cache.contains_key(&('8', 159)));
+        assert!(!f.cache.contains_key(&('8', 20)));
+    }
+
+    #[test]
+    fn glyph_cache_keeps_recently_used_sizes() {
+        let mut f = small_cache();
+        draw_sizes(&mut f, std::iter::once(48));
+        // Keep touching 48 px while other sizes push past the cap.
+        for px in 60..160 {
+            draw_sizes(&mut f, [px, 48].into_iter());
+        }
+        assert!(f.cache.contains_key(&('8', 48)));
+        assert!(f.cache_bytes <= f.cache_cap);
+    }
+
+    #[test]
+    fn default_cap_holds_a_frame_at_the_largest_size() {
+        // font_size 120 x timer scale x 2x HiDPI stays well inside the cap.
+        let mut f = FontSet::bundled();
+        draw_sizes(&mut f, std::iter::once(480));
+        assert!(f.cache_bytes * 2 < CACHE_CAP, "{}", f.cache_bytes);
     }
 
     #[test]
