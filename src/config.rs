@@ -177,6 +177,8 @@ config_fields! {
     /// 0 = off.
     sound_alert_before: i64 = 0, range SOUND_SECS_RANGE;
     sound_file: String = String::new();
+    /// "classic" | "chime"; unknown plays classic.
+    sound_theme: String = "classic".into();
     show_tray_icon: bool = true;
     show_controls: bool = true;
     click_through: bool = false;
@@ -1220,6 +1222,20 @@ mod tests {
             Config::from_value(&Config::default().to_value()),
             Config::default()
         );
+    }
+
+    #[test]
+    fn sound_theme_defaults_and_round_trips() {
+        assert_eq!(Config::default().sound_theme, "classic");
+        // Old config without the key loads with the default.
+        let old = Config::from_value(&json!({"sound_enabled": true}));
+        assert_eq!(old.sound_theme, "classic");
+        // Unknown string values are kept verbatim (playback treats them as classic).
+        let odd = Config::from_value(&json!({"sound_theme": "bell"}));
+        assert_eq!(odd.sound_theme, "bell");
+        // Wrong type falls back to the default.
+        let bad = Config::from_value(&json!({"sound_theme": 3}));
+        assert_eq!(bad.sound_theme, "classic");
     }
 
     #[test]

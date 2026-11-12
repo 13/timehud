@@ -198,6 +198,7 @@ The Python app also always uses `~/.config/timehud/config.json` and ignores
   "sound_interval": 60,
   "sound_alert_before": 0,
   "sound_file": "",
+  "sound_theme": "classic",
   "show_tray_icon": true,
   "show_controls": true,
   "click_through": false,
