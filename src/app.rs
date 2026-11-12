@@ -856,7 +856,7 @@ impl App {
                 vec![self.move_effect(), Effect::SaveSoon]
             }
             MenuAction::ToggleVisibility => self.toggle_visibility(),
-            MenuAction::Quit => vec![Effect::SaveNow, Effect::Quit],
+            MenuAction::Quit => vec![Effect::Quit], // shutdown saves
         }
     }
 
@@ -1032,7 +1032,7 @@ impl App {
                 Key::Space => self.toggle_timer(now),
                 Key::R => self.reset_timer(now),
                 Key::Escape => self.set_visible(false),
-                Key::Q if ctrl => vec![Effect::SaveNow, Effect::Quit],
+                Key::Q if ctrl => vec![Effect::Quit], // shutdown saves
                 _ => Vec::new(),
             },
         }

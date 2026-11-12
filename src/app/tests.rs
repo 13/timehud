@@ -512,7 +512,7 @@ fn keys() {
         key: Key::Q,
         ctrl: true,
     });
-    assert_eq!(fx, [Effect::SaveNow, Effect::Quit]);
+    assert_eq!(fx, [Effect::Quit]);
 }
 
 // ── Animations / cadence ─────────────────────────────────────────────
@@ -696,10 +696,7 @@ fn menu_actions() {
         h.app.perform(&MenuAction::SavePreset, now),
         [Effect::OpenSavePreset]
     );
-    assert_eq!(
-        h.app.perform(&MenuAction::Quit, now),
-        [Effect::SaveNow, Effect::Quit]
-    );
+    assert_eq!(h.app.perform(&MenuAction::Quit, now), [Effect::Quit]);
     h.app.perform(&MenuAction::SetOpacity(0.5), now);
     assert_eq!(h.app.cfg.opacity, 0.5);
     h.app.cfg.custom_x = 100;
