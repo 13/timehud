@@ -1,7 +1,7 @@
 //! The tray icon's tooltip: XEmbed has no tooltip protocol, so the HUD shows
 //! its own small override-redirect window near the icon.
 
-use super::X;
+use super::{AlphaShape, X};
 use crate::layout::{Rect, tooltip_pos};
 use crate::menu::{render_tooltip, tooltip_size};
 use crate::text::FontSet;
@@ -21,16 +21,21 @@ pub struct Tooltip {
     rect: Rect,
     anchor: Rect,
     area: Rect,
+    /// No compositor: the window is clipped to its rounded panel.
+    shape: Option<AlphaShape>,
 }
 
 impl Tooltip {
     /// Maps a tooltip saying `text` next to `anchor` (the icon, root
-    /// coordinates), inside `area`. It is drawn on its `Expose`.
+    /// coordinates), inside `area`. It is drawn on its `Expose`. `shaped`
+    /// (no compositor): clip it to its rounded panel, as window alpha is
+    /// ignored then.
     pub fn open(
         x: &X,
         text: &str,
         anchor: Rect,
         area: Rect,
+        shaped: bool,
         fonts: &mut FontSet,
     ) -> anyhow::Result<Tooltip> {
         let rect = place(x, text, anchor, area, fonts);
@@ -41,15 +46,18 @@ impl Tooltip {
             x.atoms._NET_WM_WINDOW_TYPE_TOOLTIP,
             true,
         )?;
-        x.conn.map_window(win)?;
-        Ok(Tooltip {
+        let mut t = Tooltip {
             win,
             gc,
             text: text.to_string(),
             rect,
             anchor,
             area,
-        })
+            shape: shaped.then(AlphaShape::default),
+        };
+        t.reshape(x, fonts);
+        x.conn.map_window(win)?;
+        Ok(t)
     }
 
     pub fn window(&self) -> u32 {
@@ -74,8 +82,18 @@ impl Tooltip {
             }
             let _ = x.conn.configure_window(self.win, &aux);
         }
-        if !resized {
+        if resized {
+            self.reshape(x, fonts);
+        } else {
             self.redraw(x, fonts);
+        }
+    }
+
+    /// Re-clips a shaped tooltip to its panel (the outline only depends on
+    /// the size).
+    fn reshape(&mut self, x: &X, fonts: &mut FontSet) {
+        if let Some(shape) = &mut self.shape {
+            shape.set(x, self.win, &render_tooltip(&self.text, fonts, x.scale()));
         }
     }
 
@@ -98,4 +116,34 @@ fn place(x: &X, text: &str, anchor: Rect, area: Rect, fonts: &mut FontSet) -> Re
     let gap = (GAP * scale).round() as i32;
     let (px, py) = tooltip_pos(anchor, w, h, area, gap);
     Rect { x: px, y: py, w, h }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "needs an X display (DISPLAY=:0)"]
+    fn smoke_shaped_tooltip_follows_its_size() {
+        let x = X::connect().unwrap();
+        let mut fonts = FontSet::bundled();
+        let icon = Rect {
+            x: 100,
+            y: 100,
+            w: 24,
+            h: 24,
+        };
+        let area = x.screens().work_area_at(100, 100);
+        let mut t = Tooltip::open(&x, "TimeHUD", icon, area, true, &mut fonts).unwrap();
+        assert!(super::super::corners_cut(&x, t.window()));
+        t.set_text(&x, "TimeHUD: countdown running, 24:59 left", &mut fonts);
+        assert!(
+            super::super::corners_cut(&x, t.window()),
+            "reshaped on resize"
+        );
+        t.close(&x);
+        let t = Tooltip::open(&x, "TimeHUD", icon, area, false, &mut fonts).unwrap();
+        assert!(!super::super::corners_cut(&x, t.window()));
+        t.close(&x);
+    }
 }

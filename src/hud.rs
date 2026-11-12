@@ -682,7 +682,8 @@ impl Hud {
             .screens
             .work_area_at(icon.x + icon.w / 2, icon.y + icon.h / 2);
         let fonts = self.menu_fonts.get_or_insert_with(FontSet::bundled);
-        match Tooltip::open(&self.x, &text, icon, area, fonts) {
+        let shaped = !self.compositor.active();
+        match Tooltip::open(&self.x, &text, icon, area, shaped, fonts) {
             Ok(t) => self.tooltip = Some(t),
             Err(e) => eprintln!("timehud: tooltip: {e:#}"),
         }
@@ -727,7 +728,8 @@ impl Hud {
         let fonts = self.menu_fonts.get_or_insert_with(FontSet::bundled);
         let items = build_menu(&self.app.cfg, include_window_actions);
         let area = self.screens.work_area_at(root_x, root_y);
-        match MenuPopup::open(&self.x, items, root_x, root_y, area, fonts) {
+        let shaped = !self.compositor.active();
+        match MenuPopup::open(&self.x, items, root_x, root_y, area, shaped, fonts) {
             Ok(p) => self.popup = Some(p),
             Err(e) => eprintln!("timehud: {e:#}"),
         }

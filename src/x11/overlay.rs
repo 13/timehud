@@ -1,6 +1,6 @@
 //! The HUD's override-redirect ARGB overlay window and its input translation.
 
-use super::{X, to_i16, to_u16};
+use super::{AlphaShape, X, to_i16, to_u16};
 use crate::app::{Button, Cursor, Input, Key};
 use crate::layout::Rect;
 use std::collections::HashMap;
@@ -47,9 +47,8 @@ pub struct OverlayWin {
     left_held: bool,
     /// The core-font hand cursor, created on first use (0 = failed).
     hand: Option<u32>,
-    /// The bounding shape set from the frame's alpha (no compositor):
-    /// size and mask, to skip unchanged updates. `None` = unshaped.
-    alpha_shape: Option<((u32, u32), Vec<u8>)>,
+    /// The bounding shape set from the frame's alpha (no compositor).
+    alpha_shape: AlphaShape,
     /// Click-through wanted, and the panel rect (window coordinates) last
     /// laid out; together they give the input shape ([`input_rects`]).
     click_through: bool,
@@ -89,7 +88,7 @@ impl OverlayWin {
             gc,
             left_held: false,
             hand: None,
-            alpha_shape: None,
+            alpha_shape: AlphaShape::default(),
             click_through: false,
             panel: None,
             input_sent: None,
@@ -162,30 +161,12 @@ impl OverlayWin {
     /// the transparent corners do not show black. Skips the request when
     /// the mask did not change.
     pub fn set_alpha_shape(&mut self, x: &X, pm: &tiny_skia::Pixmap) {
-        let size = (pm.width(), pm.height());
-        let mask = x.alpha_mask(pm);
-        if self
-            .alpha_shape
-            .as_ref()
-            .is_some_and(|(s, m)| *s == size && *m == mask)
-        {
-            return;
-        }
-        let Ok(bitmap) = x.bitmap(self.id, &mask, size.0, size.1) else {
-            return;
-        };
-        let _ = shape::mask(&x.conn, SO::SET, SK::BOUNDING, self.id, 0, 0, bitmap);
-        let _ = x.conn.free_pixmap(bitmap);
-        let _ = x.conn.flush();
-        self.alpha_shape = Some((size, mask));
+        self.alpha_shape.set(x, self.id, pm);
     }
 
     /// Removes the shape set by [`OverlayWin::set_alpha_shape`].
     pub fn clear_alpha_shape(&mut self, x: &X) {
-        if self.alpha_shape.take().is_some() {
-            let _ = shape::mask(&x.conn, SO::SET, SK::BOUNDING, self.id, 0, 0, NONE);
-            let _ = x.conn.flush();
-        }
+        self.alpha_shape.clear(x, self.id);
     }
 
     pub fn raise(&self, x: &X) {
@@ -502,7 +483,7 @@ mod tests {
             gc: 0,
             left_held: false,
             hand: None,
-            alpha_shape: None,
+            alpha_shape: AlphaShape::default(),
             click_through: false,
             panel: None,
             input_sent: None,

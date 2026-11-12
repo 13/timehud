@@ -56,6 +56,8 @@ pub struct MenuPopup {
     items: Vec<MenuItem>,
     scale: f32,
     area: Rect,
+    /// No compositor: each level is shaped to its rounded panel.
+    shaped: bool,
     levels: Vec<Level>,
     /// The pointer grab is held (the keyboard one may be too).
     grabbed: bool,
@@ -104,19 +106,23 @@ impl MenuPopup {
     /// pointer (owner events) and keyboard; if another client holds a grab,
     /// the grab is retried by [`MenuPopup::retry_grab`]. On failure nothing
     /// stays grabbed or mapped.
-    /// `area` is the work area of the monitor at the pointer.
+    /// `area` is the work area of the monitor at the pointer. `shaped`
+    /// (no compositor): clip the windows to their rounded panels, as
+    /// window alpha is ignored then.
     pub fn open(
         x: &X,
         items: Vec<MenuItem>,
         root_x: i32,
         root_y: i32,
         area: Rect,
+        shaped: bool,
         fonts: &mut FontSet,
     ) -> anyhow::Result<Self> {
         let mut p = MenuPopup {
             items,
             scale: x.scale(),
             area,
+            shaped,
             levels: Vec::new(),
             grabbed: false,
             grab_retry: None,
@@ -382,6 +388,11 @@ impl MenuPopup {
             x.atoms._NET_WM_WINDOW_TYPE_POPUP_MENU,
             true,
         )?;
+        if self.shaped {
+            // Hover does not change the panel's outline: once is enough.
+            let items = items_at(&self.items, &path);
+            x.shape_to_alpha(win, &render_menu(items, &layout, None, fonts, self.scale));
+        }
         x.conn.map_window(win)?;
         self.levels.push(Level {
             win,
@@ -489,6 +500,7 @@ mod tests {
                 w: 100,
                 h: 100,
             },
+            shaped: false,
             levels: Vec::new(),
             grabbed: true,
             grab_retry: None,
@@ -545,6 +557,7 @@ mod tests {
             100,
             100,
             x.screens().work_area_at(100, 100),
+            false,
             &mut fonts,
         )
         .unwrap();
@@ -592,9 +605,12 @@ mod tests {
             50,
             50,
             x.screens().work_area_at(50, 50),
+            true,
             &mut fonts,
         )
         .unwrap();
+        // Shaped (no compositor): the rounded corners are cut away.
+        assert!(super::super::corners_cut(&x, p.windows()[0]));
         assert!(matches!(
             p.key(&x, KEY_ESCAPE, &mut fonts),
             PopupOutcome::Closed

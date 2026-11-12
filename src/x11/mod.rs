@@ -20,6 +20,7 @@ use std::os::fd::{AsRawFd, RawFd};
 use x11rb::connection::{Connection, RequestConnection};
 use x11rb::protocol::Event;
 use x11rb::protocol::randr::ConnectionExt as _;
+use x11rb::protocol::shape::{self, SK, SO};
 use x11rb::protocol::xproto::{
     AtomEnum, ChangeWindowAttributesAux, ColormapAlloc, ConnectionExt as _, CreateGCAux,
     CreateWindowAux, EventMask, ImageFormat, ImageOrder, PropMode, VisualClass, WindowClass,
@@ -173,6 +174,24 @@ impl X {
             .put_image(ImageFormat::XY_PIXMAP, pm, gc, w, h, 0, 0, 0, 1, mask)?;
         self.conn.free_gc(gc)?;
         Ok(pm)
+    }
+
+    /// Clips `win` to the pixels of `pm` with alpha >= 128 (its bounding
+    /// shape). Without a compositor window alpha is ignored, so this keeps
+    /// transparent corners from showing black. See [`AlphaShape`] to skip
+    /// unchanged updates.
+    pub fn shape_to_alpha(&self, win: u32, pm: &tiny_skia::Pixmap) {
+        self.shape_to_mask(win, &self.alpha_mask(pm), pm.width(), pm.height());
+    }
+
+    fn shape_to_mask(&self, win: u32, mask: &[u8], w: u32, h: u32) -> bool {
+        let Ok(bitmap) = self.bitmap(win, mask, w, h) else {
+            return false;
+        };
+        let _ = shape::mask(&self.conn, SO::SET, SK::BOUNDING, win, 0, 0, bitmap);
+        let _ = self.conn.free_pixmap(bitmap);
+        let _ = self.conn.flush();
+        true
     }
 
     /// Pointer position in root coordinates; `(0, 0)` if the query fails.
@@ -581,6 +600,71 @@ fn copy_rect_into(
     for (s, d) in rows.skip(y).take(h) {
         d[x * 4..(x + w) * 4].copy_from_slice(&s[x * 4..(x + w) * 4]);
     }
+}
+
+/// A window's bounding shape from the alpha of the frames drawn into it
+/// ([`X::shape_to_alpha`]), remembering the last mask so an unchanged one
+/// is not resent.
+#[derive(Default)]
+pub struct AlphaShape {
+    /// Size and mask last set; `None` = unshaped.
+    last: Option<((u32, u32), Vec<u8>)>,
+}
+
+impl AlphaShape {
+    /// Shapes `win` to `pm`'s alpha unless the mask is unchanged.
+    pub fn set(&mut self, x: &X, win: u32, pm: &tiny_skia::Pixmap) {
+        let size = (pm.width(), pm.height());
+        let mask = x.alpha_mask(pm);
+        if self
+            .last
+            .as_ref()
+            .is_some_and(|(s, m)| *s == size && *m == mask)
+        {
+            return;
+        }
+        if x.shape_to_mask(win, &mask, size.0, size.1) {
+            self.last = Some((size, mask));
+        }
+    }
+
+    /// Removes the shape set by [`AlphaShape::set`].
+    pub fn clear(&mut self, x: &X, win: u32) {
+        if self.last.take().is_some() {
+            let _ = shape::mask(&x.conn, SO::SET, SK::BOUNDING, win, 0, 0, x11rb::NONE);
+            let _ = x.conn.flush();
+        }
+    }
+}
+
+/// Test helper (needs a display): whether `win` is bounding-shaped with its
+/// top-left corner cut away but its centre kept, as for a rounded panel.
+#[cfg(test)]
+pub(crate) fn corners_cut(x: &X, win: u32) -> bool {
+    let shaped = shape::query_extents(&x.conn, win)
+        .unwrap()
+        .reply()
+        .unwrap()
+        .bounding_shaped;
+    let geo = x.conn.get_geometry(win).unwrap().reply().unwrap();
+    let rects = shape::get_rectangles(&x.conn, win, SK::BOUNDING)
+        .unwrap()
+        .reply()
+        .unwrap()
+        .rectangles;
+    let covers = |px: i32, py: i32| {
+        rects.iter().any(|r| {
+            Rect {
+                x: r.x.into(),
+                y: r.y.into(),
+                w: r.width.into(),
+                h: r.height.into(),
+            }
+            .contains(px, py)
+        })
+    };
+    let (w, h) = (i32::from(geo.width), i32::from(geo.height));
+    shaped && !covers(0, 0) && !covers(w - 1, h - 1) && covers(w / 2, h / 2)
 }
 
 /// 1-bit XYBitmap rows (padded to `pad` bits) of "alpha >= 128" pixels.
