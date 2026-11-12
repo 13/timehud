@@ -764,9 +764,6 @@ impl Hud {
         if self.deadlines.save_due(now) {
             self.save();
         }
-        if self.deadlines.idle_due(now) {
-            self.sound.idle_release();
-        }
         self.raise_if_allowed(now);
         self.reap();
     }

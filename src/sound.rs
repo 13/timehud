@@ -9,7 +9,7 @@ use std::f64::consts::PI;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -25,6 +25,10 @@ use crate::engine::Beep;
 pub const SAMPLE_RATE: u32 = 44100;
 const IDLE_RELEASE: Duration = Duration::from_secs(10);
 const PLAYER_TIMEOUT: Duration = Duration::from_secs(5);
+/// First wait before retrying to open the audio device after a failure;
+/// doubles per further failure up to [`OPEN_BACKOFF_MAX`].
+const OPEN_BACKOFF: Duration = Duration::from_secs(5);
+const OPEN_BACKOFF_MAX: Duration = Duration::from_secs(300);
 
 /// Port of `_get_beep`: 16-bit mono sine with a short attack/release envelope.
 pub fn beep_samples(freq: f32, dur: f32) -> Vec<i16> {
@@ -307,13 +311,23 @@ enum Msg {
     Play(Beep, String),
     /// Sound was disabled: drop the cached clip.
     Forget,
-    Idle,
+}
+
+/// How long to wait before the next device open after `failures`
+/// consecutive failed opens (at least 1).
+fn open_backoff(failures: u32) -> Duration {
+    OPEN_BACKOFF
+        .saturating_mul(1 << failures.saturating_sub(1).min(16))
+        .min(OPEN_BACKOFF_MAX)
 }
 
 /// Worker-side state: the lazily opened device and when its last clip ends.
 struct Worker {
     sink: Option<MixerDeviceSink>,
     busy_until: Instant,
+    /// Consecutive failed device opens, and when the next open may be tried.
+    open_failures: u32,
+    retry_at: Option<Instant>,
 }
 
 impl Worker {
@@ -321,7 +335,15 @@ impl Worker {
         Worker {
             sink: None,
             busy_until: Instant::now(),
+            open_failures: 0,
+            retry_at: None,
         }
+    }
+
+    /// When the open device is due for release; None while closed (the
+    /// worker then blocks without a timeout).
+    fn release_at(&self) -> Option<Instant> {
+        self.sink.as_ref().map(|_| self.busy_until + IDLE_RELEASE)
     }
 
     fn idle_release(&mut self) {
@@ -330,21 +352,67 @@ impl Worker {
         }
     }
 
+    /// Handles messages until the `Sound` is dropped, waking only to
+    /// release the device once it has been idle for [`IDLE_RELEASE`].
+    fn run(mut self, rx: Receiver<Msg>) {
+        loop {
+            let msg = match self.release_at() {
+                Some(at) => match rx.recv_timeout(at.saturating_duration_since(Instant::now())) {
+                    Ok(msg) => msg,
+                    Err(RecvTimeoutError::Timeout) => {
+                        self.idle_release();
+                        continue;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => return,
+                },
+                None => match rx.recv() {
+                    Ok(msg) => msg,
+                    Err(_) => return,
+                },
+            };
+            match msg {
+                Msg::Play(beep, file) => {
+                    if let Err(e) = self.play(beep, &file) {
+                        eprintln!("timehud: sound failed: {e}");
+                    }
+                }
+                Msg::Forget => forget_file(),
+            }
+        }
+    }
+
+    /// Opens the default device unless a failed open is still backing off.
+    /// Only the first failure of a streak is logged.
+    fn open_sink(&mut self) -> bool {
+        let now = Instant::now();
+        if self.retry_at.is_some_and(|t| now < t) {
+            return false;
+        }
+        match DeviceSinkBuilder::open_default_sink() {
+            Ok(mut s) => {
+                s.log_on_drop(false);
+                self.sink = Some(s);
+                self.open_failures = 0;
+                self.retry_at = None;
+                true
+            }
+            Err(e) => {
+                self.open_failures += 1;
+                if self.open_failures == 1 {
+                    eprintln!("timehud: audio device unavailable ({e}); using player fallback");
+                }
+                self.retry_at = Some(now + open_backoff(self.open_failures));
+                false
+            }
+        }
+    }
+
     /// Play through rodio, or an external player if no device opens.
     /// Returns the name of the path used.
     fn play(&mut self, beep: Beep, sound_file: &str) -> Result<&'static str, String> {
         let source = resolve_file(sound_file, beep);
-        if self.sink.is_none() {
-            match DeviceSinkBuilder::open_default_sink() {
-                Ok(mut s) => {
-                    s.log_on_drop(false);
-                    self.sink = Some(s);
-                }
-                Err(e) => {
-                    eprintln!("timehud: audio device unavailable ({e}); using player fallback");
-                    return play_with_player(&source).map(|()| "player");
-                }
-            }
+        if self.sink.is_none() && !self.open_sink() {
+            return play_with_player(&source).map(|()| "player");
         }
         let sink = self.sink.as_ref().expect("sink just opened");
         let player = Player::connect_new(sink.mixer());
@@ -442,20 +510,7 @@ impl Sound {
         let (tx, rx) = channel::<Msg>();
         thread::Builder::new()
             .name("timehud-sound".into())
-            .spawn(move || {
-                let mut worker = Worker::new();
-                while let Ok(msg) = rx.recv() {
-                    match msg {
-                        Msg::Play(beep, file) => {
-                            if let Err(e) = worker.play(beep, &file) {
-                                eprintln!("timehud: sound failed: {e}");
-                            }
-                        }
-                        Msg::Forget => forget_file(),
-                        Msg::Idle => worker.idle_release(),
-                    }
-                }
-            })
+            .spawn(move || Worker::new().run(rx))
             .expect("spawn sound thread");
         Sound {
             tx,
@@ -472,11 +527,6 @@ impl Sound {
         } else if self.file_cached.replace(false) {
             let _ = self.tx.send(Msg::Forget);
         }
-    }
-
-    /// Call about once per second; the device is dropped after 10 s unused.
-    pub fn idle_release(&self) {
-        let _ = self.tx.send(Msg::Idle);
     }
 }
 
@@ -655,6 +705,33 @@ mod tests {
     }
 
     #[test]
+    fn device_open_backs_off_exponentially() {
+        assert_eq!(open_backoff(1), Duration::from_secs(5));
+        assert_eq!(open_backoff(2), Duration::from_secs(10));
+        assert_eq!(open_backoff(4), Duration::from_secs(40));
+        assert_eq!(open_backoff(7), OPEN_BACKOFF_MAX);
+        assert_eq!(open_backoff(u32::MAX), OPEN_BACKOFF_MAX);
+    }
+
+    #[test]
+    fn closed_device_needs_no_wakeup() {
+        let mut w = Worker::new();
+        assert_eq!(w.release_at(), None);
+        w.idle_release();
+        assert!(w.sink.is_none());
+    }
+
+    #[test]
+    fn worker_exits_when_sound_is_dropped() {
+        let _guard = CACHE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        let (tx, rx) = channel::<Msg>();
+        let t = thread::spawn(move || Worker::new().run(rx));
+        tx.send(Msg::Forget).unwrap();
+        drop(tx);
+        t.join().unwrap();
+    }
+
+    #[test]
     fn shared_samples_play_without_copying() {
         let d = Arc::new(Decoded {
             channels: ChannelCount::new(1).unwrap(),
@@ -703,7 +780,6 @@ mod tests {
         // And through the public, threaded API.
         let s = Sound::new();
         s.play(Beep::default(), &Config::default());
-        s.idle_release();
         std::thread::sleep(Duration::from_millis(700));
     }
 }

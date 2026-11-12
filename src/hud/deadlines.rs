@@ -2,8 +2,6 @@
 
 /// Config writes are debounced this long after the last `SaveSoon`.
 pub const SAVE_DEBOUNCE: f64 = 0.3;
-/// `Sound::idle_release` cadence.
-pub const IDLE_RELEASE: f64 = 1.0;
 /// How long the IPC listener stays out of the poll set after `accept`
 /// failed for a reason other than "nothing pending" (e.g. `EMFILE`): the
 /// pending connection keeps the listener readable, so polling it would
@@ -24,8 +22,6 @@ pub struct Deadlines {
     pub frame: Option<f64>,
     /// Debounced config save.
     pub save: Option<f64>,
-    /// Next `Sound::idle_release`.
-    pub idle: f64,
     /// When a rate-limited keep-on-top raise becomes allowed.
     pub raise: Option<f64>,
     /// End of the `accept` back-off pause.
@@ -40,7 +36,6 @@ impl Deadlines {
             tick: now,
             frame: None,
             save: None,
-            idle: now + IDLE_RELEASE,
             raise: None,
             accept: None,
             tooltip: None,
@@ -70,15 +65,6 @@ impl Deadlines {
 
     pub fn save_due(&self, now: f64) -> bool {
         self.save.is_some_and(|t| now >= t)
-    }
-
-    /// Whether the sound idle release is due; schedules the next one if so.
-    pub fn idle_due(&mut self, now: f64) -> bool {
-        let due = now >= self.idle;
-        if due {
-            self.idle = now + IDLE_RELEASE;
-        }
-        due
     }
 
     /// `accept` failed at `now`: pause the listener.
@@ -112,7 +98,6 @@ impl Deadlines {
                 Some(self.tick),
                 self.frame.filter(|_| mapped),
                 self.save,
-                Some(self.idle),
                 self.raise,
                 self.accept,
                 self.tooltip,
@@ -136,7 +121,6 @@ mod tests {
     fn tooltip_deadline_wakes_the_loop_once() {
         let mut d = Deadlines::new(0.0);
         d.tick = 5.0;
-        d.idle = 5.0;
         d.tooltip = Some(0.6);
         assert_eq!(d.timeout_ms(0.0, false), 600);
         assert!(!d.tooltip_due(0.5));
@@ -161,7 +145,6 @@ mod tests {
         // Binary fractions keep the float arithmetic exact.
         let mut d = Deadlines::new(0.0);
         d.tick = 0.75;
-        // Idle release at 1.0 and the tick: the tick wins.
         assert_eq!(d.timeout_ms(0.0, true), 750);
         d.save = Some(0.5);
         assert_eq!(d.timeout_ms(0.0, true), 500);
@@ -194,17 +177,13 @@ mod tests {
     }
 
     #[test]
-    fn save_debounce_and_idle_release() {
+    fn save_debounce() {
         let mut d = Deadlines::new(0.0);
         assert!(!d.save_due(100.0));
         d.save_soon(1.0);
         d.save_soon(1.2); // another change restarts the debounce
         assert!(!d.save_due(1.4));
         assert!(d.save_due(1.5));
-        assert!(!d.idle_due(0.5));
-        assert!(d.idle_due(1.0));
-        assert_eq!(d.idle, 2.0);
-        assert!(!d.idle_due(1.5));
     }
 
     #[test]
