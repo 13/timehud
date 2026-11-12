@@ -1087,7 +1087,67 @@ fn status_of_a_hidden_timer_still_counts() {
     });
     h.app.toggle_timer(h.now());
     h.advance(3.0);
+    h.tick(); // the display is as of the last tick, shown or not
     assert_eq!(h.app.status().display, "00:03");
+}
+
+#[test]
+fn hidden_countdown_still_finishes_beeps_and_notifies() {
+    let mut h = mk(Config {
+        show_timer: false,
+        notify_on_finish: true,
+        alert_last_5_seconds: true,
+        ..countdown(6)
+    });
+    h.app.toggle_timer(h.now());
+    let mut fx = Vec::new();
+    for _ in 0..70 {
+        h.advance(0.1);
+        fx.extend(h.tick());
+    }
+    let shorts = fx
+        .iter()
+        .filter(|e| matches!(e, Effect::Beep(b) if b.short))
+        .count();
+    let longs = fx
+        .iter()
+        .filter(|e| matches!(e, Effect::Beep(b) if !b.short && !b.double))
+        .count();
+    assert_eq!((shorts, longs), (5, 1));
+    assert!(fx.contains(&Effect::Notify("Countdown finished".into())));
+    assert!(!h.app.engine.running(), "finished countdown stops");
+}
+
+#[test]
+fn hidden_countdown_auto_restarts() {
+    let mut h = mk(Config {
+        show_timer: false,
+        auto_restart_countdown: true,
+        ..countdown(2)
+    });
+    h.app.toggle_timer(h.now());
+    for _ in 0..25 {
+        h.advance(0.1);
+        h.tick();
+    }
+    assert!(h.app.engine.running());
+    assert!(h.app.engine.remaining() > 1.0, "restarted from the top");
+}
+
+#[test]
+fn hidden_timer_does_not_redraw_every_second() {
+    let mut h = mk(Config {
+        show_timer: false,
+        ..Config::default()
+    });
+    h.app.toggle_timer(h.now());
+    h.tick();
+    let mut redraws = 0;
+    for _ in 0..30 {
+        h.advance(0.1);
+        redraws += h.tick().iter().filter(|e| **e == Effect::Redraw).count();
+    }
+    assert_eq!(redraws, 0, "nothing timer-related is drawn while hidden");
 }
 
 #[test]

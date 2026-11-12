@@ -252,20 +252,11 @@ impl App {
         } else {
             "paused"
         };
-        // The label is refreshed every tick; a hidden timer is not.
-        let display = if self.cfg.show_timer {
-            self.timer.clone()
-        } else {
-            let secs = match mode {
-                Mode::Stopwatch => self.engine.elapsed(),
-                Mode::Countdown | Mode::Interval => self.engine.remaining().max(0.0),
-            };
-            fmt_seconds(shown_seconds(mode, secs))
-        };
         Status {
             mode: mode.name().into(),
             state: state.into(),
-            display,
+            // As of the last tick (hidden timers tick too).
+            display: self.timer.clone(),
             label: self.mode_text.clone(),
             preset: self.cfg.active_preset.clone(),
             visible: self.visible,
@@ -564,10 +555,18 @@ impl App {
         } else {
             self.progress_target
         };
+        // A hidden timer's text and label are not drawn.
+        let shown = |s: &String| {
+            if self.cfg.show_timer {
+                s.clone()
+            } else {
+                String::new()
+            }
+        };
         (
             self.clock.clone(),
-            self.timer.clone(),
-            self.mode_text.clone(),
+            shown(&self.timer),
+            shown(&self.mode_text),
             self.mode_color,
             self.color_target.clone(),
             self.bar_color,
@@ -575,14 +574,15 @@ impl App {
         )
     }
 
+    /// Engine tick: beeps, finish notification and labels always (a hidden
+    /// timer keeps running); `show_timer` only gates what is drawn of it
+    /// (color, progress, pulse).
     fn update_timer(&mut self, now: f64) -> Vec<Effect> {
-        if !self.cfg.show_timer {
-            return Vec::new();
-        }
         let r = self.engine.tick(&self.cfg);
         let theme = get_theme(&self.cfg.theme);
         let countdown = self.cfg.timer_mode == Mode::Countdown;
         self.timer = fmt_seconds(shown_seconds(self.cfg.timer_mode, r.display));
+        let shown = self.cfg.show_timer;
 
         // Crisp flashes during the countdown's final seconds; fade otherwise
         let animate = r.state != State::End && !(countdown && r.display <= FINAL_SECONDS);
@@ -596,7 +596,9 @@ impl App {
                 State::End => theme.color_end.to_string(),
             }
         };
-        self.set_timer_color(&color, animate, now);
+        if shown {
+            self.set_timer_color(&color, animate, now);
+        }
 
         let bar = if matches!(r.state, State::Warn | State::End) {
             theme.color_warn
@@ -609,7 +611,12 @@ impl App {
         let style = self.cfg.progress_style.as_str();
         self.line_fraction = if style == "line" { r.progress } else { -1.0 };
         self.border_fraction = if style == "border" { r.progress } else { -1.0 };
-        self.set_progress(self.line_fraction.max(self.border_fraction), now);
+        let fraction = if shown {
+            self.line_fraction.max(self.border_fraction)
+        } else {
+            -1.0
+        };
+        self.set_progress(fraction, now);
 
         if r.phase != Phase::None && !self.engine.is_idle(&self.cfg) {
             let label = phase_label(r.phase, r.round, r.rounds);
@@ -628,7 +635,7 @@ impl App {
         }
 
         let mut fx: Vec<Effect> = r.beeps.iter().map(|b| Effect::Beep(*b)).collect();
-        if !r.beeps.is_empty() && countdown && r.display <= FINAL_SECONDS {
+        if shown && !r.beeps.is_empty() && countdown && r.display <= FINAL_SECONDS {
             self.pulse_start = Some(now);
         }
         if r.finished && !r.restarted && self.cfg.notify_on_finish {
