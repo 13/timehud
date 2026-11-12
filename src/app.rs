@@ -123,15 +123,6 @@ fn qt_center(pos: i32, len: i32) -> f64 {
     f64::from((2 * pos + len - 1) / 2)
 }
 
-fn copy_layout(l: &Layout) -> Layout {
-    Layout {
-        w: l.w,
-        h: l.h,
-        panel: l.panel,
-        regions: l.regions.clone(),
-    }
-}
-
 fn is_button(h: Hit) -> bool {
     matches!(h, Hit::BtnStart | Hit::BtnReset | Hit::BtnMode)
 }
@@ -409,7 +400,7 @@ impl App {
             let view = self.view(now);
             render_into(&view, &mut self.fonts.borrow_mut(), canvas)
         };
-        self.apply_layout(copy_layout(&layout));
+        self.apply_layout(layout.clone());
         layout
     }
 

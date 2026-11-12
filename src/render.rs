@@ -46,6 +46,7 @@ pub enum Hit {
     Background,
 }
 
+#[derive(Clone)]
 pub struct Layout {
     pub w: i32,
     pub h: i32,
