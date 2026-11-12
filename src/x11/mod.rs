@@ -396,10 +396,10 @@ impl X {
             32,
             win,
             self.root,
-            rect.x as i16,
-            rect.y as i16,
-            rect.w.max(1) as u16,
-            rect.h.max(1) as u16,
+            to_i16(rect.x),
+            to_i16(rect.y),
+            to_u16(rect.w.max(1)),
+            to_u16(rect.h.max(1)),
             0,
             WindowClass::INPUT_OUTPUT,
             self.argb_visual,
@@ -596,6 +596,16 @@ fn threshold_mask(icon: &tiny_skia::Pixmap, pad: u8, lsb_first: bool) -> (Vec<u8
         }
     }
     (out, pitch)
+}
+
+/// `v` clamped into a protocol coordinate.
+pub(super) fn to_i16(v: i32) -> i16 {
+    v.clamp(i16::MIN.into(), i16::MAX.into()) as i16
+}
+
+/// `v` clamped into a protocol size (0..=65535).
+pub(super) fn to_u16(v: i32) -> u16 {
+    v.clamp(0, u16::MAX.into()) as u16
 }
 
 /// Image size as PutImage dimensions; errors when empty or so large that
@@ -909,6 +919,16 @@ mod tests {
         let (m, _) = threshold_mask(&p, 32, false);
         assert_eq!(m[0], 0b1000_0000);
         assert_eq!(m[1], 0b0100_0000);
+    }
+
+    #[test]
+    fn protocol_ints_clamp() {
+        assert_eq!(to_i16(-40_000), i16::MIN);
+        assert_eq!(to_i16(40_000), i16::MAX);
+        assert_eq!(to_i16(-7), -7);
+        assert_eq!(to_u16(-1), 0);
+        assert_eq!(to_u16(70_000), u16::MAX);
+        assert_eq!(to_u16(640), 640);
     }
 
     #[test]

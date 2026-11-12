@@ -1,6 +1,6 @@
 //! The HUD's override-redirect ARGB overlay window and its input translation.
 
-use super::X;
+use super::{X, to_i16, to_u16};
 use crate::app::{Button, Cursor, Input, Key};
 use crate::layout::Rect;
 use std::collections::HashMap;
@@ -283,16 +283,14 @@ impl CompositorWatch {
 
 /// The overlay's input shape: nothing while click-through, else the panel.
 fn input_rects(click_through: bool, panel: Rect) -> Vec<Rectangle> {
-    let c16 = |v: i32| v.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
-    let u16 = |v: i32| v.clamp(0, i32::from(u16::MAX)) as u16;
     if click_through {
         return Vec::new();
     }
     vec![Rectangle {
-        x: c16(panel.x),
-        y: c16(panel.y),
-        width: u16(panel.w),
-        height: u16(panel.h),
+        x: to_i16(panel.x),
+        y: to_i16(panel.y),
+        width: to_u16(panel.w),
+        height: to_u16(panel.h),
     }]
 }
 

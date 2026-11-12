@@ -31,12 +31,8 @@ const ICONS: [(u32, &[u8]); 7] = [
 const REQUEST_DOCK: u32 = 0;
 const DEFAULT_SIZE: u32 = 24;
 
-/// Pixel size of the embedded PNG used for `size`: the smallest one that is
-/// at least `size`, else the largest.
-pub fn source_size(size: u32) -> u32 {
-    pick(size).0
-}
-
+/// The embedded PNG used for `size` and its pixel size: the smallest one
+/// that is at least `size`, else the largest.
 fn pick(size: u32) -> (u32, &'static [u8]) {
     ICONS
         .iter()
@@ -156,16 +152,6 @@ impl Tray {
         t.dock(x);
         x.conn.flush()?;
         Ok(t)
-    }
-
-    /// Whether a tray manager currently owns the selection.
-    pub fn has_owner(&self) -> bool {
-        self.owner != 0
-    }
-
-    /// Whether an icon window currently exists (docked or awaiting embedding).
-    pub fn is_docked(&self) -> bool {
-        self.docked.is_some()
     }
 
     pub fn set_visible(&mut self, x: &X, on: bool) {
@@ -478,6 +464,7 @@ mod tests {
 
     #[test]
     fn icon_sizes() {
+        let source_size = |size| pick(size).0;
         assert_eq!(source_size(22), 24);
         assert_eq!(source_size(24), 24);
         assert_eq!(source_size(300), 256);
@@ -528,9 +515,9 @@ mod tests {
         use x11rb::protocol::xproto::ImageFormat;
         let x = X::connect().unwrap();
         let mut t = Tray::new(&x).unwrap();
-        eprintln!("owner = {:#x}, docked = {}", t.owner, t.is_docked());
-        assert!(t.has_owner(), "no system tray manager on this display");
-        assert!(t.is_docked());
+        eprintln!("owner = {:#x}, docked = {}", t.owner, t.docked.is_some());
+        assert_ne!(t.owner, 0, "no system tray manager on this display");
+        assert!(t.docked.is_some());
         let start = std::time::Instant::now();
         while start.elapsed() < std::time::Duration::from_secs(3) {
             while let Ok(Some(ev)) = x.conn.poll_for_event() {
@@ -557,7 +544,7 @@ mod tests {
         eprintln!("slot {size:?} centre {centre:?} corner {corner:?}");
         assert_ne!(centre, corner, "icon body not painted");
         t.set_visible(&x, false);
-        assert!(!t.is_docked());
+        assert!(t.docked.is_none());
         x.conn.get_input_focus().unwrap().reply().unwrap();
     }
 }
