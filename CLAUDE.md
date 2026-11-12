@@ -26,7 +26,7 @@ Run manual checks with `XDG_CONFIG_HOME` pointed at a scratch dir so the real `~
 
 Two processes, one binary:
 
-- **HUD process** (`timehud`): x11rb + tiny-skia + fontdue software rendering into an override-redirect ARGB window, driven by a `poll(2)` loop (X connection fd, IPC socket, signals) with no toolkit. Idle means blocked in poll; the loop wakes for the 100 ms tick, the 1 s clock and animation frames only. Owns the timer engine, tray (XEmbed), popup menus, sound and global hotkey grabs.
+- **HUD process** (`timehud`): x11rb + tiny-skia + ab_glyph software rendering into an override-redirect ARGB window, driven by a `poll(2)` loop (X connection fd, IPC socket, signals) with no toolkit. Idle means blocked in poll; the loop wakes for the 100 ms tick, the 1 s clock and animation frames only. Owns the timer engine, tray (XEmbed), popup menus, sound and global hotkey grabs. Without a compositor (`_NET_WM_CM_S<n>` unowned) windows are shaped from their alpha (`x11::AlphaShape`) and the shadow is dropped (`App::set_shadows` -> `View::shadow`).
 - **Settings process** (`timehud settings`, hidden subcommand; also `save-preset`): a separate `eframe`/egui window so the HUD never links a GUI toolkit's idle cost. Talks to the HUD over the Unix socket in `$XDG_RUNTIME_DIR/timehud.sock` (`ipc.rs`): live config edits go HUD-ward; the HUD merges only the keys the settings process changed (`merge_settings_changes`), so HUD-side edits (drag, wheel font size) survive.
 - Single instance via the same socket: a second `timehud` toggles visibility; `toggle|start|pause|reset|set|preset|mode|status|show|hide|quit` subcommands send control requests (`main.rs::control_request`; HUD errors go to stderr with exit 1).
 
@@ -35,25 +35,25 @@ Module map (`src/`):
 - `main.rs` — clap CLI, subcommand dispatch, single-instance bind.
 - `engine.rs` — `TimerEngine`, the pure timer state machine (stopwatch/countdown/interval/cycling stopwatch, beep scheduling). Injectable clock; no X/IO. Port of Python `timer_engine.py`.
 - `app.rs` + `app/` — `App`, the pure HUD state: input -> `Effect`s (redraw, save, quit...). Everything testable without X lives here (`app/tests.rs`).
-- `config.rs` — `Config` + tolerant per-field JSON codec (wrong type falls back to that field's default; unknown keys preserved in `extra`). `config_path()` honors `XDG_CONFIG_HOME`.
+- `config.rs` — `Config` + tolerant per-field JSON codec (wrong type falls back to that field's default; unknown keys preserved in `extra`). Every field is declared once in the `config_fields!` macro (struct, default, codec, clamp, `Config::KEYS`); a test pins the README JSON example to `Config::default()`. `config_path()` honors `XDG_CONFIG_HOME`.
 - `themes.rs` — six themes (classic, terminal, glass, mono, nord, amber); `apply_theme` stamps colors into config, structure is read live via `get_theme`.
-- `layout.rs`, `render.rs`, `text.rs`, `format.rs`, `anim.rs` — geometry/hit regions, tiny-skia drawing, fontdue text (bundled JetBrains Mono Bold + fontconfig fallback), time formatting, animations.
-- `hud.rs` + `hud/` — the poll loop, X event dispatch, `TIMEHUD_TRACE`; `deadlines.rs` (tick/frame/save/raise/accept deadlines → poll timeout), `ipc_server.rs` (clients, non-blocking event queues, settings session).
+- `layout.rs`, `render.rs`, `text.rs`, `format.rs`, `anim.rs` — geometry/hit regions, tiny-skia drawing, ab_glyph text, parsed lazily (bundled JetBrains Mono Bold shared by all `FontSet`s + fontconfig fallback; LRU-bounded glyph cache), time formatting, animations.
+- `hud.rs` + `hud/` — the poll loop, X event dispatch, `TIMEHUD_TRACE`; `deadlines.rs` (tick/frame/save/raise/accept deadlines → poll timeout), `ipc_server.rs` (clients, non-blocking event queues, settings session, the pure `gate()` for settings-only requests). Control requests are dispatched X-free in `App::request` (tested in `app/tests.rs`).
 - `x11/` — `mod.rs` (connection, windows, present), `overlay.rs`, `popup.rs` (menus), `tray.rs`, `tooltip.rs` (tray tooltip), `grabs.rs` (hotkey grabs).
 - `menu.rs` — context-menu model shared by window and tray.
 - `hotkey.rs` — combo parsing/formatting, egui key -> X keysym.
 - `sound.rs` — in-memory beeps via rodio, lazy device open + release after idle, player-chain fallback.
 - `ipc.rs` — socket path, `Request`/`Event` protocol, bind-or-detect.
 - `settings/` — the egui settings window (`mod.rs`), presets tab, save-preset dialog.
-- `settings_session.rs` — pure settings-session bookkeeping shared by both processes: merge only keys Settings changed, Cancel restores only the user's edited keys, HUD-side edits are pushed to the window (`Event::Config`) and adopted for unedited keys.
+- `settings_session.rs` — pure settings-session bookkeeping (revisioned: `Event::Config` carries `rev`, Preview/Commit echo the last seen one so values sent before a HUD push don't undo it) shared by both processes: merge only keys Settings changed, Cancel restores only the user's edited keys, HUD-side edits are pushed to the window (`Event::Config`) and adopted for unedited keys.
 - `examples/snapshot.rs` — renders the HUD to a PNG for visual checks.
 
 ## Conventions
 
-- Engine quirks are deliberate 1:1 ports from the Python engine and are pinned by tests; don't "fix" without intent: warn window only when remaining > 6 s; auto-restart not resetting `sound_alert_before` beats; display reverting to the full duration one tick after a countdown finishes. Ported tests that look wrong are still right.
-- Keep the README settings-JSON example in sync with every `Config` field when adding config keys. A new field needs a default; old config files must keep loading, and a Rust-saved file must still load in the Python app.
+- Engine quirks are deliberate 1:1 ports from the Python engine and are pinned by tests; don't "fix" without intent: warn window only when remaining > 6 s; auto-restart not resetting `sound_alert_before` beats; display reverting to the full duration one tick after a countdown finishes; interval phase changes and countdown auto-restart restart the clock at `now()` (the tick overshoot is dropped, ~50 ms/phase, same as Python). Ported tests that look wrong are still right.
+- Add config keys in `config_fields!` and to the README settings-JSON example (the test fails otherwise). A new field needs a default; old config files must keep loading, and a Rust-saved file must still load in the Python app.
 - `active_preset` must be cleared whenever `countdown_duration` changes by means other than applying a preset (wheel handler and settings already do this); the HUD clears it whenever the setup no longer matches the preset (`config::active_preset_matches`), which also covers mode changes.
-- Numeric config fields are clamped into working ranges on load and in `preview_config` (`config.rs`); new numeric fields need a range too.
+- Numeric config fields are clamped into working ranges on load and in `preview_config`; the `*_RANGE` constants in `config.rs` are the single source for clamps and the settings/preset-editor spin boxes. New numeric fields need a range too.
 - Beep timing: last-5 shorts at displayed 5..1, long beep exactly at 00:00 (countdown finish, every interval/cycle phase end, session end); only the interval/cycle phase-end beeps are gated by `phase_beeps`, the countdown-finish beep is not (same as Python). The fast double beep is exclusively the optional `halfway_beep` cue at half of each work phase. Cycle modes never play periodic `sound_interval` beeps or the `sound_alert_before` pre-beep. Pinned by tests.
 - Preset shapes: countdown `{name, duration}`, interval `{name, type, work, rest, total}` (rounds derived from total), stopwatch `{name, type, work, rest}` (sets `stopwatch_work/rest`; count-up cycling, endless; work=0 means plain stopwatch).
 - `progress_style`: `line` (bar under timer) | `border` (traced around the window outline) | `off`.
