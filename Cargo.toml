@@ -2,6 +2,8 @@
 name = "timehud"
 version = "0.9.0"
 edition = "2024"
+# let-chains need 1.88, but eframe/egui 0.37 require 1.95.
+rust-version = "1.95"
 
 [dependencies]
 ab_glyph = "0.2.32"

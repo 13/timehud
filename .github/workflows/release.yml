@@ -34,14 +34,28 @@ jobs:
         run: |
           curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal -c rustfmt,clippy
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Check tag matches Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -eu
+          CRATE=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[0].version')
+          if [ "${VERSION}" != "v${CRATE}" ]; then
+            echo "::error::tag ${VERSION} does not match Cargo.toml version ${CRATE} (expected v${CRATE})"
+            exit 1
+          fi
+      - name: Gate (fmt, clippy, tests)
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
       - name: Build release binary
-        run: cargo build --release
+        run: cargo build --locked --release
       - name: Pack tarball
         run: |
           set -eux
           NAME="timehud-${VERSION}-x86_64"
           mkdir -p "dist/$NAME"
-          cp target/release/timehud assets/icons/timehud.svg assets/timehud.desktop README.md LICENSE "dist/$NAME/"
+          cp target/release/timehud assets/icons/timehud.svg assets/timehud.desktop assets/OFL.txt README.md LICENSE "dist/$NAME/"
           tar -C dist -czf "$NAME.tar.gz" "$NAME"
           echo "TARBALL=$NAME.tar.gz" >> "$GITHUB_ENV"
       - name: Upload artifact
