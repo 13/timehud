@@ -247,10 +247,35 @@ config_codec!(
 /// Upper bound for durations in seconds (a week; above any preset the
 /// editor makes, low enough that phase arithmetic cannot overflow).
 pub const MAX_SECS: i64 = 7 * 24 * 3600;
-/// HUD font size range (the clock wheel's; the settings spin box is narrower).
+
+// Working ranges of the numeric fields, inclusive: the one source for the
+// load-time clamps, the HUD (wheel, `timehud set`), the settings controls
+// and the preset editor.
+
+/// HUD font size, px.
 pub const FONT_SIZE_RANGE: (i64, i64) = (10, 120);
-/// Countdown duration range in seconds.
+/// Opacity (the settings slider shows it as 20..100 %).
+pub const OPACITY_RANGE: (f64, f64) = (0.2, 1.0);
+/// Countdown duration (config and presets), seconds.
 pub const COUNTDOWN_RANGE: (i64, i64) = (1, MAX_SECS);
+/// Work phase of an interval timer or a cycling-stopwatch preset, seconds.
+pub const WORK_RANGE: (i64, i64) = (1, MAX_SECS);
+/// `stopwatch_work`: like [`WORK_RANGE`] but 0 = plain stopwatch.
+pub const STOPWATCH_WORK_RANGE: (i64, i64) = (0, MAX_SECS);
+/// Rest phases, seconds (0 = none).
+pub const REST_RANGE: (i64, i64) = (0, MAX_SECS);
+/// Interval rounds.
+pub const ROUNDS_RANGE: (i64, i64) = (1, 100_000);
+/// `sound_interval` / `sound_alert_before`, seconds (0 = off).
+pub const SOUND_SECS_RANGE: (i64, i64) = (0, MAX_SECS);
+/// Screen margin, px.
+pub const MARGIN_RANGE: (i64, i64) = (0, 1000);
+/// Padding, px.
+pub const PADDING_RANGE: (i64, i64) = (0, 100);
+/// Top padding, px (-1 = same as padding).
+pub const PADDING_TOP_RANGE: (i64, i64) = (-1, 100);
+/// Row spacing, px.
+pub const ROW_SPACING_RANGE: (i64, i64) = (0, 100);
 
 impl Config {
     /// Clamps numeric fields into ranges the HUD can work with (a
@@ -260,27 +285,23 @@ impl Config {
     pub fn clamp_ranges(&mut self) {
         let clamp = |v: &mut i64, (lo, hi): (i64, i64)| *v = (*v).clamp(lo, hi);
         clamp(&mut self.font_size, FONT_SIZE_RANGE);
-        // Like the settings slider (20..100 %).
         self.opacity = if self.opacity.is_finite() {
-            self.opacity.clamp(0.2, 1.0)
+            self.opacity.clamp(OPACITY_RANGE.0, OPACITY_RANGE.1)
         } else {
             Config::default().opacity
         };
         clamp(&mut self.countdown_duration, COUNTDOWN_RANGE);
-        clamp(&mut self.interval_work, (1, MAX_SECS));
-        clamp(&mut self.interval_rest, (0, MAX_SECS));
-        clamp(&mut self.interval_rounds, (1, 100_000));
-        // 0 = plain stopwatch.
-        clamp(&mut self.stopwatch_work, (0, MAX_SECS));
-        clamp(&mut self.stopwatch_rest, (0, MAX_SECS));
-        // 0 = off.
-        clamp(&mut self.sound_interval, (0, MAX_SECS));
-        clamp(&mut self.sound_alert_before, (0, MAX_SECS));
-        clamp(&mut self.margin, (0, 1000));
-        clamp(&mut self.padding, (0, 100));
-        // -1 = same as padding.
-        clamp(&mut self.padding_top, (-1, 100));
-        clamp(&mut self.row_spacing, (0, 100));
+        clamp(&mut self.interval_work, WORK_RANGE);
+        clamp(&mut self.interval_rest, REST_RANGE);
+        clamp(&mut self.interval_rounds, ROUNDS_RANGE);
+        clamp(&mut self.stopwatch_work, STOPWATCH_WORK_RANGE);
+        clamp(&mut self.stopwatch_rest, REST_RANGE);
+        clamp(&mut self.sound_interval, SOUND_SECS_RANGE);
+        clamp(&mut self.sound_alert_before, SOUND_SECS_RANGE);
+        clamp(&mut self.margin, MARGIN_RANGE);
+        clamp(&mut self.padding, PADDING_RANGE);
+        clamp(&mut self.padding_top, PADDING_TOP_RANGE);
+        clamp(&mut self.row_spacing, ROW_SPACING_RANGE);
     }
 
     /// Missing or unparseable file gives defaults. An unparseable file is

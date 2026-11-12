@@ -3,7 +3,10 @@
 use super::{
     ACCENT, ACCENT_DARK, CARD, ERROR, FIELD, TEXT, WEAK, card, countdown_note, form, note, spin,
 };
-use crate::config::{Config, Preset, PresetRules, interval_preset_rounds, valid_presets};
+use crate::config::{
+    COUNTDOWN_RANGE, Config, Preset, PresetRules, REST_RANGE, ROUNDS_RANGE, WORK_RANGE,
+    interval_preset_rounds, valid_presets,
+};
 use crate::format::fmt_seconds;
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Frame, Margin, RichText, Sense, Stroke, Ui, Vec2,
@@ -446,7 +449,7 @@ pub fn section(ui: &mut Ui, st: &mut PresetsState, cfg: &mut Config) {
                 PresetKind::Countdown => {
                     ui.label("Duration");
                     ui.horizontal(|ui| {
-                        spin(ui, &mut e.duration, 1..=24 * 3600, " s");
+                        spin(ui, &mut e.duration, COUNTDOWN_RANGE, " s");
                         note(ui, countdown_note(e.duration));
                     });
                     ui.end_row();
@@ -454,13 +457,13 @@ pub fn section(ui: &mut Ui, st: &mut PresetsState, cfg: &mut Config) {
                 PresetKind::Interval => {
                     ui.label("Work / rest");
                     ui.horizontal(|ui| {
-                        spin(ui, &mut e.iv_work, 5..=3600, " s work");
-                        spin(ui, &mut e.iv_rest, 0..=3600, " s rest");
+                        spin(ui, &mut e.iv_work, WORK_RANGE, " s work");
+                        spin(ui, &mut e.iv_rest, REST_RANGE, " s rest");
                     });
                     ui.end_row();
                     ui.label("Rounds");
                     ui.horizontal(|ui| {
-                        spin(ui, &mut e.iv_rounds, 1..=999, " rounds");
+                        spin(ui, &mut e.iv_rounds, ROUNDS_RANGE, " rounds");
                         let total = interval_total(e);
                         note(ui, format!("\u{2192} {} total", fmt_seconds(total as f64)));
                     });
@@ -469,8 +472,8 @@ pub fn section(ui: &mut Ui, st: &mut PresetsState, cfg: &mut Config) {
                 PresetKind::Stopwatch => {
                     ui.label("Work / rest");
                     ui.horizontal(|ui| {
-                        spin(ui, &mut e.sw_work, 5..=3600, " s work");
-                        spin(ui, &mut e.sw_rest, 0..=3600, " s rest");
+                        spin(ui, &mut e.sw_work, WORK_RANGE, " s work");
+                        spin(ui, &mut e.sw_rest, REST_RANGE, " s rest");
                     });
                     ui.end_row();
                 }

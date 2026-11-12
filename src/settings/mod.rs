@@ -6,7 +6,11 @@ mod save_preset;
 
 pub use save_preset::run_save_preset;
 
-use crate::config::{Config, Mode, config_path};
+use crate::config::{
+    COUNTDOWN_RANGE, Config, FONT_SIZE_RANGE, Mode, OPACITY_RANGE, PADDING_RANGE,
+    PADDING_TOP_RANGE, REST_RANGE, ROUNDS_RANGE, ROW_SPACING_RANGE, SOUND_SECS_RANGE, WORK_RANGE,
+    config_path,
+};
 use crate::hotkey::{duplicate_combos, egui_to_combo, format_combo, is_modifier_key};
 use crate::ipc::{Event, Request, socket_path};
 use crate::layout::POSITIONS;
@@ -150,16 +154,17 @@ fn note(ui: &mut Ui, text: impl Into<String>) -> egui::Response {
     ui.label(RichText::new(text.into()).size(12.0).color(WEAK))
 }
 
-/// Integer spin box with range and unit (QSpinBox stand-in).
+/// Integer spin box with an inclusive `(lo, hi)` range (one of the
+/// `config` range constants) and unit (QSpinBox stand-in).
 pub(crate) fn spin(
     ui: &mut Ui,
     value: &mut i64,
-    range: std::ops::RangeInclusive<i64>,
+    range: (i64, i64),
     suffix: &str,
 ) -> egui::Response {
     ui.add(
         egui::DragValue::new(value)
-            .range(range)
+            .range(range.0..=range.1)
             .suffix(suffix)
             .speed(0.25)
             .clamp_existing_to_range(false)
@@ -792,13 +797,15 @@ impl SettingsApp {
                 ui.end_row();
 
                 ui.label("Font size");
-                spin(ui, &mut cfg.font_size, 12..=80, " px");
+                spin(ui, &mut cfg.font_size, FONT_SIZE_RANGE, " px");
                 ui.end_row();
 
                 ui.label("Opacity");
                 let mut pct = (cfg.opacity * 100.0).round() as i64;
+                let (lo, hi) = OPACITY_RANGE;
+                let pct_range = (lo * 100.0).round() as i64..=(hi * 100.0).round() as i64;
                 if ui
-                    .add(egui::Slider::new(&mut pct, 20..=100).suffix("%"))
+                    .add(egui::Slider::new(&mut pct, pct_range).suffix("%"))
                     .changed()
                 {
                     cfg.opacity = pct as f64 / 100.0;
@@ -857,14 +864,14 @@ impl SettingsApp {
                 ui.end_row();
 
                 ui.label("Padding");
-                spin(ui, &mut cfg.padding, 2..=40, " px")
+                spin(ui, &mut cfg.padding, PADDING_RANGE, " px")
                     .on_hover_text("Space between the window border and the text");
                 ui.end_row();
 
                 ui.label("Top padding");
                 ui.add(
                     egui::DragValue::new(&mut cfg.padding_top)
-                        .range(-1..=40)
+                        .range(PADDING_TOP_RANGE.0..=PADDING_TOP_RANGE.1)
                         .speed(0.25)
                         .clamp_existing_to_range(false)
                         .min_size(Vec2::new(90.0, 0.0))
@@ -888,7 +895,7 @@ impl SettingsApp {
                 ui.end_row();
 
                 ui.label("Row spacing");
-                spin(ui, &mut cfg.row_spacing, 0..=40, " px")
+                spin(ui, &mut cfg.row_spacing, ROW_SPACING_RANGE, " px")
                     .on_hover_text("Uniform gap between clock, timer, mode label and controls");
                 ui.end_row();
             });
@@ -972,7 +979,7 @@ impl SettingsApp {
             form(ui, "timer-cd", |ui| {
                 ui.label("Duration");
                 ui.horizontal(|ui| {
-                    spin(ui, &mut cfg.countdown_duration, 5..=86400, " s")
+                    spin(ui, &mut cfg.countdown_duration, COUNTDOWN_RANGE, " s")
                         .on_hover_text("Countdown duration in seconds (e.g. 300 = 5 min)");
                     note(ui, countdown_note(cfg.countdown_duration));
                 });
@@ -992,13 +999,13 @@ impl SettingsApp {
         card(ui, "Interval", |ui| {
             form(ui, "timer-iv", |ui| {
                 ui.label("Work");
-                spin(ui, &mut cfg.interval_work, 5..=3600, " s");
+                spin(ui, &mut cfg.interval_work, WORK_RANGE, " s");
                 ui.end_row();
                 ui.label("Rest");
-                spin(ui, &mut cfg.interval_rest, 0..=3600, " s");
+                spin(ui, &mut cfg.interval_rest, REST_RANGE, " s");
                 ui.end_row();
                 ui.label("Rounds");
-                spin(ui, &mut cfg.interval_rounds, 1..=99, "");
+                spin(ui, &mut cfg.interval_rounds, ROUNDS_RANGE, "");
                 ui.end_row();
             });
         });
@@ -1028,7 +1035,7 @@ impl SettingsApp {
                 ui.label("Alert every");
                 ui.add(
                     egui::DragValue::new(&mut cfg.sound_interval)
-                        .range(0..=3600)
+                        .range(SOUND_SECS_RANGE.0..=SOUND_SECS_RANGE.1)
                         .speed(0.25)
                         .clamp_existing_to_range(false)
                         .min_size(Vec2::new(90.0, 0.0))
@@ -1053,7 +1060,7 @@ impl SettingsApp {
 
                 ui.label("Double beep before");
                 ui.horizontal(|ui| {
-                    spin(ui, &mut cfg.sound_alert_before, 0..=3600, " s")
+                    spin(ui, &mut cfg.sound_alert_before, SOUND_SECS_RANGE, " s")
                         .on_hover_text("Play a double short beep N seconds before the main alert");
                     note(ui, "0 to disable");
                 });
