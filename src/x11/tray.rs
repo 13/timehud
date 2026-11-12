@@ -10,7 +10,7 @@
 use super::X;
 use crate::layout::Rect;
 use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
-use x11rb::connection::{Connection, RequestConnection};
+use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
     AtomEnum, BackPixmap, ClientMessageEvent, ConnectionExt as _, CreateGCAux, CreateWindowAux,
@@ -103,11 +103,10 @@ struct SlotCache {
 impl SlotCache {
     fn get(&mut self, w: u32, h: u32) -> &Pixmap {
         let (w, h) = (w.max(1), h.max(1));
-        match &self.img {
-            Some(p) if (p.width(), p.height()) == (w, h) => {}
-            _ => self.img = Some(slot_icon(w, h)),
-        }
-        self.img.get_or_insert_with(|| slot_icon(w, h))
+        let img = (self.img.take())
+            .filter(|p| (p.width(), p.height()) == (w, h))
+            .unwrap_or_else(|| slot_icon(w, h));
+        self.img.insert(img)
     }
 }
 
@@ -309,9 +308,9 @@ impl Tray {
         }
         match self.create_icon_window(x) {
             Ok(d) => {
+                // Painted on the Expose after the tray maps it.
                 let win = d.win;
                 self.docked = Some(d);
-                self.repaint(x);
                 let msg = ClientMessageEvent::new(
                     32,
                     self.owner,
@@ -338,7 +337,8 @@ impl Tray {
             | EventMask::ENTER_WINDOW
             | EventMask::LEAVE_WINDOW;
         let mut own_colormap = None;
-        let argb = if let Some(vis) = self.tray_visual(x) {
+        let tray_visual = self.tray_visual(x);
+        let (depth, visual, aux) = if let Some(vis) = tray_visual {
             let cmap = if vis == x.argb_visual {
                 x.colormap
             } else {
@@ -352,59 +352,32 @@ impl Tray {
                 own_colormap = Some(c);
                 c
             };
-            x.conn.create_window(
-                32,
-                win,
-                x.root,
-                0,
-                0,
-                size as u16,
-                size as u16,
-                0,
-                WindowClass::INPUT_OUTPUT,
-                vis,
-                &CreateWindowAux::new()
-                    .background_pixel(0)
-                    .border_pixel(0)
-                    .colormap(cmap)
-                    .event_mask(events),
-            )?;
-            true
+            let aux = CreateWindowAux::new()
+                .background_pixel(0)
+                .border_pixel(0)
+                .colormap(cmap);
+            (32, vis, aux)
         } else {
-            x.conn.create_window(
-                screen.root_depth,
-                win,
-                x.root,
-                0,
-                0,
-                size as u16,
-                size as u16,
-                0,
-                WindowClass::INPUT_OUTPUT,
-                screen.root_visual,
-                &CreateWindowAux::new()
-                    .background_pixmap(BackPixmap::PARENT_RELATIVE)
-                    .event_mask(events),
-            )?;
-            false
+            let aux = CreateWindowAux::new().background_pixmap(BackPixmap::PARENT_RELATIVE);
+            (screen.root_depth, screen.root_visual, aux)
         };
+        x.conn.create_window(
+            depth,
+            win,
+            x.root,
+            0,
+            0,
+            size as u16,
+            size as u16,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            visual,
+            &aux.event_mask(events),
+        )?;
         let gc = x.conn.generate_id()?;
         x.conn
             .create_gc(gc, win, &CreateGCAux::new().graphics_exposures(0))?;
-        x.conn.change_property8(
-            PropMode::REPLACE,
-            win,
-            AtomEnum::WM_CLASS,
-            AtomEnum::STRING,
-            b"timehud\0timehud\0",
-        )?;
-        x.conn.change_property8(
-            PropMode::REPLACE,
-            win,
-            AtomEnum::WM_NAME,
-            AtomEnum::STRING,
-            b"TimeHUD",
-        )?;
+        x.set_names(win, "TimeHUD")?;
         // XEmbed info: version 0, flags XEMBED_MAPPED.
         x.conn.change_property32(
             PropMode::REPLACE,
@@ -417,7 +390,7 @@ impl Tray {
             win,
             gc,
             own_colormap,
-            argb,
+            argb: tray_visual.is_some(),
             slot: (size, size),
             icon: SlotCache::default(),
         })
@@ -511,23 +484,7 @@ fn paint_thresholded(x: &X, win: Window, gc: u32, icon: &Pixmap) -> anyhow::Resu
         gc,
         &x11rb::protocol::xproto::ChangeGCAux::new().clip_mask(clip),
     )?;
-    let stride = w * 4;
-    let rows = (x.conn.maximum_request_bytes().saturating_sub(64) / stride).clamp(1, h);
-    for y0 in (0..h).step_by(rows) {
-        let n = rows.min(h - y0);
-        x.conn.put_image(
-            ImageFormat::Z_PIXMAP,
-            win,
-            gc,
-            w as u16,
-            n as u16,
-            0,
-            y0 as i16,
-            0,
-            depth,
-            &buf[y0 * stride..(y0 + n) * stride],
-        )?;
-    }
+    x.put_bgra(win, gc, depth, &buf, (0, 0, w, h))?;
     x.conn.change_gc(
         gc,
         &x11rb::protocol::xproto::ChangeGCAux::new().clip_mask(0u32),

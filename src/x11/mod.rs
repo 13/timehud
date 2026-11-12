@@ -250,7 +250,7 @@ impl X {
         let mut buf = self.bgra.borrow_mut();
         rgba_to_bgra(pm.data(), &mut buf);
         let (w, h) = (pm.width() as usize, pm.height() as usize);
-        self.put_bgra(win, gc, &buf, (0, 0, w, h))?;
+        self.put_bgra(win, gc, 32, &buf, (0, 0, w, h))?;
         self.conn.flush()?;
         Ok(())
     }
@@ -264,7 +264,7 @@ impl X {
         let Some(r) = c.next_upload() else {
             return Ok(());
         };
-        let sent = self.put_bgra(win, gc, &c.sub, r);
+        let sent = self.put_bgra(win, gc, 32, &c.sub, r);
         if sent.is_err() {
             c.invalidate();
         }
@@ -273,12 +273,14 @@ impl X {
         Ok(())
     }
 
-    /// PutImage of tightly packed BGRA `data` covering `(x, y, w, h)` of
-    /// `win`, in row bands that fit the server's maximum request size.
+    /// PutImage of tightly packed 32 bpp BGRA (or BGRX for `depth` 24)
+    /// `data` covering `(x, y, w, h)` of `win`, in row bands that fit the
+    /// server's maximum request size.
     fn put_bgra(
         &self,
         win: u32,
         gc: u32,
+        depth: u8,
         data: &[u8],
         (x, y, w, h): (usize, usize, usize, usize),
     ) -> anyhow::Result<()> {
@@ -301,7 +303,7 @@ impl X {
                 x,
                 y + y0 as i16,
                 0,
-                32,
+                depth,
                 &data[y0 * stride..(y0 + n) * stride],
             )?;
         }
@@ -372,6 +374,29 @@ impl X {
         let gc = self.conn.generate_id()?;
         self.conn
             .create_gc(gc, win, &CreateGCAux::new().graphics_exposures(0))?;
+        self.set_names(win, name)?;
+        let c = &self.conn;
+        c.change_property32(
+            PropMode::REPLACE,
+            win,
+            self.atoms._NET_WM_WINDOW_TYPE,
+            AtomEnum::ATOM,
+            &[window_type],
+        )?;
+        if !shadow {
+            c.change_property32(
+                PropMode::REPLACE,
+                win,
+                self.atoms._COMPTON_SHADOW,
+                AtomEnum::CARDINAL,
+                &[0],
+            )?;
+        }
+        Ok((win, gc))
+    }
+
+    /// Sets `WM_CLASS` "timehud", `WM_NAME` and `_NET_WM_NAME` to `name`.
+    fn set_names(&self, win: u32, name: &str) -> anyhow::Result<()> {
         let c = &self.conn;
         c.change_property8(
             PropMode::REPLACE,
@@ -394,23 +419,7 @@ impl X {
             self.atoms.UTF8_STRING,
             name.as_bytes(),
         )?;
-        c.change_property32(
-            PropMode::REPLACE,
-            win,
-            self.atoms._NET_WM_WINDOW_TYPE,
-            AtomEnum::ATOM,
-            &[window_type],
-        )?;
-        if !shadow {
-            c.change_property32(
-                PropMode::REPLACE,
-                win,
-                self.atoms._COMPTON_SHADOW,
-                AtomEnum::CARDINAL,
-                &[0],
-            )?;
-        }
-        Ok((win, gc))
+        Ok(())
     }
 
     fn destroy_window(&self, win: u32, gc: u32) {
