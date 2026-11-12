@@ -221,15 +221,17 @@ fn line_border_off() {
     let mut h = mk(countdown(300));
     h.app.cfg.progress_style = "line".into();
     h.tick();
-    assert_eq!(h.app.line_fraction, 1.0);
-    assert_eq!(h.app.border_fraction, -1.0);
+    assert_eq!(h.app.progress_target, 1.0);
     h.app.cfg.progress_style = "border".into();
     h.tick();
-    assert_eq!(h.app.line_fraction, -1.0);
-    assert_eq!(h.app.border_fraction, 1.0);
+    assert_eq!(h.app.progress_target, 1.0);
     h.app.cfg.progress_style = "off".into();
     h.tick();
-    assert_eq!(h.app.border_fraction, -1.0);
+    assert_eq!(h.app.progress_target, -1.0);
+    h.app.cfg.progress_style = "line".into();
+    h.app.cfg.show_timer = false;
+    h.tick();
+    assert_eq!(h.app.progress_target, -1.0);
 }
 
 // ── Settings live preview ────────────────────────────────────────────

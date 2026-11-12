@@ -13,7 +13,7 @@ use crate::format::{
     clock_text, fmt_seconds, mode_button_text, mode_label, phase_label, shown_seconds,
 };
 use crate::layout::{Rect, clamp_into, preset_position, resize_anchor_delta, snap_drag};
-use crate::menu::MenuAction;
+use crate::menu::{MenuAction, preset_savable};
 use crate::render::{Frame, Hit, Layout, View, measure, render_into};
 use crate::text::FontSet;
 use crate::themes::{Rgb, apply_theme, get_theme, parse_hex};
@@ -75,8 +75,6 @@ pub struct App {
     color_to: Rgb,
     color_anim: Tween,
     // Progress (targets from the last tick; -1 = hidden)
-    line_fraction: f64,
-    border_fraction: f64,
     progress_target: f64,
     progress_glide: Option<Tween>,
     bar_color: Rgb,
@@ -171,8 +169,6 @@ impl App {
             color_from: pause,
             color_to: pause,
             color_anim: Tween::new(1.0, 1.0, now, 0.0, Ease::Linear),
-            line_fraction: -1.0,
-            border_fraction: -1.0,
             progress_target: -1.0,
             progress_glide: None,
             bar_color: hex(get_theme(&cfg.theme).color_clock, Rgb(0, 255, 136)),
@@ -605,15 +601,8 @@ impl App {
             theme.color_clock
         };
         self.bar_color = hex(bar, Rgb(255, 255, 255));
-        let style = self.cfg.progress_style.as_str();
-        self.line_fraction = if style == "line" { r.progress } else { -1.0 };
-        self.border_fraction = if style == "border" { r.progress } else { -1.0 };
-        let fraction = if shown {
-            self.line_fraction.max(self.border_fraction)
-        } else {
-            -1.0
-        };
-        self.set_progress(fraction, now);
+        let bar_style = matches!(self.cfg.progress_style.as_str(), "line" | "border");
+        self.set_progress(if shown && bar_style { r.progress } else { -1.0 }, now);
 
         if r.phase != Phase::None && !self.engine.is_idle(&self.cfg) {
             let label = phase_label(r.phase, r.round, r.rounds);
@@ -882,6 +871,9 @@ impl App {
             return Err("the preset name is empty".into());
         }
         let cfg = &self.cfg;
+        if !preset_savable(cfg) {
+            return Err("a plain stopwatch cannot be saved as a preset".into());
+        }
         let preset = match cfg.timer_mode {
             Mode::Interval => Preset::Interval {
                 name: name.into(),
@@ -907,10 +899,7 @@ impl App {
         };
         let value = preset.to_value(&rules);
         if valid_presets(std::slice::from_ref(&value)).is_empty() {
-            return Err(match cfg.timer_mode {
-                Mode::Stopwatch => "a plain stopwatch cannot be saved as a preset".into(),
-                _ => "the current timer setup is not a valid preset".into(),
-            });
+            return Err("the current timer setup is not a valid preset".into());
         }
         // Like Python, malformed entries are dropped; kept ones stay verbatim.
         let mut presets: Vec<_> = valid_presets(&cfg.presets)

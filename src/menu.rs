@@ -77,6 +77,21 @@ fn position_label(p: &str) -> String {
         .join(" ")
 }
 
+/// The mode a preset switches to.
+fn preset_mode(p: &Preset) -> Mode {
+    match p {
+        Preset::Interval { .. } => Mode::Interval,
+        Preset::Stopwatch { .. } => Mode::Stopwatch,
+        Preset::Countdown { .. } => Mode::Countdown,
+    }
+}
+
+/// Whether the current timer setup can be saved as a preset (everything
+/// but a plain stopwatch); shared by the menu entry and `App::save_preset`.
+pub fn preset_savable(cfg: &Config) -> bool {
+    cfg.timer_mode != Mode::Stopwatch || cfg.stopwatch_work > 0
+}
+
 fn presets_menu(cfg: &Config) -> MenuItem {
     let mut items = vec![check(
         "Stopwatch",
@@ -87,12 +102,7 @@ fn presets_menu(cfg: &Config) -> MenuItem {
     if !presets.is_empty() {
         items.push(MenuItem::Separator);
         for (p, _, idx) in &presets {
-            let mode = match p {
-                Preset::Interval { .. } => Mode::Interval,
-                Preset::Stopwatch { .. } => Mode::Stopwatch,
-                Preset::Countdown { .. } => Mode::Countdown,
-            };
-            let on = cfg.timer_mode == mode && cfg.active_preset == p.name();
+            let on = cfg.timer_mode == preset_mode(p) && cfg.active_preset == p.name();
             items.push(check(
                 preset_menu_label(p),
                 MenuAction::ApplyPreset(*idx),
@@ -105,15 +115,18 @@ fn presets_menu(cfg: &Config) -> MenuItem {
         label: "Save current as preset…".into(),
         action: MenuAction::SavePreset,
         checked: None,
-        enabled: cfg.timer_mode != Mode::Stopwatch || cfg.stopwatch_work > 0,
+        enabled: preset_savable(cfg),
     });
     items.push(action("Manage presets…", MenuAction::ManagePresets));
     submenu("Presets", items)
 }
 
+/// Opacity menu choices in percent.
+const OPACITY_STEPS: [i64; 6] = [30, 50, 70, 85, 95, 100];
+
 fn opacity_menu(cfg: &Config) -> MenuItem {
     let current = ((cfg.opacity * 100.0).round() as i64).clamp(0, 100);
-    let mut items: Vec<MenuItem> = [30, 50, 70, 85, 95, 100]
+    let mut items: Vec<MenuItem> = OPACITY_STEPS
         .into_iter()
         .map(|pct| {
             check(
@@ -123,7 +136,7 @@ fn opacity_menu(cfg: &Config) -> MenuItem {
             )
         })
         .collect();
-    if ![30, 50, 70, 85, 95, 100].contains(&current) {
+    if !OPACITY_STEPS.contains(&current) {
         items.push(check(
             format!("Current: {current}%"),
             MenuAction::SetOpacity(current as f64 / 100.0),
@@ -283,22 +296,10 @@ fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Pat
     b.finish()
 }
 
-/// Size of a one-line tooltip in the menu's look.
-pub fn tooltip_size(text: &str, fonts: &mut FontSet, scale: f32) -> (i32, i32) {
-    let px = font_px(scale);
-    let border = sc(BORDER, scale).max(1);
-    let w = fonts.measure(text, px, false).ceil() as i32 + 2 * sc(TIP_PAD_X, scale) + 2 * border;
-    let h = (px * 1.2).round() as i32 + 2 * sc(ITEM_PAD_Y, scale) + 2 * border;
-    (w, h)
-}
-
-/// A one-line tooltip: the menu's panel, border and text colours.
-pub fn render_tooltip(text: &str, fonts: &mut FontSet, scale: f32) -> tiny_skia::Pixmap {
-    let (w, h) = tooltip_size(text, fonts, scale);
-    let mut pm = tiny_skia::Pixmap::new(w.max(1) as u32, h.max(1) as u32).expect("tooltip pixmap");
+/// The menu/tooltip panel: rounded dark fill with a 1 px (scaled) border.
+fn draw_panel(pm: &mut tiny_skia::Pixmap, border: f32, scale: f32) {
     let id = tiny_skia::Transform::identity();
-    let border = sc(BORDER, scale).max(1) as f32;
-    let (wf, hf) = (w as f32, h as f32);
+    let (wf, hf) = (pm.width() as f32, pm.height() as f32);
     if let Some(p) = rounded_rect(0.0, 0.0, wf, hf, RADIUS * scale) {
         let fill = paint(rgba(0x1A1A1A, 245));
         pm.fill_path(&p, &fill, tiny_skia::FillRule::Winding, id, None);
@@ -316,8 +317,25 @@ pub fn render_tooltip(text: &str, fonts: &mut FontSet, scale: f32) -> tiny_skia:
         };
         pm.stroke_path(&p, &paint(rgba(0x333333, 255)), &stroke, id, None);
     }
+}
+
+/// Size of a one-line tooltip in the menu's look.
+pub fn tooltip_size(text: &str, fonts: &mut FontSet, scale: f32) -> (i32, i32) {
     let px = font_px(scale);
-    let baseline = (hf + fonts.ink_height(px)) / 2.0;
+    let border = sc(BORDER, scale).max(1);
+    let w = fonts.measure(text, px, false).ceil() as i32 + 2 * sc(TIP_PAD_X, scale) + 2 * border;
+    let h = (px * 1.2).round() as i32 + 2 * sc(ITEM_PAD_Y, scale) + 2 * border;
+    (w, h)
+}
+
+/// A one-line tooltip: the menu's panel, border and text colours.
+pub fn render_tooltip(text: &str, fonts: &mut FontSet, scale: f32) -> tiny_skia::Pixmap {
+    let (w, h) = tooltip_size(text, fonts, scale);
+    let mut pm = tiny_skia::Pixmap::new(w.max(1) as u32, h.max(1) as u32).expect("tooltip pixmap");
+    let border = sc(BORDER, scale).max(1) as f32;
+    draw_panel(&mut pm, border, scale);
+    let px = font_px(scale);
+    let baseline = (pm.height() as f32 + fonts.ink_height(px)) / 2.0;
     let x = border + sc(TIP_PAD_X, scale) as f32;
     fonts.draw(
         &mut pm,
@@ -344,29 +362,7 @@ pub fn render_menu(
         .expect("menu pixmap");
     let id = tiny_skia::Transform::identity();
     let border = sc(BORDER, scale).max(1) as f32;
-    let (wf, hf) = (layout.w as f32, layout.h as f32);
-    if let Some(p) = rounded_rect(0.0, 0.0, wf, hf, RADIUS * scale) {
-        pm.fill_path(
-            &p,
-            &paint(rgba(0x1A1A1A, 245)),
-            tiny_skia::FillRule::Winding,
-            id,
-            None,
-        );
-    }
-    if let Some(p) = rounded_rect(
-        border / 2.0,
-        border / 2.0,
-        wf - border,
-        hf - border,
-        RADIUS * scale - border / 2.0,
-    ) {
-        let stroke = tiny_skia::Stroke {
-            width: border,
-            ..Default::default()
-        };
-        pm.stroke_path(&p, &paint(rgba(0x333333, 255)), &stroke, id, None);
-    }
+    draw_panel(&mut pm, border, scale);
 
     let px = font_px(scale);
     let ink = fonts.ink_height(px);
