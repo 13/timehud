@@ -166,7 +166,8 @@ Right-click → **Settings** or edit `~/.config/timehud/config.json`
 Python version of TimeHUD in both directions; unknown keys are preserved
 by the Rust app. The Python app keeps only the keys it knows, so saving from
 it drops the Rust-only keys `clock_format`, `hotkey_toggle`, `hotkey_reset`,
-`hotkey_visibility` and `notify_on_finish` (they fall back to their defaults).
+`hotkey_visibility`, `notify_on_finish`, `sound_theme` and `shadow` (they fall
+back to their defaults).
 The Python app also always uses `~/.config/timehud/config.json` and ignores
 `XDG_CONFIG_HOME`.
 
@@ -250,7 +251,7 @@ You can also drag the overlay anywhere; the position is saved automatically.
 
 ### Themes
 
-Right-click → **Theme** (or Settings → Display): `Classic` (default),
+Settings → Display: `Classic` (default),
 `Clean` (Classic's colors in Roboto, plain zero), `Glass`, `Nord`, `Amber`.
 Picking a theme sets the color defaults; you can still customize individual colors afterwards in Settings.
 
@@ -290,14 +291,14 @@ half of each work phase; the session ends after the last work phase.
 Release build, default config, paused stopwatch, clock visible, tray disabled,
 measured on the development machine (X11, picom). Rust: `TIMEHUD_TRACE=1`
 startup log, `VmRSS` after 10 s, CPU from `/proc/<pid>/stat` over 60 s (both apps
-redraw the clock once a second, hence ~0.2 % rather than exactly 0). Python
+redraw the clock once a second; the Rust one used no measurable CPU tick doing so). Python
 0.8.1 (PyQt6) measured the same way for RSS and CPU.
 
-| | Rust (0.9.0) | Python (0.8.1) |
+| | Rust (1.1.0) | Python (0.8.1) |
 |---|---|---|
-| Launch to first frame | ~25 ms (24.6 to 27.2 over 4 runs) | not measured |
-| Idle RSS after 10 s | 16 MB | 69 MB |
-| CPU while paused (60 s) | ~0.2 % | ~0.2 % |
+| Launch to first frame | ~10 ms (8.5 to 19.4 over 4 runs) | not measured |
+| Idle RSS after 10 s | 7 MB | 69 MB |
+| CPU while paused (60 s) | < 0.02 % | ~0.2 % |
 
 ---
 
