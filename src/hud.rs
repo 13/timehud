@@ -205,7 +205,6 @@ impl Hud {
         let t0 = Instant::now();
         let x = X::connect()?;
         let compositor = CompositorWatch::new(&x);
-        crate::render::set_shadows(compositor.active());
         let scale = x.scale();
         let screens = x.screens();
         // A HUD saved on another monitor starts there, not under the pointer.
@@ -214,6 +213,7 @@ impl Hud {
         let clock = Box::new(move || t0.elapsed().as_secs_f64());
         let now = t0.elapsed().as_secs_f64();
         let mut app = App::new(cfg, clock, fonts, scale, area, now);
+        app.set_shadows(compositor.active());
         let mut canvas = Canvas::default();
         let layout = app.frame_into(now, &mut canvas.frame);
         let (wx, wy) = app.window_pos();
@@ -819,7 +819,7 @@ impl Hud {
     /// window is shaped to the frame's opaque pixels (in `render`).
     fn compositor_changed(&mut self) {
         let on = self.compositor.active();
-        crate::render::set_shadows(on);
+        self.app.set_shadows(on);
         if on {
             self.overlay.clear_alpha_shape(&self.x);
         }

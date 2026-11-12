@@ -90,6 +90,8 @@ pub struct App {
     /// The cursor last set on the overlay window.
     cursor: Cursor,
     visible: bool,
+    /// Draw the theme's shadow ([`App::set_shadows`]).
+    shadows: bool,
     // Geometry
     panel_pos: (i32, i32),
     layout: Layout,
@@ -177,6 +179,7 @@ impl App {
             hover: None,
             cursor: Cursor::Default,
             visible: true,
+            shadows: true,
             panel_pos: (0, 0),
             layout: Layout {
                 w: 0,
@@ -365,6 +368,7 @@ impl App {
         View {
             cfg: &self.cfg,
             theme: get_theme(&self.cfg.theme),
+            shadow: self.shadows,
             scale: self.scale,
             clock: self.clock.clone(),
             timer: self.timer.clone(),
@@ -447,6 +451,14 @@ impl App {
             fx.push(Effect::Move { x, y });
         }
         fx
+    }
+
+    /// Turns the theme's drop shadow (and the window margin it needs) on or
+    /// off from the next frame; the HUD turns it off while no compositing
+    /// manager runs. The panel stays put; the window moves and resizes
+    /// around it.
+    pub fn set_shadows(&mut self, on: bool) {
+        self.shadows = on;
     }
 
     /// The monitor's work area changed.

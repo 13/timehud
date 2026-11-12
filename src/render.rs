@@ -3,7 +3,6 @@ use crate::config::Config;
 use crate::layout::Rect;
 use crate::text::FontSet;
 use crate::themes::{Rgb, Theme};
-use std::sync::atomic::{AtomicBool, Ordering};
 use tiny_skia::{
     BlendMode, Color, FillRule, LineCap, Paint, Path, PathBuilder, Pixmap, Stroke, StrokeDash,
     Transform,
@@ -13,6 +12,10 @@ use tiny_skia::{
 pub struct View<'a> {
     pub cfg: &'a Config,
     pub theme: &'static Theme,
+    /// Draw the theme's drop shadow (and the window margin it needs). Off
+    /// while no compositing manager runs: then window alpha is ignored and
+    /// the shadow would show as a black box.
+    pub shadow: bool,
     /// HiDPI factor.
     pub scale: f32,
     pub clock: String,
@@ -66,17 +69,6 @@ impl Layout {
 
 const SHADOW_LAYERS: u32 = 6;
 
-/// Whether themes draw their drop shadow (see [`set_shadows`]).
-static SHADOWS: AtomicBool = AtomicBool::new(true);
-
-/// Turns the themes' drop shadow (and the window margin it needs) on or
-/// off for every later `measure` and `render`. The HUD turns it off while
-/// no compositing manager runs: then window alpha is ignored and the
-/// shadow would show as a black box. Process-wide, like the display.
-pub fn set_shadows(on: bool) {
-    SHADOWS.store(on, Ordering::Relaxed);
-}
-
 /// A theme compared by identity (themes are statics).
 #[derive(Clone, Copy)]
 struct ThemeRef(&'static Theme);
@@ -94,7 +86,7 @@ impl PartialEq for ThemeRef {
 #[derive(Clone, PartialEq)]
 struct StaticView {
     theme: ThemeRef,
-    /// Draw the theme's shadow ([`set_shadows`]).
+    /// Draw the theme's shadow ([`View::shadow`]).
     shadow: bool,
     scale: f32,
     /// Not drawn from, but a new family means a different `FontSet`.
@@ -128,7 +120,7 @@ impl StaticView {
         let cfg = v.cfg;
         StaticView {
             theme: ThemeRef(v.theme),
-            shadow: SHADOWS.load(Ordering::Relaxed),
+            shadow: v.shadow,
             scale: v.scale,
             font_family: cfg.font_family.clone(),
             font_size: cfg.font_size,
@@ -826,6 +818,7 @@ mod tests {
         View {
             cfg,
             theme: get_theme(theme),
+            shadow: true,
             scale: 1.0,
             clock: "12:34:56".into(),
             timer: "05:00".into(),
@@ -980,7 +973,7 @@ mod tests {
         let v = mk(&cfg, "classic");
         let mut f = fonts();
         let with = StaticView::of(&v);
-        assert!(with.shadow, "shadows are on by default");
+        assert!(with.shadow);
         let without = StaticView {
             shadow: false,
             ..with.clone()

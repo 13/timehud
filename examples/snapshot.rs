@@ -24,6 +24,7 @@ fn main() {
             let view = View {
                 cfg: &cfg,
                 theme: t,
+                shadow: true,
                 scale,
                 clock: "14:32:07".into(),
                 timer: "24:59".into(),
