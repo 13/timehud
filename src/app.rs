@@ -932,11 +932,12 @@ impl App {
         }
         let interval = |c: &Config| (c.interval_work, c.interval_rest, c.interval_rounds);
         let stopped = !self.engine.running();
-        // Back to the start on a mode change or a hidden timer; a stopped
-        // countdown reloads its new duration (stays idle), a stopped interval
-        // timer its new phases.
+        // Back to the start on a mode change or when the timer gets hidden (a
+        // hidden timer started via IPC/hotkey keeps running through other
+        // edits); a stopped countdown reloads its new duration (stays idle), a
+        // stopped interval timer its new phases.
         let needs_reset = self.cfg.timer_mode != old.timer_mode
-            || !self.cfg.show_timer
+            || (old.show_timer && !self.cfg.show_timer)
             || (stopped
                 && self.cfg.timer_mode == Mode::Countdown
                 && self.cfg.countdown_duration != old.countdown_duration)

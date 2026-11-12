@@ -1150,6 +1150,35 @@ fn hidden_timer_does_not_redraw_every_second() {
 }
 
 #[test]
+fn settings_edit_keeps_a_running_hidden_timer() {
+    let mut h = mk(Config {
+        show_timer: false,
+        ..Config::default()
+    });
+    h.app.toggle_timer(h.now());
+    h.advance(3.0);
+    let mut edited = h.app.cfg.clone();
+    edited.font_size += 2;
+    let now = h.now();
+    h.app.preview_config(edited, now);
+    assert!(h.app.engine.running(), "unrelated edit keeps it running");
+    h.tick();
+    assert_eq!(h.app.status().display, "00:03");
+}
+
+#[test]
+fn hiding_the_timer_resets_it() {
+    let mut h = mk(Config::default());
+    h.app.toggle_timer(h.now());
+    h.advance(3.0);
+    let mut edited = h.app.cfg.clone();
+    edited.show_timer = false;
+    let now = h.now();
+    h.app.preview_config(edited, now);
+    assert!(!h.app.engine.running());
+}
+
+#[test]
 fn start_and_pause_are_idempotent() {
     let mut h = mk(Config::default());
     let now = h.now();
