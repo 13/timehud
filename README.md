@@ -263,6 +263,10 @@ audio device is opened on demand and released after ~10 s of silence. If no
 audio device can be opened, TimeHUD falls back to `paplay`, `aplay`, `ffplay`
 or `mpv` if one is installed.
 
+`sound_theme` picks the built-in sounds: `classic` (880 Hz beep, default) or
+`chime` (softer bell tones); Settings → Sound has a ▶ preview. A `sound_file`
+replaces either.
+
 If `alert_last_5_seconds` is enabled, the timer plays short beeps at 5, 4, 3,
 2 and 1 seconds remaining (before a countdown ends and before every interval or
 cycling-stopwatch phase end); the timer text also shows its warning color on

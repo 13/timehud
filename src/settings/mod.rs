@@ -17,6 +17,7 @@ use crate::ipc::{Event, Request, socket_path};
 use crate::layout::POSITIONS;
 use crate::menu::position_label;
 use crate::settings_session::adopt_hud_config;
+use crate::sound::Sound;
 use crate::themes::{THEMES, apply_theme, parse_hex};
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Frame, Key, Layout, Margin, RichText,
@@ -616,6 +617,8 @@ struct SettingsApp {
     font_filter: String,
     picker: Option<&'static str>,
     picked: Option<Receiver<Option<String>>>,
+    /// Plays the ▶ sound preview; started on first use.
+    preview: Option<Sound>,
     closing: bool,
 }
 
@@ -650,6 +653,7 @@ impl SettingsApp {
             font_filter: String::new(),
             picker: file_picker(),
             picked: None,
+            preview: None,
             closing: false,
         }
     }
@@ -1073,6 +1077,27 @@ impl SettingsApp {
         });
         ui.add_space(10.0);
         ui.add_enabled_ui(cfg.sound_enabled, |ui| {
+            card(ui, "Sound", |ui| {
+                ui.horizontal(|ui| {
+                    choice(ui, "sound-theme", &mut cfg.sound_theme, &SOUND_THEMES)
+                        .on_hover_text("The built-in beeps");
+                    if ui
+                        .button("▶")
+                        .on_hover_text("Play the end-of-timer sound")
+                        .clicked()
+                    {
+                        // Default beep = the long one; honours sound_file
+                        // exactly like the HUD.
+                        self.preview
+                            .get_or_insert_with(Sound::new)
+                            .play(Default::default(), cfg);
+                    }
+                });
+                if !cfg.sound_file.is_empty() {
+                    note(ui, "The custom sound below overrides this.");
+                }
+            });
+            ui.add_space(10.0);
             card(ui, "Beeps", |ui| {
                 ui.checkbox(
                     &mut cfg.alert_last_5_seconds,
@@ -1368,6 +1393,12 @@ const PROGRESS_STYLES: Choices = Choices {
         ("off", "Off"),
     ],
     unknown_as: "off",
+};
+
+/// `sound_theme` (unknown plays classic, see `sound::SoundTheme`).
+const SOUND_THEMES: Choices = Choices {
+    items: &[("classic", "Classic beep"), ("chime", "Soft chime")],
+    unknown_as: "classic",
 };
 
 /// Label for `value` in `table`; an unknown value shows what it acts as.
@@ -1672,6 +1703,10 @@ mod tests {
         let progress = |v| choice_label(&PROGRESS_STYLES, v);
         assert_eq!(progress("border"), "Around the window");
         assert_eq!(progress("bogus"), "Off");
+        let sound = |v| choice_label(&SOUND_THEMES, v);
+        assert_eq!(sound("chime"), "Soft chime");
+        assert_eq!(sound("classic"), "Classic beep");
+        assert_eq!(sound("bell"), "Classic beep");
     }
 
     #[test]
