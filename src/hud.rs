@@ -219,9 +219,8 @@ impl Hud {
         let layout = app.frame_into(now, &mut canvas.frame);
         let (wx, wy) = app.window_pos();
         let mut overlay = OverlayWin::create(&x, layout.w, layout.h, wx, wy)?;
-        if app.cfg.click_through {
-            overlay.set_click_through(&x, true);
-        }
+        overlay.set_click_through(&x, app.cfg.click_through);
+        overlay.set_panel(&x, layout.panel);
         if !compositor.active()
             && let Some(pm) = &canvas.frame.pixmap
         {
@@ -840,6 +839,7 @@ impl Hud {
         }
         let layout = self.app.frame_into(now, &mut self.canvas.frame);
         self.size = (layout.w, layout.h);
+        self.overlay.set_panel(&self.x, layout.panel);
         self.sync_geometry();
         let (win, gc) = (self.overlay.id, self.overlay.gc);
         if let Err(e) = self.x.present_canvas(win, gc, &mut self.canvas) {

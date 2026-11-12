@@ -10,7 +10,7 @@ use x11rb::protocol::Event;
 use x11rb::protocol::shape::{self, SK, SO};
 use x11rb::protocol::xproto::{
     BackPixmap, ChangeWindowAttributesAux, ClipOrdering, ConfigureWindowAux, ConnectionExt as _,
-    EventMask, KeyButMask, MapState, StackMode,
+    EventMask, KeyButMask, MapState, Rectangle, StackMode,
 };
 
 /// A glyph cursor from the core "cursor" font (black on white, like Xlib's
@@ -50,6 +50,12 @@ pub struct OverlayWin {
     /// The bounding shape set from the frame's alpha (no compositor):
     /// size and mask, to skip unchanged updates. `None` = unshaped.
     alpha_shape: Option<((u32, u32), Vec<u8>)>,
+    /// Click-through wanted, and the panel rect (window coordinates) last
+    /// laid out; together they give the input shape ([`input_rects`]).
+    click_through: bool,
+    panel: Option<Rect>,
+    /// The input shape last sent, as (click-through, panel).
+    input_sent: Option<(bool, Rect)>,
 }
 
 /// `XC_hand2` in the core "cursor" font; its mask is the next glyph.
@@ -84,6 +90,9 @@ impl OverlayWin {
             left_held: false,
             hand: None,
             alpha_shape: None,
+            click_through: false,
+            panel: None,
+            input_sent: None,
         })
     }
 
@@ -112,22 +121,39 @@ impl OverlayWin {
     }
 
     /// `on`: empty input shape, so all pointer input passes through.
-    /// `off`: input shape reset to the window's bounding shape.
-    pub fn set_click_through(&self, x: &X, on: bool) {
-        let _ = if on {
-            shape::rectangles(
-                &x.conn,
-                SO::SET,
-                SK::INPUT,
-                ClipOrdering::UNSORTED,
-                self.id,
-                0,
-                0,
-                &[],
-            )
-        } else {
-            shape::mask(&x.conn, SO::SET, SK::INPUT, self.id, 0, 0, NONE)
-        };
+    /// `off`: input only over the panel (see [`OverlayWin::set_panel`]).
+    pub fn set_click_through(&mut self, x: &X, on: bool) {
+        self.click_through = on;
+        self.sync_input(x);
+    }
+
+    /// The panel rect of the current layout (window coordinates): the
+    /// input shape, so the transparent shadow margin around it does not
+    /// take clicks meant for the windows below. Call on every layout.
+    pub fn set_panel(&mut self, x: &X, panel: Rect) {
+        self.panel = Some(panel);
+        self.sync_input(x);
+    }
+
+    /// Sends the input shape if it changed (and a panel is known).
+    fn sync_input(&mut self, x: &X) {
+        let Some(panel) = self.panel else { return };
+        let want = (self.click_through, panel);
+        if self.input_sent == Some(want) {
+            return;
+        }
+        self.input_sent = Some(want);
+        let rects = input_rects(self.click_through, panel);
+        let _ = shape::rectangles(
+            &x.conn,
+            SO::SET,
+            SK::INPUT,
+            ClipOrdering::UNSORTED,
+            self.id,
+            0,
+            0,
+            &rects,
+        );
         let _ = x.conn.flush();
     }
 
@@ -253,6 +279,21 @@ impl CompositorWatch {
             _ => None,
         }
     }
+}
+
+/// The overlay's input shape: nothing while click-through, else the panel.
+fn input_rects(click_through: bool, panel: Rect) -> Vec<Rectangle> {
+    let c16 = |v: i32| v.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+    let u16 = |v: i32| v.clamp(0, i32::from(u16::MAX)) as u16;
+    if click_through {
+        return Vec::new();
+    }
+    vec![Rectangle {
+        x: c16(panel.x),
+        y: c16(panel.y),
+        width: u16(panel.w),
+        height: u16(panel.h),
+    }]
 }
 
 pub(super) fn raise_window(x: &X, win: u32) {
@@ -470,7 +511,32 @@ mod tests {
             left_held: false,
             hand: None,
             alpha_shape: None,
+            click_through: false,
+            panel: None,
+            input_sent: None,
         }
+    }
+
+    #[test]
+    fn input_shape_is_the_panel_unless_click_through() {
+        let panel = Rect {
+            x: 12,
+            y: 12,
+            w: 200,
+            h: 90,
+        };
+        let fields = |r: &Rectangle| (r.x, r.y, r.width, r.height);
+        let got: Vec<_> = input_rects(false, panel).iter().map(fields).collect();
+        assert_eq!(got, [(12, 12, 200, 90)]);
+        assert!(input_rects(true, panel).is_empty());
+        let odd = Rect {
+            x: -5,
+            y: 0,
+            w: -1,
+            h: 100_000,
+        };
+        let got = input_rects(false, odd)[0];
+        assert_eq!((got.x, got.width, got.height), (-5, 0, u16::MAX));
     }
 
     fn press(detail: u8) -> ButtonPressEvent {
@@ -824,7 +890,22 @@ mod tests {
         win.clear_alpha_shape(&x);
         assert!(!shaped(&x));
         win.set_click_through(&x, true);
+        win.set_panel(
+            &x,
+            Rect {
+                x: 12,
+                y: 12,
+                w: 100,
+                h: 50,
+            },
+        );
         win.set_click_through(&x, false);
+        let input = shape::get_rectangles(&x.conn, win.id, SK::INPUT)
+            .unwrap()
+            .reply()
+            .unwrap();
+        assert_eq!(input.rectangles.len(), 1);
+        assert_eq!(input.rectangles[0].width, 100);
         win.set_geometry(&x, 60, 60, 200, 100);
         let attrs = x
             .conn
