@@ -123,33 +123,25 @@ impl Hud {
                 message: "not the settings connection (send settings-hello first)".into(),
             });
         }
-        let fx = match req {
-            Request::Toggle => self.app.toggle_timer(now),
-            Request::Start => self.app.start_timer(now),
-            Request::Pause => self.app.pause_timer(now),
-            Request::SetMode { mode } => self.app.set_mode(mode, now),
-            Request::SetCountdown { seconds } => match self.app.set_countdown(seconds, now) {
-                Ok(fx) => fx,
-                Err(message) => return Some(IpcEvent::Error { message }),
-            },
-            Request::ApplyPreset { name } => match self.app.apply_preset_named(&name, now) {
-                Ok(fx) => fx,
-                Err(message) => return Some(IpcEvent::Error { message }),
-            },
+        // Ok(effects) to apply and acknowledge, or the refusal to report.
+        let fx: Result<Vec<Effect>, String> = match req {
+            Request::Toggle => Ok(self.app.toggle_timer(now)),
+            Request::Start => Ok(self.app.start_timer(now)),
+            Request::Pause => Ok(self.app.pause_timer(now)),
+            Request::SetMode { mode } => Ok(self.app.set_mode(mode, now)),
+            Request::SetCountdown { seconds } => self.app.set_countdown(seconds, now),
+            Request::ApplyPreset { name } => self.app.apply_preset_named(&name, now),
             Request::Status => {
                 return Some(IpcEvent::Status {
                     status: self.app.status(),
                 });
             }
-            Request::Reset => self.app.reset_timer(now),
-            Request::Show => self.app.set_visible(true),
-            Request::Hide => self.app.set_visible(false),
-            Request::ToggleVisibility => self.app.toggle_visibility(),
-            Request::Quit => vec![Effect::Quit],
-            Request::SavePreset { name } => match self.app.save_preset(&name) {
-                Ok(fx) => fx,
-                Err(message) => return Some(IpcEvent::Error { message }),
-            },
+            Request::Reset => Ok(self.app.reset_timer(now)),
+            Request::Show => Ok(self.app.set_visible(true)),
+            Request::Hide => Ok(self.app.set_visible(false)),
+            Request::ToggleVisibility => Ok(self.app.toggle_visibility()),
+            Request::Quit => Ok(vec![Effect::Quit]),
+            Request::SavePreset { name } => self.app.save_preset(&name),
             Request::SettingsHello => {
                 if let Some(other) = self.settings.as_ref().map(|s| s.conn_id)
                     && other != id
@@ -190,8 +182,13 @@ impl Hud {
                 return None;
             }
         };
-        self.apply(fx);
-        Some(IpcEvent::Ok)
+        match fx {
+            Ok(fx) => {
+                self.apply(fx);
+                Some(IpcEvent::Ok)
+            }
+            Err(message) => Some(IpcEvent::Error { message }),
+        }
     }
 
     /// Preview/Commit from the settings process: merge only what it changed.
@@ -201,16 +198,7 @@ impl Hud {
             return;
         };
         let merged = s.session.apply(&current, config, seen_rev, commit);
-        let mut fx = self
-            .app
-            .preview_config(Config::from_value(&merged), self.now());
-        if commit {
-            fx.push(Effect::SaveNow);
-        }
-        self.apply(fx);
-        self.sync_hotkeys(false);
-        // preview_config may have adjusted it (e.g. cleared the preset).
-        self.push_config_to_settings();
+        self.adopt_config(&merged, commit);
     }
 
     /// Cancel / window closed: restore what settings changed, nothing else.
@@ -223,14 +211,27 @@ impl Hud {
         else {
             return;
         };
+        // Saved even though Cancel changes nothing on disk by itself:
+        // HUD-side saves may have written previewed values meanwhile.
+        self.adopt_config(&restored, true);
+    }
+
+    /// Makes `value` (a settings merge or restore) the live config, saving
+    /// it at once with `save_now`, and pushes any adjustment the HUD made
+    /// (e.g. clearing the preset) back to the settings window.
+    fn adopt_config(&mut self, value: &Value, save_now: bool) {
         let mut fx = self
             .app
-            .preview_config(Config::from_value(&restored), self.now());
-        // HUD-side saves may have written previewed values meanwhile.
-        fx.push(Effect::SaveNow);
+            .preview_config(Config::from_value(value), self.now());
+        if save_now {
+            fx.push(Effect::SaveNow);
+        }
+        // With a save effect `apply` pushes to settings itself.
         self.apply(fx);
+        if !save_now {
+            self.push_config_to_settings();
+        }
         self.sync_hotkeys(false);
-        self.push_config_to_settings();
     }
 
     /// Hands HUD-side config changes to an open settings window, so its
