@@ -252,15 +252,11 @@ impl MenuPopup {
     /// Topmost level containing the root point, and the item row under it.
     fn hit(&self, rx: i32, ry: i32) -> Option<(usize, Option<usize>)> {
         self.levels.iter().enumerate().rev().find_map(|(li, l)| {
-            let r = l.rect();
-            if rx < r.x || rx >= r.x + r.w || ry < r.y || ry >= r.y + r.h {
+            if !l.rect().contains(rx, ry) {
                 return None;
             }
             let (lx, ly) = (rx - l.x, ry - l.y);
-            let row =
-                l.layout.rows.iter().find(|(rr, _)| {
-                    lx >= rr.x && lx < rr.x + rr.w && ly >= rr.y && ly < rr.y + rr.h
-                });
+            let row = l.layout.rows.iter().find(|(rr, _)| rr.contains(lx, ly));
             Some((li, row.and_then(|(_, idx)| *idx)))
         })
     }

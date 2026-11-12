@@ -599,9 +599,9 @@ impl Screens {
     /// Whether the point lies on some monitor (on the screen if none known).
     pub fn on_screen(&self, x: i32, y: i32) -> bool {
         if self.monitors.is_empty() {
-            contains(self.full(), x, y)
+            self.full().contains(x, y)
         } else {
-            self.monitors.iter().any(|m| contains(*m, x, y))
+            self.monitors.iter().any(|m| m.contains(x, y))
         }
     }
 
@@ -624,16 +624,12 @@ impl Screens {
     }
 }
 
-fn contains(r: Rect, x: i32, y: i32) -> bool {
-    x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
-}
-
 /// Monitor containing the point, else the first one.
 fn monitor_at(monitors: &[Rect], x: i32, y: i32) -> Option<Rect> {
     monitors
         .iter()
         .copied()
-        .find(|m| contains(*m, x, y))
+        .find(|m| m.contains(x, y))
         .or(monitors.first().copied())
 }
 

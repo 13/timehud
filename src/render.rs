@@ -57,7 +57,7 @@ impl Layout {
     pub fn hit(&self, x: i32, y: i32) -> Hit {
         self.regions
             .iter()
-            .find(|(_, r)| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
+            .find(|(_, r)| r.contains(x, y))
             .map_or(Hit::Background, |(h, _)| *h)
     }
 }

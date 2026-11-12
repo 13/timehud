@@ -6,6 +6,13 @@ pub struct Rect {
     pub h: i32,
 }
 
+impl Rect {
+    /// Whether the point lies inside (right and bottom edges excluded).
+    pub fn contains(&self, x: i32, y: i32) -> bool {
+        x >= self.x && x < self.x + self.w && y >= self.y && y < self.y + self.h
+    }
+}
+
 pub const POSITIONS: [&str; 6] = [
     "top-left",
     "top-right",
@@ -116,6 +123,22 @@ pub fn tooltip_pos(anchor: Rect, w: i32, h: i32, area: Rect, gap: i32) -> (i32, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rect_contains_excludes_far_edges() {
+        let r = Rect {
+            x: 10,
+            y: 20,
+            w: 3,
+            h: 2,
+        };
+        assert!(r.contains(10, 20));
+        assert!(r.contains(12, 21));
+        assert!(!r.contains(13, 20));
+        assert!(!r.contains(10, 22));
+        assert!(!r.contains(9, 20));
+        assert!(!r.contains(10, 19));
+    }
 
     #[test]
     fn tooltip_below_or_above_the_anchor_inside_the_area() {
