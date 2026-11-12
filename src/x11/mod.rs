@@ -52,6 +52,8 @@ pub struct X {
     pub argb_visual: u32,
     pub colormap: u32,
     pub atoms: Atoms,
+    /// `_NET_WM_CM_S<screen>`, owned by the compositing manager.
+    pub cm_selection: u32,
     scale: Cell<f32>,
     /// The keyboard mapping ([`X::reload_keymap`]).
     keymap: RefCell<Keymap>,
@@ -80,7 +82,10 @@ impl X {
             .context("no 32-bit TrueColor visual (is a compositor-capable X server running?)")?;
         let colormap = conn.generate_id()?;
         conn.create_colormap(ColormapAlloc::NONE, colormap, root, argb_visual)?;
-        let atoms = Atoms::new(&conn)?.reply()?;
+        let atoms = Atoms::new(&conn)?;
+        let cm = format!("_NET_WM_CM_S{screen_num}");
+        let cm_selection = conn.intern_atom(false, cm.as_bytes())?;
+        let (atoms, cm_selection) = (atoms.reply()?, cm_selection.reply()?.atom);
         conn.change_window_attributes(
             root,
             &ChangeWindowAttributesAux::new().event_mask(
@@ -96,6 +101,7 @@ impl X {
             argb_visual,
             colormap,
             atoms,
+            cm_selection,
             scale: Cell::new(1.0),
             keymap: RefCell::default(),
             bgra: RefCell::default(),
@@ -134,6 +140,39 @@ impl X {
             .and_then(|r| parse_xft_dpi(&String::from_utf8_lossy(&r.value)))
             .map_or(1.0, |dpi| dpi / 96.0);
         self.scale.replace(scale) != scale
+    }
+
+    /// The window owning selection `sel`; 0 if none (or the query fails).
+    pub fn selection_owner(&self, sel: u32) -> u32 {
+        self.conn
+            .get_selection_owner(sel)
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .map_or(0, |r| r.owner)
+    }
+
+    /// The pixels of `pm` with alpha >= 128 as 1-bit image rows in the
+    /// server's bitmap format (for [`X::bitmap`]).
+    pub fn alpha_mask(&self, pm: &tiny_skia::Pixmap) -> Vec<u8> {
+        let setup = self.conn.setup();
+        let lsb = setup.bitmap_format_bit_order == ImageOrder::LSB_FIRST;
+        threshold_mask(pm, setup.bitmap_format_scanline_pad, lsb).0
+    }
+
+    /// A new `w` x `h` depth-1 pixmap (for `drawable`'s screen) holding
+    /// `mask` from [`X::alpha_mask`]; the caller frees it.
+    pub fn bitmap(&self, drawable: u32, mask: &[u8], w: u32, h: u32) -> anyhow::Result<u32> {
+        let (w, h) = image_dims(w as usize, h as usize)?;
+        let pm = self.conn.generate_id()?;
+        self.conn.create_pixmap(1, pm, drawable, w, h)?;
+        let gc = self.conn.generate_id()?;
+        self.conn.create_gc(gc, pm, &CreateGCAux::new())?;
+        // XY_PIXMAP copies bits literally; XY_BITMAP would colour 1-bits with
+        // the GC foreground (default 0) and invert the mask.
+        self.conn
+            .put_image(ImageFormat::XY_PIXMAP, pm, gc, w, h, 0, 0, 0, 1, mask)?;
+        self.conn.free_gc(gc)?;
+        Ok(pm)
     }
 
     /// Pointer position in root coordinates; `(0, 0)` if the query fails.
@@ -544,6 +583,21 @@ fn copy_rect_into(
     }
 }
 
+/// 1-bit XYBitmap rows (padded to `pad` bits) of "alpha >= 128" pixels.
+fn threshold_mask(icon: &tiny_skia::Pixmap, pad: u8, lsb_first: bool) -> (Vec<u8>, usize) {
+    let (w, h) = (icon.width() as usize, icon.height() as usize);
+    let pitch = w.div_ceil(usize::from(pad)) * usize::from(pad) / 8;
+    let mut out = vec![0u8; pitch * h];
+    for (i, px) in icon.pixels().iter().enumerate() {
+        if px.alpha() >= 128 {
+            let (row, col) = (i / w, i % w);
+            let bit = if lsb_first { col % 8 } else { 7 - col % 8 };
+            out[row * pitch + col / 8] |= 1 << bit;
+        }
+    }
+    (out, pitch)
+}
+
 /// Image size as PutImage dimensions; errors when empty or so large that
 /// offsets inside it would not fit the protocol's 16-bit coordinates.
 fn image_dims(w: usize, h: usize) -> anyhow::Result<(u16, u16)> {
@@ -838,6 +892,23 @@ mod tests {
         let mut all = img();
         copy_rect_into(&src, 4, (0, 0, 4, 3), &mut all);
         assert_eq!(changed_rect(&all, &src, 4), None);
+    }
+
+    #[test]
+    fn threshold_mask_bits() {
+        let mut p = tiny_skia::Pixmap::new(10, 2).unwrap();
+        // Premultiplied pixels: alpha 200 opaque-ish at x=0 and x=9, 100 at x=1.
+        let px = |a: u8| tiny_skia::PremultipliedColorU8::from_rgba(a, a, a, a).unwrap();
+        p.pixels_mut()[0] = px(200);
+        p.pixels_mut()[1] = px(100);
+        p.pixels_mut()[9] = px(128);
+        let (m, pitch) = threshold_mask(&p, 32, true);
+        assert_eq!(pitch, 4);
+        assert_eq!(m[0], 0b0000_0001);
+        assert_eq!(m[1], 0b0000_0010);
+        let (m, _) = threshold_mask(&p, 32, false);
+        assert_eq!(m[0], 0b1000_0000);
+        assert_eq!(m[1], 0b0100_0000);
     }
 
     #[test]

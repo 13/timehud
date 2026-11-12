@@ -14,7 +14,7 @@ use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
     AtomEnum, BackPixmap, ClientMessageEvent, ConnectionExt as _, CreateGCAux, CreateWindowAux,
-    EventMask, ImageFormat, ImageOrder, PropMode, Window, WindowClass,
+    EventMask, PropMode, Window, WindowClass,
 };
 use x11rb::wrapper::ConnectionExt as _;
 
@@ -445,29 +445,7 @@ fn paint_thresholded(x: &X, win: Window, gc: u32, icon: &Pixmap) -> anyhow::Resu
         return Ok(()); // unsupported root format: leave the window blank
     }
     let (w, h) = (icon.width() as usize, icon.height() as usize);
-    let (mask, _) = threshold_mask(
-        icon,
-        setup.bitmap_format_scanline_pad,
-        setup.bitmap_format_bit_order == ImageOrder::LSB_FIRST,
-    );
-    let clip = x.conn.generate_id()?;
-    x.conn.create_pixmap(1, clip, win, w as u16, h as u16)?;
-    let mgc = x.conn.generate_id()?;
-    x.conn.create_gc(mgc, clip, &CreateGCAux::new())?;
-    x.conn.put_image(
-        // XY_PIXMAP copies bits literally; XY_BITMAP would colour 1-bits with the
-        // GC foreground (default 0) and invert the mask.
-        ImageFormat::XY_PIXMAP,
-        clip,
-        mgc,
-        w as u16,
-        h as u16,
-        0,
-        0,
-        0,
-        1,
-        &mask,
-    )?;
+    let clip = x.bitmap(win, &x.alpha_mask(icon), icon.width(), icon.height())?;
     // Demultiplied, opaque BGRX pixels (LSBFirst, 32 bpp).
     let mut buf = Vec::with_capacity(w * h * 4);
     for &[r, g, b, a] in icon.data().as_chunks::<4>().0 {
@@ -490,24 +468,8 @@ fn paint_thresholded(x: &X, win: Window, gc: u32, icon: &Pixmap) -> anyhow::Resu
         &x11rb::protocol::xproto::ChangeGCAux::new().clip_mask(0u32),
     )?;
     x.conn.free_pixmap(clip)?;
-    x.conn.free_gc(mgc)?;
     x.conn.flush()?;
     Ok(())
-}
-
-/// 1-bit XYBitmap rows (padded to `pad` bits) of "alpha >= 128" pixels.
-fn threshold_mask(icon: &Pixmap, pad: u8, lsb_first: bool) -> (Vec<u8>, usize) {
-    let (w, h) = (icon.width() as usize, icon.height() as usize);
-    let pitch = w.div_ceil(usize::from(pad)) * usize::from(pad) / 8;
-    let mut out = vec![0u8; pitch * h];
-    for (i, px) in icon.pixels().iter().enumerate() {
-        if px.alpha() >= 128 {
-            let (row, col) = (i / w, i % w);
-            let bit = if lsb_first { col % 8 } else { 7 - col % 8 };
-            out[row * pitch + col / 8] |= 1 << bit;
-        }
-    }
-    (out, pitch)
 }
 
 #[cfg(test)]
@@ -561,25 +523,9 @@ mod tests {
     }
 
     #[test]
-    fn threshold_mask_bits() {
-        let mut p = Pixmap::new(10, 2).unwrap();
-        // Premultiplied pixels: alpha 200 opaque-ish at x=0 and x=9, 100 at x=1.
-        let px = |a: u8| tiny_skia::PremultipliedColorU8::from_rgba(a, a, a, a).unwrap();
-        p.pixels_mut()[0] = px(200);
-        p.pixels_mut()[1] = px(100);
-        p.pixels_mut()[9] = px(128);
-        let (m, pitch) = threshold_mask(&p, 32, true);
-        assert_eq!(pitch, 4);
-        assert_eq!(m[0], 0b0000_0001);
-        assert_eq!(m[1], 0b0000_0010);
-        let (m, _) = threshold_mask(&p, 32, false);
-        assert_eq!(m[0], 0b1000_0000);
-        assert_eq!(m[1], 0b0100_0000);
-    }
-
-    #[test]
     #[ignore = "needs an X display (DISPLAY=:0) with a system tray"]
     fn smoke_tray_docks() {
+        use x11rb::protocol::xproto::ImageFormat;
         let x = X::connect().unwrap();
         let mut t = Tray::new(&x).unwrap();
         eprintln!("owner = {:#x}, docked = {}", t.owner, t.is_docked());

@@ -3,6 +3,7 @@ use crate::config::Config;
 use crate::layout::Rect;
 use crate::text::FontSet;
 use crate::themes::{Rgb, Theme};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tiny_skia::{
     BlendMode, Color, FillRule, LineCap, Paint, Path, PathBuilder, Pixmap, Stroke, StrokeDash,
     Transform,
@@ -64,6 +65,17 @@ impl Layout {
 
 const SHADOW_LAYERS: u32 = 6;
 
+/// Whether themes draw their drop shadow (see [`set_shadows`]).
+static SHADOWS: AtomicBool = AtomicBool::new(true);
+
+/// Turns the themes' drop shadow (and the window margin it needs) on or
+/// off for every later `measure` and `render`. The HUD turns it off while
+/// no compositing manager runs: then window alpha is ignored and the
+/// shadow would show as a black box. Process-wide, like the display.
+pub fn set_shadows(on: bool) {
+    SHADOWS.store(on, Ordering::Relaxed);
+}
+
 /// A theme compared by identity (themes are statics).
 #[derive(Clone, Copy)]
 struct ThemeRef(&'static Theme);
@@ -81,6 +93,8 @@ impl PartialEq for ThemeRef {
 #[derive(Clone, PartialEq)]
 struct StaticView {
     theme: ThemeRef,
+    /// Draw the theme's shadow ([`set_shadows`]).
+    shadow: bool,
     scale: f32,
     /// Not drawn from, but a new family means a different `FontSet`.
     font_family: String,
@@ -113,6 +127,7 @@ impl StaticView {
         let cfg = v.cfg;
         StaticView {
             theme: ThemeRef(v.theme),
+            shadow: SHADOWS.load(Ordering::Relaxed),
             scale: v.scale,
             font_family: cfg.font_family.clone(),
             font_size: cfg.font_size,
@@ -136,6 +151,15 @@ impl StaticView {
             mode_btn: v.mode_btn,
             hover_btn: v.hover_btn,
             progress_shown: v.progress >= 0.0,
+        }
+    }
+
+    /// The shadow's alpha; 0 when there is none.
+    fn shadow_alpha(&self) -> u8 {
+        if self.shadow {
+            self.theme.0.shadow_alpha
+        } else {
+            0
         }
     }
 
@@ -242,7 +266,7 @@ fn plan(sv: &StaticView, fonts: &mut FontSet) -> Plan {
     } else {
         sv.padding
     };
-    let inset = if theme.shadow_alpha > 0 {
+    let inset = if sv.shadow_alpha() > 0 {
         px(12.0, s)
     } else {
         0
@@ -691,8 +715,8 @@ fn draw_panel(sv: &StaticView, pl: &Plan, pm: &mut Pixmap) {
         panel.w as f32,
         panel.h as f32,
     );
-    if theme.shadow_alpha > 0 {
-        draw_shadow(pm, panel, panel.x, rad, theme.shadow_alpha);
+    if sv.shadow_alpha() > 0 {
+        draw_shadow(pm, panel, panel.x, rad, sv.shadow_alpha());
     }
     let bg = sv.color_bg;
     fill_rrect(
@@ -947,6 +971,31 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn shadows_off_drop_the_margin() {
+        let cfg = Config::default();
+        let v = mk(&cfg, "classic");
+        let mut f = fonts();
+        let with = StaticView::of(&v);
+        assert!(with.shadow, "shadows are on by default");
+        let without = StaticView {
+            shadow: false,
+            ..with.clone()
+        };
+        let (a, b) = (plan(&with, &mut f).layout, plan(&without, &mut f).layout);
+        assert!(a.panel.x > 0);
+        assert_eq!((b.panel.x, b.panel.y), (0, 0));
+        assert_eq!((b.panel.w, b.panel.h), (a.panel.w, a.panel.h));
+        assert_eq!((b.w, b.h), (b.panel.w, b.panel.h));
+        // The panel corner is transparent (rounded), the rest of the
+        // margin-less frame starts right at the panel.
+        let mut pm = Pixmap::new(b.w as u32, b.h as u32).unwrap();
+        draw_static(&without, &plan(&without, &mut f), &mut f, &mut pm);
+        assert_eq!(pm.pixel(0, 0).unwrap().alpha(), 0);
+        let mid = pm.pixel(0, b.h as u32 / 2).unwrap().alpha();
+        assert!(mid >= 128, "panel edge alpha {mid}");
     }
 
     #[test]

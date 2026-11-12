@@ -18,7 +18,9 @@ use crate::sound::Sound;
 use crate::text::FontSet;
 use crate::themes::get_theme;
 use crate::x11::grabs::{Grabs, HotkeyAction};
-use crate::x11::overlay::{OverlayWin, StackWatch, covered_now, restack_needed};
+use crate::x11::overlay::{
+    CM_RECHECK_DELAY, CompositorWatch, OverlayWin, Recheck, StackWatch, covered_now, restack_needed,
+};
 use crate::x11::popup::{MenuPopup, PopupOutcome};
 use crate::x11::tooltip::{TOOLTIP_DELAY, Tooltip};
 use crate::x11::tray::{Tray, TrayEvent};
@@ -154,6 +156,10 @@ struct Hud {
     size: (i32, i32),
     /// The overlay's frame buffer (reused pixmap, last uploaded pixels).
     canvas: Canvas,
+    /// Whether a compositor runs (else no shadow, shaped window), and when
+    /// to re-read that.
+    compositor: CompositorWatch,
+    cm_check: Option<f64>,
     mapped: bool,
     dirty: bool,
     /// When the loop must wake up next, per reason.
@@ -199,6 +205,8 @@ impl Hud {
     fn start(cfg: Config, listener: UnixListener, no_tray: bool) -> anyhow::Result<Hud> {
         let t0 = Instant::now();
         let x = X::connect()?;
+        let compositor = CompositorWatch::new(&x);
+        crate::render::set_shadows(compositor.active());
         let scale = x.scale();
         let screens = x.screens();
         // A HUD saved on another monitor starts there, not under the pointer.
@@ -210,9 +218,14 @@ impl Hud {
         let mut canvas = Canvas::default();
         let layout = app.frame_into(now, &mut canvas.frame);
         let (wx, wy) = app.window_pos();
-        let overlay = OverlayWin::create(&x, layout.w, layout.h, wx, wy)?;
+        let mut overlay = OverlayWin::create(&x, layout.w, layout.h, wx, wy)?;
         if app.cfg.click_through {
             overlay.set_click_through(&x, true);
+        }
+        if !compositor.active()
+            && let Some(pm) = &canvas.frame.pixmap
+        {
+            overlay.set_alpha_shape(&x, pm);
         }
         overlay.map(&x);
         x.present_canvas(overlay.id, overlay.gc, &mut canvas)?;
@@ -264,6 +277,8 @@ impl Hud {
             geom: (wx, wy, layout.w, layout.h),
             size: (layout.w, layout.h),
             canvas,
+            compositor,
+            cm_check: None,
             mapped: true,
             dirty: false,
             deadlines: Deadlines::new(now),
@@ -401,6 +416,17 @@ impl Hud {
                 return;
             }
             _ => {}
+        }
+
+        match self
+            .compositor
+            .recheck(ev, self.x.root, self.x.cm_selection, self.x.atoms.MANAGER)
+        {
+            Some(Recheck::Now) => self.cm_check = Some(now),
+            Some(Recheck::Soon) => {
+                self.cm_check.get_or_insert(now + CM_RECHECK_DELAY);
+            }
+            None => {}
         }
 
         // Keep on top of windows that map or restack above us (root
@@ -764,6 +790,12 @@ impl Hud {
         if self.deadlines.save_due(now) {
             self.save();
         }
+        if self.cm_check.is_some_and(|t| now >= t) {
+            self.cm_check = None;
+            if self.compositor.refresh(&self.x) {
+                self.compositor_changed();
+            }
+        }
         if let Some(p) = self.popup.as_mut()
             && let Err(e) = p.retry_grab(&self.x)
         {
@@ -786,6 +818,18 @@ impl Hud {
             .retain_mut(|c| matches!(c.try_wait(), Ok(None)));
     }
 
+    /// A compositor started or stopped: shadows only with one; without, the
+    /// window is shaped to the frame's opaque pixels (in `render`).
+    fn compositor_changed(&mut self) {
+        let on = self.compositor.active();
+        crate::render::set_shadows(on);
+        if on {
+            self.overlay.clear_alpha_shape(&self.x);
+        }
+        self.canvas.invalidate();
+        self.dirty = true;
+    }
+
     fn render(&mut self, now: f64) {
         if !self.mapped {
             return;
@@ -801,12 +845,20 @@ impl Hud {
         if let Err(e) = self.x.present_canvas(win, gc, &mut self.canvas) {
             eprintln!("timehud: present failed: {e:#}");
         }
+        if !self.compositor.active()
+            && let Some(pm) = &self.canvas.frame.pixmap
+        {
+            self.overlay.set_alpha_shape(&self.x, pm);
+        }
         self.dirty = false;
         self.deadlines.frame = self.app.next_frame(now);
     }
 
     fn timeout(&self, now: f64) -> u16 {
-        let ms = self.deadlines.timeout_ms(now, self.mapped);
+        let mut ms = self.deadlines.timeout_ms(now, self.mapped);
+        if let Some(t) = self.cm_check {
+            ms = ms.min(((t - now) * 1000.0).ceil().clamp(0.0, 1000.0) as u16);
+        }
         // An open menu still waiting for its grab retries soon.
         match self.popup.as_ref().and_then(MenuPopup::grab_retry_in) {
             Some(d) => ms.min(d.as_micros().div_ceil(1000).min(1000) as u16),

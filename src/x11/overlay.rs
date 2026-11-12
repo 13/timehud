@@ -9,8 +9,8 @@ use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::shape::{self, SK, SO};
 use x11rb::protocol::xproto::{
-    ChangeWindowAttributesAux, ClipOrdering, ConfigureWindowAux, ConnectionExt as _, EventMask,
-    KeyButMask, MapState, StackMode,
+    BackPixmap, ChangeWindowAttributesAux, ClipOrdering, ConfigureWindowAux, ConnectionExt as _,
+    EventMask, KeyButMask, MapState, StackMode,
 };
 
 /// A glyph cursor from the core "cursor" font (black on white, like Xlib's
@@ -47,6 +47,9 @@ pub struct OverlayWin {
     left_held: bool,
     /// The core-font hand cursor, created on first use (0 = failed).
     hand: Option<u32>,
+    /// The bounding shape set from the frame's alpha (no compositor):
+    /// size and mask, to skip unchanged updates. `None` = unshaped.
+    alpha_shape: Option<((u32, u32), Vec<u8>)>,
 }
 
 /// `XC_hand2` in the core "cursor" font; its mask is the next glyph.
@@ -55,7 +58,8 @@ const XC_HAND2: u16 = 60;
 impl OverlayWin {
     /// Creates the (unmapped) overlay: override-redirect, ARGB, `WM_CLASS`
     /// "timehud", `_NET_WM_NAME` "TimeHUD", `_COMPTON_SHADOW = 0`, type
-    /// `_NET_WM_WINDOW_TYPE_NOTIFICATION`.
+    /// `_NET_WM_WINDOW_TYPE_NOTIFICATION`. No background: the server does
+    /// not clear it on resize (the next frame covers it), so no flicker.
     pub fn create(x: &X, w: i32, h: i32, px: i32, py: i32) -> anyhow::Result<Self> {
         let events = EventMask::BUTTON_PRESS
             | EventMask::BUTTON_RELEASE
@@ -71,12 +75,15 @@ impl OverlayWin {
             x.atoms._NET_WM_WINDOW_TYPE_NOTIFICATION,
             false,
         )?;
+        let aux = ChangeWindowAttributesAux::new().background_pixmap(BackPixmap::NONE);
+        x.conn.change_window_attributes(id, &aux)?;
         x.conn.flush()?;
         Ok(OverlayWin {
             id,
             gc,
             left_held: false,
             hand: None,
+            alpha_shape: None,
         })
     }
 
@@ -124,6 +131,37 @@ impl OverlayWin {
         let _ = x.conn.flush();
     }
 
+    /// Without a compositor window alpha is ignored: clips the window to
+    /// the pixels of `pm` (the frame drawn into it) with alpha >= 128, so
+    /// the transparent corners do not show black. Skips the request when
+    /// the mask did not change.
+    pub fn set_alpha_shape(&mut self, x: &X, pm: &tiny_skia::Pixmap) {
+        let size = (pm.width(), pm.height());
+        let mask = x.alpha_mask(pm);
+        if self
+            .alpha_shape
+            .as_ref()
+            .is_some_and(|(s, m)| *s == size && *m == mask)
+        {
+            return;
+        }
+        let Ok(bitmap) = x.bitmap(self.id, &mask, size.0, size.1) else {
+            return;
+        };
+        let _ = shape::mask(&x.conn, SO::SET, SK::BOUNDING, self.id, 0, 0, bitmap);
+        let _ = x.conn.free_pixmap(bitmap);
+        let _ = x.conn.flush();
+        self.alpha_shape = Some((size, mask));
+    }
+
+    /// Removes the shape set by [`OverlayWin::set_alpha_shape`].
+    pub fn clear_alpha_shape(&mut self, x: &X) {
+        if self.alpha_shape.take().is_some() {
+            let _ = shape::mask(&x.conn, SO::SET, SK::BOUNDING, self.id, 0, 0, NONE);
+            let _ = x.conn.flush();
+        }
+    }
+
     pub fn raise(&self, x: &X) {
         raise_window(x, self.id);
     }
@@ -136,6 +174,84 @@ impl OverlayWin {
     pub fn unmap(&self, x: &X) {
         let _ = x.conn.unmap_window(self.id);
         let _ = x.conn.flush();
+    }
+}
+
+/// Whether a compositing manager runs, i.e. owns `_NET_WM_CM_S<screen>`.
+/// Without one, ARGB windows are shown opaque (alpha ignored), so the HUD
+/// drops its shadow and shapes the window instead.
+///
+/// The owner is read at startup and re-read when [`CompositorWatch::recheck`]
+/// says so: a `MANAGER` announcement, the owner window's destruction (its
+/// `StructureNotify` is selected), or, while there is no compositor, a new
+/// override-redirect top-level (a starting compositor creates one before it
+/// takes the selection, hence a short delay).
+#[derive(Debug, Default)]
+pub struct CompositorWatch {
+    owner: u32,
+}
+
+/// When to re-read the compositor selection owner.
+#[derive(Debug, PartialEq)]
+pub enum Recheck {
+    Now,
+    Soon,
+}
+
+/// Delay of a [`Recheck::Soon`], in seconds.
+pub const CM_RECHECK_DELAY: f64 = 0.5;
+
+impl CompositorWatch {
+    pub fn new(x: &X) -> CompositorWatch {
+        let mut w = CompositorWatch::default();
+        w.refresh(x);
+        w
+    }
+
+    pub fn active(&self) -> bool {
+        self.owner != 0
+    }
+
+    /// Re-reads the selection owner (and watches it); true if
+    /// [`CompositorWatch::active`] changed.
+    pub fn refresh(&mut self, x: &X) -> bool {
+        let was = self.active();
+        self.owner = x.selection_owner(x.cm_selection);
+        if self.owner != 0 {
+            let aux = ChangeWindowAttributesAux::new().event_mask(EventMask::STRUCTURE_NOTIFY);
+            let watched = x
+                .conn
+                .change_window_attributes(self.owner, &aux)
+                .ok()
+                .is_some_and(|c| c.check().is_ok());
+            if !watched {
+                self.owner = 0; // gone already
+            }
+        }
+        was != self.active()
+    }
+
+    /// Whether `ev` may mean the compositor started or stopped.
+    pub fn recheck(&self, ev: &Event, root: u32, selection: u32, manager: u32) -> Option<Recheck> {
+        match ev {
+            Event::ClientMessage(e)
+                if e.window == root
+                    && e.type_ == manager
+                    && e.format == 32
+                    && e.data.as_data32()[1] == selection =>
+            {
+                Some(Recheck::Now)
+            }
+            Event::DestroyNotify(e) if self.owner != 0 && e.window == self.owner => {
+                Some(Recheck::Now)
+            }
+            Event::CreateNotify(e)
+                if self.owner == 0 && e.parent == root && e.override_redirect =>
+            {
+                Some(Recheck::Soon)
+            }
+            _ => None,
+        }
     }
 }
 
@@ -353,6 +469,7 @@ mod tests {
             gc: 0,
             left_held: false,
             hand: None,
+            alpha_shape: None,
         }
     }
 
@@ -586,6 +703,59 @@ mod tests {
     }
 
     #[test]
+    fn compositor_rechecks() {
+        use x11rb::protocol::xproto::{ClientMessageEvent, CreateNotifyEvent, DestroyNotifyEvent};
+        const SEL: u32 = 0x1a0;
+        const MANAGER: u32 = 0x1b0;
+        let manager = |sel: u32| {
+            Event::ClientMessage(ClientMessageEvent::new(
+                32,
+                ROOT,
+                MANAGER,
+                [0, sel, 0x77, 0, 0],
+            ))
+        };
+        let create = |or: bool| {
+            Event::CreateNotify(CreateNotifyEvent {
+                response_type: 16,
+                sequence: 0,
+                parent: ROOT,
+                window: 0x77,
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                border_width: 0,
+                override_redirect: or,
+            })
+        };
+        let destroy = |window| {
+            Event::DestroyNotify(DestroyNotifyEvent {
+                response_type: 17,
+                sequence: 0,
+                event: window,
+                window,
+            })
+        };
+        let none = CompositorWatch { owner: 0 };
+        let on = CompositorWatch { owner: 0x55 };
+        let check = |w: &CompositorWatch, ev: &Event| w.recheck(ev, ROOT, SEL, MANAGER);
+        // Announced: re-read now, whatever the state.
+        assert_eq!(check(&none, &manager(SEL)), Some(Recheck::Now));
+        assert_eq!(check(&on, &manager(SEL)), Some(Recheck::Now));
+        // Another selection's manager (e.g. the tray).
+        assert_eq!(check(&none, &manager(SEL + 1)), None);
+        // The compositor went away.
+        assert_eq!(check(&on, &destroy(0x55)), Some(Recheck::Now));
+        assert_eq!(check(&on, &destroy(0x66)), None);
+        assert_eq!(check(&none, &destroy(0x55)), None);
+        // An override-redirect window appeared while there is none.
+        assert_eq!(check(&none, &create(true)), Some(Recheck::Soon));
+        assert_eq!(check(&none, &create(false)), None);
+        assert_eq!(check(&on, &create(true)), None);
+    }
+
+    #[test]
     fn covered_only_by_mapped_managed_windows_above() {
         const POPUP: u32 = WIN + 1;
         let own = [WIN, POPUP];
@@ -636,10 +806,23 @@ mod tests {
             opacity: 1.0,
         };
         let (pm, _) = render(&view, &mut FontSet::bundled()).unwrap();
-        let win = OverlayWin::create(&x, 200, 100, 40, 40).unwrap();
+        eprintln!("compositor: {}", CompositorWatch::new(&x).active());
+        let mut win = OverlayWin::create(&x, 200, 100, 40, 40).unwrap();
         win.map(&x);
         win.raise(&x);
         x.present(win.id, win.gc, &pm).unwrap();
+        let id = win.id;
+        let shaped = |x: &X| {
+            shape::query_extents(&x.conn, id)
+                .unwrap()
+                .reply()
+                .unwrap()
+                .bounding_shaped
+        };
+        win.set_alpha_shape(&x, &pm);
+        assert!(shaped(&x));
+        win.clear_alpha_shape(&x);
+        assert!(!shaped(&x));
         win.set_click_through(&x, true);
         win.set_click_through(&x, false);
         win.set_geometry(&x, 60, 60, 200, 100);
