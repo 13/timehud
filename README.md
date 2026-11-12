@@ -244,8 +244,8 @@ You can also drag the overlay anywhere; the position is saved automatically.
 ### Themes
 
 Right-click → **Theme** (or Settings → Display): `Classic` (default),
-`Terminal`, `Glass`, `Mono`, `Nord`, `Amber`. Picking a theme sets the color
-defaults; you can still customize individual colors afterwards in Settings.
+`Clean` (Classic's colors in Roboto, plain zero), `Glass`, `Nord`, `Amber`.
+Picking a theme sets the color defaults; you can still customize individual colors afterwards in Settings.
 
 ### Sound
 
@@ -308,5 +308,6 @@ otherwise ignored.
   `timehud-<tag>-x86_64.tar.gz` (binary, icon, desktop file, README, LICENSE)
   and publishes a release on whichever host ran the workflow.
 
-The bundled font (JetBrains Mono Bold) is under the SIL OFL, see `assets/OFL.txt`.
+The bundled fonts are under the SIL OFL: JetBrains Mono Bold (`assets/OFL.txt`)
+and a Latin subset of Roboto Bold (`assets/OFL-Roboto.txt`).
 TimeHUD itself is MIT licensed, see `LICENSE`.

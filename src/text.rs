@@ -7,6 +7,13 @@ use std::sync::OnceLock;
 use ab_glyph::{Font, FontArc, FontRef, FontVec, PxScale};
 
 static BUNDLED: &[u8] = include_bytes!("../assets/JetBrainsMono-Bold.ttf");
+/// Roboto Bold (Clean theme) cut to Latin, unhinted, no layout tables:
+/// `pyftsubset Roboto-Bold.ttf --unicodes=U+0020-007E,U+00A0-00FF,U+0131,
+/// U+0152-0153,U+0160-0161,U+0178,U+017D-017E,U+2013-2014,U+2018-201E,
+/// U+2022,U+2026,U+2039-203A,U+20AC,U+2122,U+2190-2193,U+23F8,U+25A0,U+25B6
+/// --no-hinting --layout-features='' --name-IDs='*' --notdef-outline
+/// --drop-tables+=DSIG`.
+static BUNDLED_ROBOTO: &[u8] = include_bytes!("../assets/Roboto-Bold.ttf");
 const GENERIC_ALIASES: [&str; 4] = ["monospace", "sans", "sans-serif", "serif"];
 /// Upper bound on cached glyph bitmaps (one frame at the largest font size
 /// and 2x scale needs ~2 MB); least recently used glyphs are
@@ -54,20 +61,41 @@ pub struct FontSet {
 /// menus, tooltip).
 fn bundled_font() -> FontArc {
     static FONT: OnceLock<FontArc> = OnceLock::new();
-    FONT.get_or_init(|| {
-        FontArc::new(FontRef::try_from_slice(BUNDLED).expect("bundled font is valid"))
+    parse_once(&FONT, BUNDLED)
+}
+
+/// The bundled Roboto, parsed only if Roboto is asked for and not installed.
+fn bundled_roboto() -> FontArc {
+    static FONT: OnceLock<FontArc> = OnceLock::new();
+    parse_once(&FONT, BUNDLED_ROBOTO)
+}
+
+fn parse_once(cell: &OnceLock<FontArc>, bytes: &'static [u8]) -> FontArc {
+    cell.get_or_init(|| {
+        FontArc::new(FontRef::try_from_slice(bytes).expect("bundled font is valid"))
     })
     .clone()
 }
 
 impl FontSet {
-    /// Resolve `family` (Bold) through fontconfig, falling back to the bundled font.
+    /// Resolve `family` (Bold) through fontconfig, falling back to a bundled
+    /// font ([`FontSet::fallback`]).
     pub fn load(family: &str) -> FontSet {
         resolve_font_file(family)
             .and_then(|p| std::fs::read(p).ok())
             .and_then(|b| FontVec::try_from_vec(b).ok())
             .and_then(|f| FontSet::new(FontArc::new(f), false))
-            .unwrap_or_else(FontSet::bundled)
+            .unwrap_or_else(|| FontSet::fallback(family))
+    }
+
+    /// The bundled Roboto for "Roboto" (so the Clean theme looks the same
+    /// without it installed), else the bundled JetBrains Mono.
+    pub fn fallback(family: &str) -> FontSet {
+        if family.trim().eq_ignore_ascii_case("roboto") {
+            FontSet::new(bundled_roboto(), true).expect("bundled font is valid")
+        } else {
+            FontSet::bundled()
+        }
     }
 
     pub fn bundled() -> FontSet {
@@ -285,6 +313,31 @@ mod tests {
     #[test]
     fn missing_family_uses_bundled() {
         assert!(FontSet::load("Definitely Not A Font 123").is_bundled());
+    }
+
+    #[test]
+    fn roboto_falls_back_to_bundled_roboto() {
+        for name in ["Roboto", "roboto", " ROBOTO "] {
+            let f = FontSet::fallback(name);
+            assert!(f.is_bundled());
+            assert_eq!(f.font.font_data().as_ptr(), BUNDLED_ROBOTO.as_ptr());
+        }
+        let f = FontSet::fallback("Roboto Condensed");
+        assert_eq!(f.font.font_data().as_ptr(), BUNDLED.as_ptr());
+    }
+
+    /// The bundled Roboto is a Latin subset: it must still cover everything
+    /// the HUD draws, with equal-width digits (ab_glyph applies no `tnum`).
+    #[test]
+    fn bundled_roboto_covers_hud_text() {
+        let mut f = FontSet::fallback("Roboto");
+        for c in (' '..='~').chain("äöüßéèàçñ€…–—•".chars()) {
+            assert_ne!(f.font.glyph_id(c).0, 0, "missing {c:?}");
+        }
+        assert_eq!(
+            f.measure("11:11", 40., false),
+            f.measure("88:88", 40., false)
+        );
     }
 
     #[test]

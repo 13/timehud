@@ -993,9 +993,13 @@ mod tests {
     }
 
     #[test]
-    fn corners_transparent_classic_no_shadow_area() {
+    fn corners_transparent_without_shadow_area() {
         let cfg = Config::default();
-        let (pm, l) = render(&mk(&cfg, "mono"), &mut fonts()).unwrap();
+        let v = View {
+            shadow: false,
+            ..mk(&cfg, "classic")
+        };
+        let (pm, l) = render(&v, &mut fonts()).unwrap();
         assert_eq!(l.panel.x, 0);
         assert_eq!(pm.pixel(0, 0).unwrap().alpha(), 0);
     }

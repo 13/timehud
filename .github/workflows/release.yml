@@ -55,7 +55,7 @@ jobs:
           set -eux
           NAME="timehud-${VERSION}-x86_64"
           mkdir -p "dist/$NAME"
-          cp target/release/timehud assets/icons/timehud.svg assets/timehud.desktop assets/OFL.txt README.md LICENSE "dist/$NAME/"
+          cp target/release/timehud assets/icons/timehud.svg assets/timehud.desktop assets/OFL.txt assets/OFL-Roboto.txt README.md LICENSE "dist/$NAME/"
           tar -C dist -czf "$NAME.tar.gz" "$NAME"
           echo "TARBALL=$NAME.tar.gz" >> "$GITHUB_ENV"
       - name: Upload artifact

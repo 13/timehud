@@ -1,4 +1,6 @@
-//! Built-in visual themes (port of `themes.py`, plus Nord and Amber).
+//! Built-in visual themes (Classic and Glass ported from `themes.py`, plus
+//! Clean, Nord and Amber; names unknown here, e.g. the Python app's Terminal
+//! and Mono, fall back to Classic).
 
 use crate::config::Config;
 
@@ -41,7 +43,7 @@ pub struct Theme {
     pub shadow_alpha: u8,
 }
 
-pub static THEMES: [Theme; 6] = [
+pub static THEMES: [Theme; 5] = [
     Theme {
         name: "classic",
         label: "Classic",
@@ -64,25 +66,25 @@ pub static THEMES: [Theme; 6] = [
         shadow_alpha: 70,
     },
     Theme {
-        name: "terminal",
-        label: "Terminal",
-        font_family: "Monospace",
-        color_bg: "#0A0C0B",
-        bg_alpha: 199,
-        border_alpha: 26,
+        name: "clean",
+        label: "Clean",
+        font_family: "Roboto",
+        color_bg: "#000000",
+        bg_alpha: 190,
+        border_alpha: 30,
         top_edge_alpha: 0,
         radius: 14.0,
-        color_clock: "#4ADE80",
-        clock_alpha: 0.92,
-        color_timer_run: "#F4F6F5",
-        color_timer_pause: "#6E7672",
-        color_warn: "#FBBF24",
+        color_clock: "#00FF88",
+        clock_alpha: 1.0,
+        color_timer_run: "#FFFFFF",
+        color_timer_pause: "#888888",
+        color_warn: "#FF9900",
         color_end: "#FF3333",
-        color_rest: "#60A5FA",
-        show_separator: true,
+        color_rest: "#4FA8FF",
+        show_separator: false,
         clock_scale: 0.9,
-        timer_scale: 1.3,
-        shadow_alpha: 70,
+        timer_scale: 1.35,
+        shadow_alpha: 80,
     },
     Theme {
         name: "glass",
@@ -104,27 +106,6 @@ pub static THEMES: [Theme; 6] = [
         clock_scale: 0.8,
         timer_scale: 1.4,
         shadow_alpha: 90,
-    },
-    Theme {
-        name: "mono",
-        label: "Mono",
-        font_family: "Monospace",
-        color_bg: "#000000",
-        bg_alpha: 217,
-        border_alpha: 0,
-        top_edge_alpha: 0,
-        radius: 10.0,
-        color_clock: "#FFFFFF",
-        clock_alpha: 0.55,
-        color_timer_run: "#FFFFFF",
-        color_timer_pause: "#7A7A7A",
-        color_warn: "#FBBF24",
-        color_end: "#FF3333",
-        color_rest: "#B0BEC5",
-        show_separator: false,
-        clock_scale: 0.62,
-        timer_scale: 1.5,
-        shadow_alpha: 0,
     },
     Theme {
         name: "nord",
@@ -194,12 +175,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn six_builtin_themes_in_order() {
+    fn five_builtin_themes_in_order() {
         let names: Vec<_> = THEMES.iter().map(|t| t.name).collect();
-        assert_eq!(
-            names,
-            ["classic", "terminal", "glass", "mono", "nord", "amber"]
-        );
+        assert_eq!(names, ["classic", "clean", "glass", "nord", "amber"]);
+    }
+
+    #[test]
+    fn removed_themes_fall_back_to_classic() {
+        for name in ["terminal", "mono"] {
+            assert!(std::ptr::eq(get_theme(name), &THEMES[0]));
+        }
+    }
+
+    /// Clean is Classic's palette set in Roboto (plain zero, tabular digits).
+    #[test]
+    fn clean_is_classic_palette_in_roboto() {
+        let (c, k) = (get_theme("clean"), get_theme("classic"));
+        assert_eq!(c.font_family, "Roboto");
+        for (a, b) in [
+            (c.color_bg, k.color_bg),
+            (c.color_clock, k.color_clock),
+            (c.color_timer_run, k.color_timer_run),
+            (c.color_timer_pause, k.color_timer_pause),
+            (c.color_warn, k.color_warn),
+            (c.color_end, k.color_end),
+            (c.color_rest, k.color_rest),
+        ] {
+            assert_eq!(a, b);
+        }
     }
 
     #[test]
@@ -240,14 +243,14 @@ mod tests {
     #[test]
     fn apply_stamps_colors_and_sets_theme() {
         let mut cfg = Config::default();
-        apply_theme(&mut cfg, "mono");
-        let m = get_theme("mono");
-        assert_eq!(cfg.theme, "mono");
+        apply_theme(&mut cfg, "clean");
+        let m = get_theme("clean");
+        assert_eq!(cfg.theme, "clean");
         assert_eq!(cfg.color_bg, m.color_bg);
         assert_eq!(cfg.color_clock, m.color_clock);
         assert_eq!(cfg.color_timer_run, m.color_timer_run);
         assert_eq!(cfg.color_timer_pause, m.color_timer_pause);
-        assert_eq!(cfg.font_family, "Monospace");
+        assert_eq!(cfg.font_family, "Roboto");
     }
 
     #[test]
@@ -276,9 +279,8 @@ mod tests {
     fn all_themes_have_color_rest() {
         let expected = [
             ("classic", "#4FA8FF"),
-            ("terminal", "#60A5FA"),
+            ("clean", "#4FA8FF"),
             ("glass", "#93C5FD"),
-            ("mono", "#B0BEC5"),
             ("nord", "#81A1C1"),
             ("amber", "#E0A040"),
         ];
@@ -290,7 +292,7 @@ mod tests {
     #[test]
     fn shadow_alphas() {
         let got: Vec<_> = THEMES.iter().map(|t| t.shadow_alpha).collect();
-        assert_eq!(got, [70, 70, 90, 0, 70, 60]);
+        assert_eq!(got, [70, 80, 90, 70, 60]);
     }
 
     #[test]
