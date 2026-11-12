@@ -977,7 +977,6 @@ impl App {
             } => self.press(x, y, root_x, root_y, button, now),
             Input::Release {
                 button: Button::Left,
-                ..
             } => match self.drag.take() {
                 Some(d) if d.moved => {
                     self.cfg.custom_x = i64::from(self.panel_pos.0);

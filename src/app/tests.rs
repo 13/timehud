@@ -460,8 +460,6 @@ fn drag_saves_custom_position() {
     }));
     assert_eq!(h.app.window_pos(), (wx - 500, wy + 300));
     let fx = h.input(Input::Release {
-        root_x: wx + lx - 500,
-        root_y: wy + ly + 300,
         button: Button::Left,
     });
     assert!(fx.contains(&Effect::SaveSoon));
@@ -478,8 +476,6 @@ fn click_without_drag_keeps_preset_position() {
     let fx = h.press(Hit::Clock, Button::Left);
     assert!(fx.is_empty(), "{fx:?}");
     h.input(Input::Release {
-        root_x: 0,
-        root_y: 0,
         button: Button::Left,
     });
     assert_eq!((h.app.cfg.custom_x, h.app.cfg.custom_y), (-1, -1));

@@ -459,21 +459,15 @@ impl OverlayWin {
                 if button == Button::Left {
                     self.left_held = false;
                 }
-                Some(Input::Release {
-                    root_x: e.root_x.into(),
-                    root_y: e.root_y.into(),
-                    button,
-                })
+                Some(Input::Release { button })
             }
             Event::MotionNotify(e) if e.event == win => {
-                let (root_x, root_y) = (e.root_x.into(), e.root_y.into());
                 if !e.state.contains(KeyButMask::BUTTON1) && std::mem::take(&mut self.left_held) {
                     return Some(Input::Release {
-                        root_x,
-                        root_y,
                         button: Button::Left,
                     });
                 }
+                let (root_x, root_y) = (e.root_x.into(), e.root_y.into());
                 Some(Input::Motion {
                     x: e.event_x.into(),
                     y: e.event_y.into(),
@@ -639,7 +633,6 @@ mod tests {
             w.translate(&Event::ButtonRelease(press(1)), |_| 0),
             Some(Input::Release {
                 button: Button::Left,
-                ..
             })
         ));
         // Released normally: later plain motion is hover again.
@@ -657,8 +650,6 @@ mod tests {
         assert_eq!(
             w.translate(&motion(KeyButMask::default()), |_| 0),
             Some(Input::Release {
-                root_x: 130,
-                root_y: 240,
                 button: Button::Left
             })
         );

@@ -73,8 +73,6 @@ pub enum Input {
         button: Button,
     },
     Release {
-        root_x: i32,
-        root_y: i32,
         button: Button,
     },
     Motion {
