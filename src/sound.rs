@@ -76,13 +76,92 @@ pub fn wav_bytes(samples: &[i16]) -> Vec<u8> {
     w
 }
 
-fn builtin_samples(beep: Beep) -> Vec<i16> {
-    if beep.double {
+/// Built-in sound set, from `sound_theme`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum SoundTheme {
+    /// The 880 Hz beeps (identical to the Python app).
+    #[default]
+    Classic,
+    /// Soft bell-like tones.
+    Chime,
+}
+
+impl SoundTheme {
+    /// `"chime"` selects the chimes; anything else plays classic.
+    pub fn from_name(name: &str) -> SoundTheme {
+        if name == "chime" {
+            SoundTheme::Chime
+        } else {
+            SoundTheme::Classic
+        }
+    }
+}
+
+/// One bell-like note at `start` s within a `total`-second buffer: a few
+/// partials decaying exponentially (upper ones faster), 5 ms attack and a
+/// 20 ms fade at the note's end so nothing clicks.
+fn add_chime_note(out: &mut [f64], start: f64, freq: f64, dur: f64, amp: f64) {
+    const PARTIALS: [(f64, f64); 3] = [(1.0, 1.0), (2.0, 0.25), (3.0, 0.08)];
+    let rate = SAMPLE_RATE as f64;
+    let first = (start * rate) as usize;
+    let n = ((dur * rate) as usize).min(out.len().saturating_sub(first));
+    let tau = dur / 5.0;
+    for i in 0..n {
+        let t = i as f64 / rate;
+        let attack = (t / 0.005).min(1.0);
+        let fade = ((dur - t) / 0.02).min(1.0);
+        let v: f64 = PARTIALS
+            .iter()
+            .map(|(ratio, gain)| {
+                gain * (-t * ratio / tau).exp() * (2.0 * PI * freq * ratio * t).sin()
+            })
+            .sum();
+        out[first + i] += amp * attack * fade * v;
+    }
+}
+
+/// The chime set: a soft C6 "ting" (short), a rising E5/A5 chime (long),
+/// two quick tings (double).
+pub fn chime_samples(beep: Beep) -> Vec<i16> {
+    let (total, notes): (f64, &[(f64, f64, f64, f64)]) = if beep.double {
+        (
+            0.37,
+            &[(0.0, 1046.5, 0.22, 10000.0), (0.15, 1046.5, 0.22, 10000.0)],
+        )
+    } else if beep.short {
+        (0.30, &[(0.0, 1046.5, 0.30, 11000.0)])
+    } else {
+        (
+            1.2,
+            &[(0.0, 659.3, 1.2, 9000.0), (0.15, 880.0, 1.05, 9000.0)],
+        )
+    };
+    let mut out = vec![0.0; (SAMPLE_RATE as f64 * total) as usize];
+    for &(start, freq, dur, amp) in notes {
+        add_chime_note(&mut out, start, freq, dur, amp);
+    }
+    let peak = out.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    let scale = if peak > 14000.0 { 14000.0 / peak } else { 1.0 };
+    out.iter().map(|v| (v * scale) as i16).collect()
+}
+
+fn builtin_samples(beep: Beep, theme: SoundTheme) -> Vec<i16> {
+    if theme == SoundTheme::Chime {
+        chime_samples(beep)
+    } else if beep.double {
         double_beep_samples()
     } else if beep.short {
         beep_samples(880.0, 0.1)
     } else {
         beep_samples(880.0, 0.5)
+    }
+}
+
+/// Cache file name of a built-in sound for the player fallback.
+fn wav_name(beep: Beep, theme: SoundTheme) -> String {
+    match theme {
+        SoundTheme::Classic => format!("timehud-beep-{}.wav", beep_name(beep)),
+        SoundTheme::Chime => format!("timehud-beep-chime-{}.wav", beep_name(beep)),
     }
 }
 
@@ -228,7 +307,7 @@ impl rodio::Source for SharedSamples {
 
 #[derive(Debug)]
 pub enum Source {
-    Builtin(Beep),
+    Builtin(Beep, SoundTheme),
     File(PathBuf, Arc<Decoded>),
 }
 
@@ -294,21 +373,25 @@ fn load_file(path: &Path) -> Option<Arc<Decoded>> {
 
 /// Pick what to play: the configured file if it decodes, else the built-in beep.
 pub fn resolve_source(cfg: &Config, beep: Beep) -> Source {
-    resolve_file(&cfg.sound_file, beep)
+    resolve_file(
+        &cfg.sound_file,
+        beep,
+        SoundTheme::from_name(&cfg.sound_theme),
+    )
 }
 
-fn resolve_file(sound_file: &str, beep: Beep) -> Source {
+fn resolve_file(sound_file: &str, beep: Beep, theme: SoundTheme) -> Source {
     let path = Path::new(sound_file);
     if sound_file.is_empty() || !path.exists() {
         forget_file();
     } else if let Some(d) = load_file(path) {
         return Source::File(path.to_path_buf(), d);
     }
-    Source::Builtin(beep)
+    Source::Builtin(beep, theme)
 }
 
 enum Msg {
-    Play(Beep, String),
+    Play(Beep, String, SoundTheme),
     /// Sound was disabled: drop the cached clip.
     Forget,
 }
@@ -371,8 +454,8 @@ impl Worker {
                 },
             };
             match msg {
-                Msg::Play(beep, file) => {
-                    if let Err(e) = self.play(beep, &file) {
+                Msg::Play(beep, file, theme) => {
+                    if let Err(e) = self.play(beep, &file, theme) {
                         eprintln!("timehud: sound failed: {e}");
                     }
                 }
@@ -409,8 +492,13 @@ impl Worker {
 
     /// Play through rodio, or an external player if no device opens.
     /// Returns the name of the path used.
-    fn play(&mut self, beep: Beep, sound_file: &str) -> Result<&'static str, String> {
-        let source = resolve_file(sound_file, beep);
+    fn play(
+        &mut self,
+        beep: Beep,
+        sound_file: &str,
+        theme: SoundTheme,
+    ) -> Result<&'static str, String> {
+        let source = resolve_file(sound_file, beep, theme);
         if self.sink.is_none() && !self.open_sink() {
             return play_with_player(&source).map(|()| "player");
         }
@@ -422,8 +510,8 @@ impl Worker {
                 player.append(SharedSamples::new(d));
                 length
             }
-            Source::Builtin(b) => {
-                let f: Vec<f32> = builtin_samples(b)
+            Source::Builtin(b, theme) => {
+                let f: Vec<f32> = builtin_samples(b, theme)
                     .into_iter()
                     .map(|s| s as f32 / 32768.0)
                     .collect();
@@ -448,13 +536,14 @@ impl Worker {
 fn play_with_player(source: &Source) -> Result<(), String> {
     let path = match source {
         Source::File(p, _) => p.clone(),
-        Source::Builtin(b) => {
+        Source::Builtin(b, theme) => {
             let dir = std::env::var_os("XDG_RUNTIME_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(std::env::temp_dir);
-            let p = dir.join(format!("timehud-beep-{}.wav", beep_name(*b)));
+            let p = dir.join(wav_name(*b, *theme));
             if !p.exists() {
-                std::fs::write(&p, wav_bytes(&builtin_samples(*b))).map_err(|e| e.to_string())?;
+                std::fs::write(&p, wav_bytes(&builtin_samples(*b, *theme)))
+                    .map_err(|e| e.to_string())?;
             }
             p
         }
@@ -522,7 +611,8 @@ impl Sound {
     /// releases a cached `sound_file` clip).
     pub fn play(&self, beep: Beep, cfg: &Config) {
         if cfg.sound_enabled {
-            let _ = self.tx.send(Msg::Play(beep, cfg.sound_file.clone()));
+            let theme = SoundTheme::from_name(&cfg.sound_theme);
+            let _ = self.tx.send(Msg::Play(beep, cfg.sound_file.clone(), theme));
             self.file_cached.set(!cfg.sound_file.is_empty());
         } else {
             self.config_changed(cfg);
@@ -541,6 +631,109 @@ impl Sound {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const LONG: Beep = Beep {
+        short: false,
+        double: false,
+    };
+    const SHORT: Beep = Beep {
+        short: true,
+        double: false,
+    };
+    const DOUBLE: Beep = Beep {
+        short: false,
+        double: true,
+    };
+
+    fn peak(s: &[i16]) -> i32 {
+        s.iter().map(|v| i32::from(*v).abs()).max().unwrap()
+    }
+
+    fn secs(s: &[i16]) -> f64 {
+        s.len() as f64 / f64::from(SAMPLE_RATE)
+    }
+
+    #[test]
+    fn classic_is_unchanged() {
+        let classic = |b| builtin_samples(b, SoundTheme::Classic);
+        assert_eq!(classic(SHORT), beep_samples(880.0, 0.1));
+        assert_eq!(classic(LONG), beep_samples(880.0, 0.5));
+        assert_eq!(classic(DOUBLE), double_beep_samples());
+    }
+
+    #[test]
+    fn theme_from_name_is_tolerant() {
+        assert_eq!(SoundTheme::from_name("chime"), SoundTheme::Chime);
+        for n in ["classic", "Chime", "bell", ""] {
+            assert_eq!(SoundTheme::from_name(n), SoundTheme::Classic);
+        }
+    }
+
+    #[test]
+    fn chime_short_fits_tick_spacing() {
+        assert!(secs(&chime_samples(SHORT)) <= 0.4, "decays well within 1 s");
+    }
+
+    #[test]
+    fn chime_lengths() {
+        let long = secs(&chime_samples(LONG));
+        assert!((1.0..=1.5).contains(&long), "long {long}");
+        let double = secs(&chime_samples(DOUBLE));
+        assert!(
+            double > secs(&chime_samples(SHORT)) && double <= 0.7,
+            "double {double}"
+        );
+    }
+
+    #[test]
+    fn chime_is_softer_and_click_free() {
+        for b in [SHORT, LONG, DOUBLE] {
+            let s = chime_samples(b);
+            assert!(peak(&s) <= 14000, "softer than classic's 20000");
+            assert!(peak(&s) >= 6000, "still audible");
+            assert!(i32::from(s[0]).abs() < 100, "silent start");
+            let tail = &s[s.len() - SAMPLE_RATE as usize / 100..]; // last 10 ms
+            assert!(peak(tail) < 200, "decayed tail, no click");
+        }
+    }
+
+    #[test]
+    fn missing_file_falls_back_to_themed_builtin() {
+        let _guard = CACHE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(matches!(
+            resolve_file("/nonexistent/x.wav", LONG, SoundTheme::Chime),
+            Source::Builtin(_, SoundTheme::Chime)
+        ));
+    }
+
+    #[test]
+    fn fallback_wav_names_differ_per_theme() {
+        assert_eq!(wav_name(LONG, SoundTheme::Classic), "timehud-beep-long.wav");
+        for b in [SHORT, LONG, DOUBLE] {
+            assert_ne!(
+                wav_name(b, SoundTheme::Classic),
+                wav_name(b, SoundTheme::Chime)
+            );
+        }
+    }
+
+    #[test]
+    fn play_sends_current_theme() {
+        let (tx, rx) = channel::<Msg>();
+        let s = Sound {
+            tx,
+            file_cached: Cell::new(false),
+        };
+        let cfg = Config {
+            sound_theme: "chime".into(),
+            ..Config::default()
+        };
+        s.play(LONG, &cfg);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Msg::Play(_, _, SoundTheme::Chime))
+        ));
+    }
 
     #[test]
     fn long_beep_len() {
@@ -586,7 +779,7 @@ mod tests {
         };
         assert!(matches!(
             resolve_source(&cfg, Beep::default()),
-            Source::Builtin(_)
+            Source::Builtin(..)
         ));
         let dir = tempfile::tempdir().unwrap();
         let txt = dir.path().join("not_audio.ogg");
@@ -594,7 +787,7 @@ mod tests {
         cfg.sound_file = txt.to_string_lossy().into_owned();
         assert!(matches!(
             resolve_source(&cfg, Beep::default()),
-            Source::Builtin(_)
+            Source::Builtin(..)
         ));
     }
 
@@ -672,19 +865,23 @@ mod tests {
         }
         let s = |p: &Path| p.to_string_lossy().into_owned();
         assert!(matches!(
-            resolve_file(&s(&a), Beep::default()),
+            resolve_file(&s(&a), Beep::default(), SoundTheme::Classic),
             Source::File(..)
         ));
         assert_eq!(cached_path(), Some(a.clone()));
-        let Source::File(_, d) = resolve_file(&s(&b), Beep::default()) else {
+        let Source::File(_, d) = resolve_file(&s(&b), Beep::default(), SoundTheme::Classic) else {
             panic!("b decodes");
         };
         assert_eq!(cached_path(), Some(b.clone()));
         assert_eq!(d.samples.len(), 4410, "16-bit mono kept as is");
-        resolve_file("", Beep::default());
+        resolve_file("", Beep::default(), SoundTheme::Classic);
         assert_eq!(cached_path(), None);
-        resolve_file(&s(&a), Beep::default());
-        resolve_file(&s(&dir.path().join("gone.wav")), Beep::default());
+        resolve_file(&s(&a), Beep::default(), SoundTheme::Classic);
+        resolve_file(
+            &s(&dir.path().join("gone.wav")),
+            Beep::default(),
+            SoundTheme::Classic,
+        );
         assert_eq!(cached_path(), None, "a missing file drops the clip too");
     }
 
@@ -793,32 +990,19 @@ mod tests {
         }
     }
 
-    /// Manual: plays long, short, double through the real output path.
-    /// Run with `cargo test smoke_play_beeps -- --ignored --nocapture`.
+    /// Manual: plays long, short, double of each theme through the real
+    /// output path. Run with
+    /// `cargo test smoke_play_beeps -- --ignored --nocapture`.
     #[test]
     #[ignore]
     fn smoke_play_beeps() {
         let mut w = Worker::new();
-        for (beep, wait) in [
-            (Beep::default(), 700),
-            (
-                Beep {
-                    short: true,
-                    double: false,
-                },
-                300,
-            ),
-            (
-                Beep {
-                    short: false,
-                    double: true,
-                },
-                500,
-            ),
-        ] {
-            let via = w.play(beep, "").expect("play failed");
-            println!("played {} via {via}", beep_name(beep));
-            std::thread::sleep(Duration::from_millis(wait));
+        for theme in [SoundTheme::Classic, SoundTheme::Chime] {
+            for (beep, wait) in [(LONG, 1500), (SHORT, 1000), (DOUBLE, 1000)] {
+                let via = w.play(beep, "", theme).expect("play failed");
+                println!("played {theme:?} {} via {via}", beep_name(beep));
+                std::thread::sleep(Duration::from_millis(wait));
+            }
         }
         // And through the public, threaded API.
         let s = Sound::new();
