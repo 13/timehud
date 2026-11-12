@@ -577,12 +577,27 @@ fn draw_border_progress(pm: &mut Pixmap, view: &View, panel: Rect, radius: f32) 
     pm.stroke_path(&path, &p, &st, Transform::identity(), None);
 }
 
-/// Draw one frame into a new pixmap; `None` if no pixmap of the layout's
-/// size can be allocated.
+/// Draw one frame, opacity applied, into a new pixmap; `None` if no pixmap
+/// of the layout's size can be allocated.
 pub fn render(view: &View, fonts: &mut FontSet) -> Option<(Pixmap, Layout)> {
     let mut frame = Frame::default();
     let layout = render_into(view, fonts, &mut frame);
-    frame.pixmap.map(|pm| (pm, layout))
+    let o = frame.opacity();
+    frame.pixmap.map(|mut pm| {
+        if let Some(lut) = opacity_lut(o) {
+            for b in pm.data_mut() {
+                *b = lut[usize::from(*b)];
+            }
+        }
+        (pm, layout)
+    })
+}
+
+/// Byte table scaling premultiplied channels by the opacity `o` (same
+/// rounding as scaling each byte); `None` when `o` is 1 (nothing to do).
+pub fn opacity_lut(o: f32) -> Option<[u8; 256]> {
+    let o = o.clamp(0.0, 1.0);
+    (o < 1.0).then(|| std::array::from_fn(|b| (b as f32 * o).round() as u8))
 }
 
 /// A reusable frame: the drawn `pixmap` plus a cache of everything but the
@@ -590,11 +605,21 @@ pub fn render(view: &View, fonts: &mut FontSet) -> Option<(Pixmap, Layout)> {
 /// case while running) skip layout, text and panel drawing.
 #[derive(Default)]
 pub struct Frame {
-    /// The last frame drawn; `None` if no pixmap could be allocated.
+    /// The last frame drawn, *without* the opacity (see [`Frame::opacity`]);
+    /// `None` if no pixmap could be allocated.
     pub pixmap: Option<Pixmap>,
     base: Option<Pixmap>,
     key: Option<StaticView>,
     plan: Option<Plan>,
+    opacity: f32,
+}
+
+impl Frame {
+    /// The last frame's window opacity (0..1), for the presenter to apply
+    /// to `pixmap` (only the pixels it uploads, see [`opacity_lut`]).
+    pub fn opacity(&self) -> f32 {
+        self.opacity
+    }
 }
 
 /// Copies `src` into `dst`, reusing `dst`'s pixmap when the size matches.
@@ -607,7 +632,8 @@ fn copy_into(dst: &mut Option<Pixmap>, src: &Pixmap) {
     }
 }
 
-/// Draw one frame into `frame.pixmap`, redrawing the static layer only when
+/// Draw one frame (bar included, opacity only recorded) into
+/// `frame.pixmap`, redrawing the static layer only when
 /// a [`StaticView`] input changed. Leaves `None` when no pixmap of the
 /// layout's size can be allocated; the layout is returned anyway.
 pub fn render_into(view: &View, fonts: &mut FontSet, frame: &mut Frame) -> Layout {
@@ -643,6 +669,7 @@ pub fn render_into(view: &View, fonts: &mut FontSet, frame: &mut Frame) -> Layou
     if let Some(pm) = &mut frame.pixmap {
         draw_dynamic(view, pl, pm);
     }
+    frame.opacity = view.opacity.clamp(0.0, 1.0);
     layout
 }
 
@@ -744,7 +771,7 @@ fn draw_rows(sv: &StaticView, pl: &Plan, fonts: &mut FontSet, pm: &mut Pixmap) {
     }
 }
 
-/// The progress bar fill (line or border) and the window opacity.
+/// The progress bar fill (line or border).
 fn draw_dynamic(view: &View, pl: &Plan, pm: &mut Pixmap) {
     let s = pl.s;
     if let Some(row) = pl.progress_row {
@@ -762,15 +789,6 @@ fn draw_dynamic(view: &View, pl: &Plan, pm: &mut Pixmap) {
     if view.cfg.progress_style == "border" && view.progress > 0.0 {
         let rad = view.theme.radius * s;
         draw_border_progress(pm, view, pl.layout.panel, rad);
-    }
-
-    let o = view.opacity.clamp(0.0, 1.0);
-    if o < 1.0 {
-        // Same rounding as scaling each byte, via a 256-entry table.
-        let lut: [u8; 256] = std::array::from_fn(|b| (b as f32 * o).round() as u8);
-        for b in pm.data_mut() {
-            *b = lut[*b as usize];
-        }
     }
 }
 
@@ -904,9 +922,18 @@ mod tests {
                         v.timer = timer.into();
                         let l = render_into(&v, &mut f, &mut frame);
                         let (fresh, fl) = render(&v, &mut f).unwrap();
-                        let got = frame.pixmap.as_ref().unwrap();
+                        assert_eq!(frame.opacity(), opacity);
+                        let lut = opacity_lut(opacity).unwrap_or(std::array::from_fn(|b| b as u8));
+                        let got: Vec<u8> = frame
+                            .pixmap
+                            .as_ref()
+                            .unwrap()
+                            .data()
+                            .iter()
+                            .map(|b| lut[usize::from(*b)])
+                            .collect();
                         assert!(
-                            got.data() == fresh.data(),
+                            got == fresh.data(),
                             "{} {style} x{scale} p={progress}: cached frame differs",
                             t.name
                         );

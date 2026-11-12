@@ -259,31 +259,16 @@ impl X {
         Ok(())
     }
 
-    /// Uploads `canvas.pixmap` to `win` at (0, 0), sending only the bounding
+    /// Uploads `canvas.frame` to `win` at (0, 0), sending only the bounding
     /// box of the pixels that changed since the last upload (everything after
-    /// [`Canvas::invalidate`] or a size change). Nothing to do without a pixmap.
+    /// [`Canvas::invalidate`], a size or an opacity change). Only that box is
+    /// converted to BGRA, with the frame's opacity applied on the way.
+    /// Nothing to do without a pixmap.
     pub fn present_canvas(&self, win: u32, gc: u32, c: &mut Canvas) -> anyhow::Result<()> {
-        let Some(pm) = &c.frame.pixmap else {
+        let Some(r) = c.next_upload() else {
             return Ok(());
         };
-        let (w, h) = (pm.width() as usize, pm.height() as usize);
-        rgba_to_bgra(pm.data(), &mut c.next);
-        let full = (0, 0, w, h);
-        let rect = if c.shown_w == w && c.shown.len() == c.next.len() {
-            changed_rect(&c.shown, &c.next, w)
-        } else {
-            Some(full)
-        };
-        let sent = match rect {
-            None => Ok(()),
-            Some(r) if r == full => self.put_bgra(win, gc, &c.next, r),
-            Some(r) => {
-                copy_rect(&c.next, w, r, &mut c.sub);
-                self.put_bgra(win, gc, &c.sub, r)
-            }
-        };
-        std::mem::swap(&mut c.shown, &mut c.next);
-        c.shown_w = w;
+        let sent = self.put_bgra(win, gc, &c.sub, r);
         if sent.is_err() {
             c.invalidate();
         }
@@ -453,14 +438,43 @@ pub fn rgba_to_bgra(src: &[u8], dst: &mut Vec<u8>) {
 #[derive(Default)]
 pub struct Canvas {
     pub frame: crate::render::Frame,
-    /// BGRA of the window contents as last uploaded; empty when unknown.
+    /// The frame's RGBA (before opacity) as last uploaded; empty when unknown.
     shown: Vec<u8>,
     shown_w: usize,
-    next: Vec<u8>,
+    /// The opacity `shown` was uploaded with.
+    shown_opacity: f32,
+    /// BGRA staging buffer for the uploaded rect.
     sub: Vec<u8>,
 }
 
 impl Canvas {
+    /// The rect of the frame to upload, its BGRA (opacity applied) left in
+    /// `sub`, and records it as shown; `None` if nothing changed.
+    fn next_upload(&mut self) -> Option<(usize, usize, usize, usize)> {
+        let pm = self.frame.pixmap.as_ref()?;
+        let (w, h) = (pm.width() as usize, pm.height() as usize);
+        let src = pm.data();
+        let opacity = self.frame.opacity();
+        let known =
+            self.shown_w == w && self.shown.len() == src.len() && self.shown_opacity == opacity;
+        let r = if known {
+            changed_rect(&self.shown, src, w)?
+        } else {
+            (0, 0, w, h)
+        };
+        let lut = crate::render::opacity_lut(opacity);
+        convert_rect(src, w, r, lut.as_ref(), &mut self.sub);
+        if known {
+            copy_rect_into(src, w, r, &mut self.shown);
+        } else {
+            self.shown.clear();
+            self.shown.extend_from_slice(src);
+        }
+        self.shown_w = w;
+        self.shown_opacity = opacity;
+        Some(r)
+    }
+
     /// Forget what the window shows (e.g. after `Expose`): the next present
     /// uploads everything.
     pub fn invalidate(&mut self) {
@@ -487,17 +501,41 @@ pub fn changed_rect(a: &[u8], b: &[u8], w: usize) -> Option<(usize, usize, usize
     Some((x0, y0, x1 - x0 + 1, y1 - y0 + 1))
 }
 
-/// Copies rect `(x, y, w, h)` of an image of 4-byte pixels, `stride_px`
-/// pixels wide, into `dst` as tightly packed rows.
-fn copy_rect(
+/// Converts rect `(x, y, w, h)` of a premultiplied RGBA image, `stride_px`
+/// pixels wide, into `dst` as tightly packed BGRA rows, each byte mapped
+/// through `lut` (the opacity, [`crate::render::opacity_lut`]) if given.
+fn convert_rect(
     src: &[u8],
     stride_px: usize,
     (x, y, w, h): (usize, usize, usize, usize),
+    lut: Option<&[u8; 256]>,
     dst: &mut Vec<u8>,
 ) {
     dst.clear();
+    dst.reserve(w * h * 4);
     for row in src.chunks_exact(stride_px * 4).skip(y).take(h) {
-        dst.extend_from_slice(&row[x * 4..(x + w) * 4]);
+        let px = row[x * 4..(x + w) * 4].as_chunks::<4>().0;
+        match lut {
+            None => px.iter().for_each(|&[r, g, b, a]| dst.extend([b, g, r, a])),
+            Some(l) => px.iter().for_each(|&[r, g, b, a]| {
+                dst.extend([b, g, r, a].map(|c| l[usize::from(c)]));
+            }),
+        }
+    }
+}
+
+/// Copies rect `(x, y, w, h)` of `src` into the same place of `dst`, both
+/// images of 4-byte pixels `stride_px` wide.
+fn copy_rect_into(
+    src: &[u8],
+    stride_px: usize,
+    (x, y, w, h): (usize, usize, usize, usize),
+    dst: &mut [u8],
+) {
+    let stride = stride_px * 4;
+    let rows = src.chunks_exact(stride).zip(dst.chunks_exact_mut(stride));
+    for (s, d) in rows.skip(y).take(h) {
+        d[x * 4..(x + w) * 4].copy_from_slice(&s[x * 4..(x + w) * 4]);
     }
 }
 
@@ -693,11 +731,112 @@ mod tests {
     }
 
     #[test]
-    fn copy_rect_extracts_rows() {
+    fn convert_rect_extracts_rows() {
         let mut out = vec![7; 3];
-        copy_rect(&img(), 4, (1, 1, 2, 2), &mut out);
+        convert_rect(&img(), 4, (1, 1, 2, 2), None, &mut out);
         let want: Vec<u8> = [5u8, 6, 9, 10].iter().flat_map(|i| [*i; 4]).collect();
         assert_eq!(out, want);
+    }
+
+    #[test]
+    fn convert_rect_swaps_and_applies_opacity() {
+        // 2x1 RGBA image; convert only the second pixel.
+        let src = [1, 2, 3, 4, 10, 20, 30, 40];
+        let mut out = Vec::new();
+        convert_rect(&src, 2, (1, 0, 1, 1), None, &mut out);
+        assert_eq!(out, [30, 20, 10, 40]);
+        let lut = crate::render::opacity_lut(0.5).unwrap();
+        convert_rect(&src, 2, (0, 0, 2, 1), Some(&lut), &mut out);
+        // Same result as converting everything, then scaling every byte.
+        let mut full = Vec::new();
+        rgba_to_bgra(&src, &mut full);
+        let scaled: Vec<u8> = full.iter().map(|b| lut[usize::from(*b)]).collect();
+        assert_eq!(out, scaled);
+        assert_eq!(out[4..], [15, 10, 5, 20]);
+    }
+
+    /// Uploads applied to a simulated window always reproduce the frame
+    /// converted in full, while sending only the changed rect.
+    #[test]
+    fn canvas_uploads_reproduce_full_frames() {
+        use crate::config::Config;
+        use crate::render::{View, render_into};
+        use crate::themes::{Rgb, get_theme};
+        let cfg = Config {
+            progress_style: "line".into(),
+            ..Config::default()
+        };
+        let mut fonts = crate::text::FontSet::bundled();
+        let mut c = Canvas::default();
+        let mut window: Vec<u8> = Vec::new();
+        // (progress, opacity, timer, expect a full upload)
+        let steps = [
+            (0.5, 1.0, "05:00", true),
+            (0.5, 1.0, "05:00", false),
+            (0.6, 1.0, "05:00", false),
+            (0.6, 0.5, "05:00", true),
+            (0.7, 0.5, "04:59", false),
+            (0.7, 1.0, "04:59", true),
+        ];
+        for (i, (progress, opacity, timer, full)) in steps.into_iter().enumerate() {
+            let view = View {
+                cfg: &cfg,
+                theme: get_theme("classic"),
+                scale: 1.0,
+                clock: "12:00:00".into(),
+                timer: timer.into(),
+                timer_color: Rgb(255, 255, 255),
+                timer_px_mul: 1.0,
+                mode_text: "COUNTDOWN  5:00".into(),
+                mode_color: Rgb(102, 102, 102),
+                show_controls_row: true,
+                controls_pos: 1.0,
+                running: true,
+                mode_btn: "CD",
+                hover_btn: None,
+                progress,
+                progress_color: Rgb(0, 200, 100),
+                opacity,
+            };
+            render_into(&view, &mut fonts, &mut c.frame);
+            let pm = c.frame.pixmap.as_ref().unwrap();
+            let (w, h) = (pm.width() as usize, pm.height() as usize);
+            let mut want = Vec::new();
+            rgba_to_bgra(pm.data(), &mut want);
+            if let Some(lut) = crate::render::opacity_lut(opacity) {
+                want.iter_mut().for_each(|b| *b = lut[usize::from(*b)]);
+            }
+            let r = c.next_upload();
+            if i == 1 {
+                assert_eq!(r, None, "unchanged frame uploads nothing");
+            } else {
+                let r = r.unwrap();
+                assert_eq!(r == (0, 0, w, h), full, "step {i}: {r:?}");
+                window.resize(w * h * 4, 0);
+                let (x, y, rw, _) = r;
+                for (row, data) in c.sub.chunks_exact(rw * 4).enumerate() {
+                    let at = ((y + row) * w + x) * 4;
+                    window[at..at + rw * 4].copy_from_slice(data);
+                }
+            }
+            assert!(window == want, "step {i}: window differs from the frame");
+        }
+    }
+
+    #[test]
+    fn copy_rect_into_updates_only_the_rect() {
+        let src: Vec<u8> = (0..12u8).flat_map(|i| [i + 100; 4]).collect();
+        let mut dst = img();
+        copy_rect_into(&src, 4, (1, 1, 2, 2), &mut dst);
+        for i in 0..12u8 {
+            let (x, y) = (i % 4, i / 4);
+            let inside = (1..3).contains(&x) && (1..3).contains(&y);
+            let want = if inside { i + 100 } else { i };
+            assert_eq!(dst[usize::from(i) * 4..][..4], [want; 4], "pixel {i}");
+        }
+        let mut all = img();
+        copy_rect_into(&src, 4, (0, 0, 4, 3), &mut all);
+        assert_eq!(changed_rect(&all, &src, 4), None);
     }
 
     #[test]
