@@ -300,6 +300,13 @@ mod tests {
     }
 
     #[test]
+    fn position_group_names_config_keys() {
+        for k in POSITION_GROUP {
+            assert!(crate::config::Config::KEYS.contains(&k), "{k}");
+        }
+    }
+
+    #[test]
     fn modified_keys_group_position() {
         let base = hud();
         assert!(modified_keys(&base, &base).is_empty());

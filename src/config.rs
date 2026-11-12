@@ -36,129 +36,35 @@ impl std::str::FromStr for Mode {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Config {
-    pub position: String,
-    pub custom_x: i64,
-    pub custom_y: i64,
-    pub margin: i64,
-    pub opacity: f64,
-    pub font_size: i64,
-    pub font_family: String,
-    pub color_bg: String,
-    pub color_clock: String,
-    pub color_timer_run: String,
-    pub color_timer_pause: String,
-    pub show_clock: bool,
-    pub show_timer: bool,
-    pub timer_mode: Mode,
-    pub countdown_duration: i64,
-    pub interval_work: i64,
-    pub interval_rest: i64,
-    pub interval_rounds: i64,
-    pub stopwatch_work: i64,
-    pub stopwatch_rest: i64,
-    pub phase_beeps: bool,
-    pub halfway_beep: bool,
-    pub sound_enabled: bool,
-    pub sound_interval: i64,
-    pub sound_alert_before: i64,
-    pub sound_file: String,
-    pub show_tray_icon: bool,
-    pub show_controls: bool,
-    pub click_through: bool,
-    pub auto_restart_countdown: bool,
-    pub alert_last_5_seconds: bool,
-    pub presets: Vec<serde_json::Value>,
-    pub active_preset: String,
-    pub theme: String,
-    pub progress_style: String,
-    pub padding: i64,
-    pub padding_top: i64,
-    pub row_spacing: i64,
-    pub clock_format: String,
-    pub hotkey_toggle: String,
-    pub hotkey_reset: String,
-    pub hotkey_visibility: String,
-    pub notify_on_finish: bool,
-    /// Unknown keys, preserved on save.
-    pub extra: serde_json::Map<String, serde_json::Value>,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            position: "top-right".into(),
-            custom_x: -1,
-            custom_y: -1,
-            margin: 15,
-            opacity: 0.88,
-            font_size: 30,
-            font_family: "Monospace".into(),
-            color_bg: "#000000".into(),
-            color_clock: "#00FF88".into(),
-            color_timer_run: "#FFFFFF".into(),
-            color_timer_pause: "#888888".into(),
-            show_clock: true,
-            show_timer: true,
-            timer_mode: Mode::Stopwatch,
-            countdown_duration: 300,
-            interval_work: 40,
-            interval_rest: 20,
-            interval_rounds: 8,
-            stopwatch_work: 0,
-            stopwatch_rest: 0,
-            phase_beeps: true,
-            halfway_beep: false,
-            sound_enabled: true,
-            sound_interval: 60,
-            sound_alert_before: 0,
-            sound_file: String::new(),
-            show_tray_icon: true,
-            show_controls: true,
-            click_through: false,
-            auto_restart_countdown: false,
-            alert_last_5_seconds: false,
-            presets: vec![
-                serde_json::json!({"name": "1 min", "duration": 60}),
-                serde_json::json!({"name": "5 min", "duration": 300}),
-            ],
-            active_preset: String::new(),
-            theme: "classic".into(),
-            progress_style: "line".into(),
-            padding: 12,
-            padding_top: -1,
-            row_spacing: 6,
-            clock_format: "24h".into(),
-            hotkey_toggle: String::new(),
-            hotkey_reset: String::new(),
-            hotkey_visibility: String::new(),
-            notify_on_finish: false,
-            extra: serde_json::Map::new(),
+/// Declares every config field once: name, type, default and, for numeric
+/// fields, the working range it is clamped into on load. Generates the
+/// [`Config`] struct (plus `extra`), `Default`, the tolerant
+/// `from_value`/`to_value` codec, `clamp_ranges` and [`Config::KEYS`].
+macro_rules! config_fields {
+    ($(
+        $(#[$meta:meta])*
+        $field:ident: $ty:ty = $default:expr $(, range $range:expr)?;
+    )+) => {
+        #[derive(Clone, Debug, PartialEq)]
+        pub struct Config {
+            $($(#[$meta])* pub $field: $ty,)+
+            /// Unknown keys, preserved on save.
+            pub extra: serde_json::Map<String, serde_json::Value>,
         }
-    }
-}
 
-/// `$XDG_CONFIG_HOME/timehud/config.json`, default `~/.config/timehud/config.json`.
-/// `path` with `suffix` appended to its file name (`config.json.bad`).
-fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
-    let mut p = path.as_os_str().to_owned();
-    p.push(suffix);
-    PathBuf::from(p)
-}
+        impl Default for Config {
+            fn default() -> Self {
+                Self {
+                    $($field: $default,)+
+                    extra: serde_json::Map::new(),
+                }
+            }
+        }
 
-pub fn config_path() -> PathBuf {
-    let base = match std::env::var_os("XDG_CONFIG_HOME") {
-        Some(v) if !v.is_empty() => PathBuf::from(v),
-        _ => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"),
-    };
-    base.join("timehud").join("config.json")
-}
-
-/// Lists every known field once; generates tolerant `from_value` and `to_value`.
-macro_rules! config_codec {
-    ($($field:ident),+ $(,)?) => {
         impl Config {
+            /// Every known top-level key, in file order.
+            pub const KEYS: &[&str] = &[$(stringify!($field)),+];
+
             /// Per-field tolerant: a wrongly typed field falls back to its default alone.
             pub fn from_value(v: &Value) -> Config {
                 let mut cfg = Config::default();
@@ -194,55 +100,112 @@ macro_rules! config_codec {
                 )+
                 Value::Object(map)
             }
+
+            /// Clamps numeric fields into ranges the HUD can work with (a
+            /// hand-edited `font_size: 5000` or `countdown_duration: 0` would
+            /// otherwise crash the renderer or beep every tick). Per field: an
+            /// out-of-range value moves to the nearest bound, a non-finite
+            /// float becomes the default, the rest is untouched.
+            pub fn clamp_ranges(&mut self) {
+                $($(
+                    Clamp::clamp_to(&mut self.$field, $range, || Config::default().$field);
+                )?)+
+            }
         }
     };
 }
 
-config_codec!(
-    position,
-    custom_x,
-    custom_y,
-    margin,
-    opacity,
-    font_size,
-    font_family,
-    color_bg,
-    color_clock,
-    color_timer_run,
-    color_timer_pause,
-    show_clock,
-    show_timer,
-    timer_mode,
-    countdown_duration,
-    interval_work,
-    interval_rest,
-    interval_rounds,
-    stopwatch_work,
-    stopwatch_rest,
-    phase_beeps,
-    halfway_beep,
-    sound_enabled,
-    sound_interval,
-    sound_alert_before,
-    sound_file,
-    show_tray_icon,
-    show_controls,
-    click_through,
-    auto_restart_countdown,
-    alert_last_5_seconds,
-    presets,
-    active_preset,
-    theme,
-    progress_style,
-    padding,
-    padding_top,
-    row_spacing,
-    clock_format,
-    hotkey_toggle,
-    hotkey_reset,
-    hotkey_visibility,
-    notify_on_finish,
-);
+/// A numeric field's clamp (see [`Config::clamp_ranges`]).
+trait Clamp: Sized {
+    fn clamp_to(&mut self, range: (Self, Self), default: impl FnOnce() -> Self);
+}
+
+impl Clamp for i64 {
+    fn clamp_to(&mut self, (lo, hi): (i64, i64), _: impl FnOnce() -> i64) {
+        *self = (*self).clamp(lo, hi);
+    }
+}
+
+impl Clamp for f64 {
+    /// NaN and infinities (no JSON has them, but a preview might) give the default.
+    fn clamp_to(&mut self, (lo, hi): (f64, f64), default: impl FnOnce() -> f64) {
+        *self = if self.is_finite() {
+            self.clamp(lo, hi)
+        } else {
+            default()
+        };
+    }
+}
+
+config_fields! {
+    position: String = "top-right".into();
+    /// -1 = use `position`.
+    custom_x: i64 = -1;
+    custom_y: i64 = -1;
+    margin: i64 = 15, range MARGIN_RANGE;
+    opacity: f64 = 0.88, range OPACITY_RANGE;
+    font_size: i64 = 30, range FONT_SIZE_RANGE;
+    font_family: String = "Monospace".into();
+    color_bg: String = "#000000".into();
+    color_clock: String = "#00FF88".into();
+    color_timer_run: String = "#FFFFFF".into();
+    color_timer_pause: String = "#888888".into();
+    show_clock: bool = true;
+    show_timer: bool = true;
+    timer_mode: Mode = Mode::Stopwatch;
+    countdown_duration: i64 = 300, range COUNTDOWN_RANGE;
+    interval_work: i64 = 40, range WORK_RANGE;
+    interval_rest: i64 = 20, range REST_RANGE;
+    interval_rounds: i64 = 8, range ROUNDS_RANGE;
+    /// 0 = plain stopwatch.
+    stopwatch_work: i64 = 0, range STOPWATCH_WORK_RANGE;
+    stopwatch_rest: i64 = 0, range REST_RANGE;
+    phase_beeps: bool = true;
+    halfway_beep: bool = false;
+    sound_enabled: bool = true;
+    /// 0 = off.
+    sound_interval: i64 = 60, range SOUND_SECS_RANGE;
+    /// 0 = off.
+    sound_alert_before: i64 = 0, range SOUND_SECS_RANGE;
+    sound_file: String = String::new();
+    show_tray_icon: bool = true;
+    show_controls: bool = true;
+    click_through: bool = false;
+    auto_restart_countdown: bool = false;
+    alert_last_5_seconds: bool = false;
+    presets: Vec<serde_json::Value> = vec![
+        json!({"name": "1 min", "duration": 60}),
+        json!({"name": "5 min", "duration": 300}),
+    ];
+    active_preset: String = String::new();
+    theme: String = "classic".into();
+    progress_style: String = "line".into();
+    padding: i64 = 12, range PADDING_RANGE;
+    /// -1 = same as padding.
+    padding_top: i64 = -1, range PADDING_TOP_RANGE;
+    row_spacing: i64 = 6, range ROW_SPACING_RANGE;
+    clock_format: String = "24h".into();
+    hotkey_toggle: String = String::new();
+    hotkey_reset: String = String::new();
+    hotkey_visibility: String = String::new();
+    notify_on_finish: bool = false;
+}
+
+/// `$XDG_CONFIG_HOME/timehud/config.json`, default `~/.config/timehud/config.json`.
+/// `path` with `suffix` appended to its file name (`config.json.bad`).
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut p = path.as_os_str().to_owned();
+    p.push(suffix);
+    PathBuf::from(p)
+}
+
+pub fn config_path() -> PathBuf {
+    let base = match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(v) if !v.is_empty() => PathBuf::from(v),
+        _ => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"),
+    };
+    base.join("timehud").join("config.json")
+}
 
 /// Upper bound for durations in seconds (a week; above any preset the
 /// editor makes, low enough that phase arithmetic cannot overflow).
@@ -278,32 +241,6 @@ pub const PADDING_TOP_RANGE: (i64, i64) = (-1, 100);
 pub const ROW_SPACING_RANGE: (i64, i64) = (0, 100);
 
 impl Config {
-    /// Clamps numeric fields into ranges the HUD can work with (a
-    /// hand-edited `font_size: 5000` or `countdown_duration: 0` would
-    /// otherwise crash the renderer or beep every tick). Per field: an
-    /// out-of-range value moves to the nearest bound, the rest is untouched.
-    pub fn clamp_ranges(&mut self) {
-        let clamp = |v: &mut i64, (lo, hi): (i64, i64)| *v = (*v).clamp(lo, hi);
-        clamp(&mut self.font_size, FONT_SIZE_RANGE);
-        self.opacity = if self.opacity.is_finite() {
-            self.opacity.clamp(OPACITY_RANGE.0, OPACITY_RANGE.1)
-        } else {
-            Config::default().opacity
-        };
-        clamp(&mut self.countdown_duration, COUNTDOWN_RANGE);
-        clamp(&mut self.interval_work, WORK_RANGE);
-        clamp(&mut self.interval_rest, REST_RANGE);
-        clamp(&mut self.interval_rounds, ROUNDS_RANGE);
-        clamp(&mut self.stopwatch_work, STOPWATCH_WORK_RANGE);
-        clamp(&mut self.stopwatch_rest, REST_RANGE);
-        clamp(&mut self.sound_interval, SOUND_SECS_RANGE);
-        clamp(&mut self.sound_alert_before, SOUND_SECS_RANGE);
-        clamp(&mut self.margin, MARGIN_RANGE);
-        clamp(&mut self.padding, PADDING_RANGE);
-        clamp(&mut self.padding_top, PADDING_TOP_RANGE);
-        clamp(&mut self.row_spacing, ROW_SPACING_RANGE);
-    }
-
     /// Missing or unparseable file gives defaults. An unparseable file is
     /// first copied to `<path>.bad` (overwriting) so a later save never
     /// silently destroys the user's only copy.
@@ -1145,6 +1082,41 @@ mod tests {
             Config::from_value(&Config::default().to_value()),
             Config::default()
         );
+    }
+
+    #[test]
+    fn readme_settings_example_is_the_defaults() {
+        let readme = include_str!("../README.md");
+        let section = &readme[readme.find("\n## Settings").expect("Settings section")..];
+        let start = section.find("```json\n").expect("json block") + "```json\n".len();
+        let end = start + section[start..].find("```").expect("block end");
+        let example: Value = serde_json::from_str(&section[start..end]).expect("valid JSON");
+        assert_eq!(example, Config::default().to_value());
+    }
+
+    #[test]
+    fn keys_list_every_saved_field() {
+        let saved = Config::default().to_value();
+        let mut keys: Vec<&str> = saved
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        let mut known = Config::KEYS.to_vec();
+        keys.sort_unstable();
+        known.sort_unstable();
+        assert_eq!(keys, known);
+    }
+
+    #[test]
+    fn non_finite_opacity_gets_the_default() {
+        let mut cfg = Config {
+            opacity: f64::NAN,
+            ..Config::default()
+        };
+        cfg.clamp_ranges();
+        assert_eq!(cfg.opacity, 0.88);
     }
 
     #[test]
