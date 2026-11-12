@@ -13,6 +13,42 @@ pub struct Beep {
     pub double: bool,
 }
 
+const LONG: Beep = Beep {
+    short: false,
+    double: false,
+};
+const SHORT: Beep = Beep {
+    short: true,
+    double: false,
+};
+const DOUBLE: Beep = Beep {
+    short: false,
+    double: true,
+};
+
+/// Where the elapsed time sits in a cycling stopwatch's work/rest cycle.
+struct CyclePos {
+    in_work: bool,
+    /// Seconds into the current cycle.
+    pos: f64,
+    work: f64,
+    /// Length of the current work or rest phase.
+    phase_len: f64,
+    phase_remaining: f64,
+    round: i64,
+}
+
+impl CyclePos {
+    /// Remaining fraction of the current phase; -1 for a zero-length one.
+    fn progress(&self) -> f64 {
+        if self.phase_len > 0.0 {
+            (self.phase_remaining / self.phase_len).clamp(0.0, 1.0)
+        } else {
+            -1.0
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum State {
     Run,
@@ -184,10 +220,9 @@ impl TimerEngine {
         if Self::cycling(cfg) {
             let elapsed = self.elapsed();
             self.cycle_beats = Self::cycle_boundaries(cfg, elapsed);
-            let work = cfg.stopwatch_work as f64;
-            let pos = elapsed % (work + cfg.stopwatch_rest as f64);
+            let c = Self::cycle_pos(cfg, elapsed);
             // Halfway of the current work phase already passed: consumed.
-            self.halfway_mark = if pos < work && pos >= work / 2.0 {
+            self.halfway_mark = if c.in_work && c.pos >= c.work / 2.0 {
                 self.cycle_beats + 1
             } else {
                 0
@@ -230,33 +265,32 @@ impl TimerEngine {
         }
     }
 
-    /// Move to the next interval phase. Returns (beep, session_done).
-    fn advance_phase(&mut self, cfg: &Config) -> (Beep, bool) {
-        if self.phase == Phase::Work {
-            if self.round >= cfg.interval_rounds {
-                self.running = false;
-                self.cd_remaining = 0.0;
-                return (Beep::default(), true); // long finish beep at session end
+    /// The interval phase after the current one as (phase, round, seconds);
+    /// `None` when the current work phase ends the session.
+    fn next_phase(&self, cfg: &Config) -> Option<(Phase, i64, f64)> {
+        match self.phase {
+            Phase::Work if self.round >= cfg.interval_rounds => None,
+            Phase::Work if cfg.interval_rest > 0 => {
+                Some((Phase::Rest, self.round, cfg.interval_rest as f64))
             }
-            if cfg.interval_rest > 0 {
-                self.phase = Phase::Rest;
-                self.cd_remaining = cfg.interval_rest as f64;
-            } else {
-                self.round += 1;
-                self.cd_remaining = cfg.interval_work as f64;
-            }
-            self.start_mono = self.now();
-            self.last_short_beep_sec = -1;
-            self.phase_halfway_done = false;
-            return (Beep::default(), false); // every phase end is the long beep
+            _ => Some((Phase::Work, self.round + 1, cfg.interval_work as f64)),
         }
-        self.phase = Phase::Work;
-        self.round += 1;
-        self.cd_remaining = cfg.interval_work as f64;
+    }
+
+    /// Move to the next interval phase. Returns whether the session is done.
+    fn advance_phase(&mut self, cfg: &Config) -> bool {
+        let Some((phase, round, secs)) = self.next_phase(cfg) else {
+            self.running = false;
+            self.cd_remaining = 0.0;
+            return true;
+        };
+        self.phase = phase;
+        self.round = round;
+        self.cd_remaining = secs;
         self.start_mono = self.now();
         self.last_short_beep_sec = -1;
         self.phase_halfway_done = false;
-        (Beep::default(), false)
+        false
     }
 
     // -- Tick --
@@ -280,16 +314,21 @@ impl TimerEngine {
         }
     }
 
-    /// Remaining fraction of the current work/rest phase of a cycling stopwatch.
-    fn cycle_progress(cfg: &Config, display: f64) -> Option<f64> {
+    /// Where `elapsed` sits in a cycling stopwatch's work/rest cycle.
+    fn cycle_pos(cfg: &Config, elapsed: f64) -> CyclePos {
         let work = cfg.stopwatch_work as f64;
-        let rest = cfg.stopwatch_rest as f64;
+        let rest = cfg.stopwatch_rest.max(0) as f64;
         let cycle = work + rest;
-        let pos = if cycle > 0.0 { display % cycle } else { 0.0 };
+        let pos = if cycle > 0.0 { elapsed % cycle } else { 0.0 };
         let in_work = pos < work;
-        let phase_dur = if in_work { work } else { rest };
-        let phase_remaining = if in_work { work - pos } else { cycle - pos };
-        (phase_dur > 0.0).then(|| (phase_remaining / phase_dur).clamp(0.0, 1.0))
+        CyclePos {
+            in_work,
+            pos,
+            work,
+            phase_len: if in_work { work } else { rest },
+            phase_remaining: if in_work { work - pos } else { cycle - pos },
+            round: (elapsed / cycle).floor() as i64 + 1,
+        }
     }
 
     /// Countdown/interval progress for `display` seconds left in `phase`.
@@ -312,21 +351,13 @@ impl TimerEngine {
     /// a timed phase (plain stopwatch).
     pub fn phase_length(&self, cfg: &Config) -> Option<f64> {
         let len = match cfg.timer_mode {
-            Mode::Countdown => cfg.countdown_duration,
-            Mode::Interval if self.phase == Phase::Rest => cfg.interval_rest,
-            Mode::Interval => cfg.interval_work,
-            Mode::Stopwatch if Self::cycling(cfg) => {
-                let work = cfg.stopwatch_work as f64;
-                let cycle = work + cfg.stopwatch_rest.max(0) as f64;
-                if self.elapsed() % cycle < work {
-                    cfg.stopwatch_work
-                } else {
-                    cfg.stopwatch_rest
-                }
-            }
-            Mode::Stopwatch => 0,
+            Mode::Countdown => cfg.countdown_duration as f64,
+            Mode::Interval if self.phase == Phase::Rest => cfg.interval_rest as f64,
+            Mode::Interval => cfg.interval_work as f64,
+            Mode::Stopwatch if Self::cycling(cfg) => Self::cycle_pos(cfg, self.elapsed()).phase_len,
+            Mode::Stopwatch => 0.0,
         };
-        (len > 0).then_some(len as f64)
+        (len > 0.0).then_some(len)
     }
 
     /// Progress `tick()` would report right now, without changing any state
@@ -334,22 +365,17 @@ impl TimerEngine {
     pub fn progress_now(&self, cfg: &Config) -> f64 {
         match cfg.timer_mode {
             Mode::Stopwatch if Self::cycling(cfg) => {
-                Self::cycle_progress(cfg, self.elapsed()).unwrap_or(-1.0)
+                Self::cycle_pos(cfg, self.elapsed()).progress()
             }
             Mode::Stopwatch => -1.0,
             Mode::Countdown => Self::timed_progress(cfg, self.phase, self.remaining().max(0.0)),
             Mode::Interval => {
                 let remaining = self.remaining();
-                // Mirror the phase advance `tick()` would perform (`advance_phase`).
+                // Mirror the phase advance `tick()` would perform.
                 let (phase, display) = if remaining <= 0.0 && self.running {
-                    if self.phase == Phase::Rest {
-                        (Phase::Work, cfg.interval_work as f64)
-                    } else if self.round >= cfg.interval_rounds {
-                        (Phase::Work, 0.0) // session over
-                    } else if cfg.interval_rest > 0 {
-                        (Phase::Rest, cfg.interval_rest as f64)
-                    } else {
-                        (Phase::Work, cfg.interval_work as f64)
+                    match self.next_phase(cfg) {
+                        Some((phase, _, secs)) => (phase, secs),
+                        None => (self.phase, 0.0), // session over
                     }
                 } else {
                     (self.phase, remaining.max(0.0))
@@ -359,230 +385,230 @@ impl TimerEngine {
         }
     }
 
+    /// Whether this tick plays the periodic `sound_interval` beeps (never in
+    /// interval mode or while a cycle structure provides the beeps).
+    fn periodic_beeps_on(&self, cfg: &Config) -> bool {
+        self.running
+            && cfg.timer_mode != Mode::Interval
+            && !Self::cycling(cfg)
+            && cfg.sound_enabled
+            && cfg.sound_interval > 0
+    }
+
+    /// Inside the `sound_alert_before` seconds before the next periodic beep.
+    fn in_warn_window(&self, cfg: &Config) -> bool {
+        if !self.periodic_beeps_on(cfg) || cfg.sound_alert_before <= 0 {
+            return false;
+        }
+        let reference = self.elapsed();
+        let si = cfg.sound_interval as f64;
+        let next_beep = ((reference / si) as i64 + 1) as f64 * si;
+        next_beep - cfg.sound_alert_before as f64 <= reference && reference < next_beep
+    }
+
+    /// The `sound_alert_before` double beep and the periodic long beep.
+    fn periodic_beeps(&mut self, cfg: &Config, beeps: &mut Vec<Beep>) {
+        let reference = self.elapsed();
+        let si = cfg.sound_interval as f64;
+        if cfg.sound_alert_before > 0 {
+            let target =
+                (self.sound_alert_before_beats + 1) as f64 * si - cfg.sound_alert_before as f64;
+            if target > 0.0 && reference >= target {
+                self.sound_alert_before_beats += 1;
+                beeps.push(DOUBLE);
+            }
+        }
+        let beats = (reference / si) as i64;
+        if beats > self.sound_beats {
+            self.sound_beats = beats;
+            beeps.push(LONG);
+        }
+    }
+
+    /// Last-5 short beep for displayed second `sec`, once per second.
+    fn last_five_beep(&mut self, sec: i64, beeps: &mut Vec<Beep>) {
+        if sec != self.last_short_beep_sec && (1..=5).contains(&sec) {
+            self.last_short_beep_sec = sec;
+            beeps.push(SHORT);
+        }
+    }
+
+    fn run_state(&self) -> State {
+        if self.running {
+            State::Run
+        } else {
+            State::Pause
+        }
+    }
+
     pub fn tick(&mut self, cfg: &Config) -> TickResult {
-        let mut beeps: Vec<Beep> = Vec::new();
-        let mut finished = false;
-        let mut restarted = false;
-        let mut cyc_phase = Phase::None;
-        let mut cyc_round = 0;
-        let mut cyc_progress: Option<f64> = None;
-        let state;
-        let display;
-
-        // Warn window: sound_alert_before seconds before the next interval beep
-        let mut warn = false;
-        if self.running
-            && cfg.timer_mode != Mode::Interval
-            && !Self::cycling(cfg)
-            && cfg.sound_enabled
-            && cfg.sound_alert_before > 0
-            && cfg.sound_interval > 0
-        {
-            let reference = self.elapsed();
-            let si = cfg.sound_interval as f64;
-            let next_beep = ((reference / si) as i64 + 1) as f64 * si;
-            warn = next_beep - cfg.sound_alert_before as f64 <= reference && reference < next_beep;
+        // Warn window: sound_alert_before seconds before the next periodic beep
+        let warn = self.in_warn_window(cfg);
+        let mut r = match cfg.timer_mode {
+            Mode::Stopwatch => self.tick_stopwatch(cfg, warn),
+            Mode::Interval => self.tick_interval(cfg),
+            Mode::Countdown => self.tick_countdown(cfg, warn),
+        };
+        // After the mode tick: a countdown that just ended plays none.
+        if self.periodic_beeps_on(cfg) {
+            self.periodic_beeps(cfg, &mut r.beeps);
         }
+        r
+    }
 
-        match cfg.timer_mode {
-            Mode::Stopwatch => {
-                display = self.elapsed();
-                let mut st = if self.running {
-                    State::Run
-                } else {
-                    State::Pause
-                };
-                if st == State::Run && warn {
-                    st = State::Warn;
-                }
-                if Self::cycling(cfg) {
-                    let work = cfg.stopwatch_work as f64;
-                    let rest = cfg.stopwatch_rest as f64;
-                    let cycle = work + rest;
-                    let pos = if cycle > 0.0 { display % cycle } else { 0.0 };
-                    let in_work = pos < work;
-                    cyc_phase = if in_work { Phase::Work } else { Phase::Rest };
-                    cyc_round = (display / cycle).floor() as i64 + 1;
-                    let phase_remaining = if in_work { work - pos } else { cycle - pos };
-                    cyc_progress = Self::cycle_progress(cfg, display);
-                    if self.running {
-                        // Boundary beeps: every phase end is the long beep
-                        let marks = Self::cycle_boundaries(cfg, display);
-                        if marks > self.cycle_beats {
-                            self.cycle_beats = marks;
-                            if cfg.phase_beeps {
-                                beeps.push(Beep::default());
-                            }
-                            self.last_short_beep_sec = -1;
-                        }
-                        // Fast double beep halfway through each work phase
-                        if cfg.halfway_beep
-                            && in_work
-                            && pos >= work / 2.0
-                            && self.halfway_mark != self.cycle_beats + 1
-                        {
-                            self.halfway_mark = self.cycle_beats + 1;
-                            beeps.push(Beep {
-                                short: false,
-                                double: true,
-                            });
-                        }
-                        // Last-5 shorts before each boundary, on the label grid
-                        if cfg.alert_last_5_seconds && phase_remaining <= 5.0 {
-                            st = State::Warn;
-                            let sec = phase_remaining.ceil() as i64;
-                            if sec != self.last_short_beep_sec && (1..=5).contains(&sec) {
-                                self.last_short_beep_sec = sec;
-                                beeps.push(Beep {
-                                    short: true,
-                                    double: false,
-                                });
-                            }
-                        }
-                    }
-                }
-                state = st;
-            }
-            Mode::Interval => {
-                let mut remaining = self.remaining();
-                let mut disp = remaining.max(0.0);
-                if remaining <= 0.0 {
-                    if self.running {
-                        let (transition_beep, done) = self.advance_phase(cfg);
-                        if cfg.phase_beeps {
-                            beeps.push(transition_beep);
-                        }
-                        if done {
-                            finished = true;
-                            state = State::End;
-                        } else {
-                            remaining = self.remaining();
-                            disp = remaining.max(0.0);
-                            state = State::Run;
-                        }
-                    } else {
-                        state = State::End; // finished session parked at 00:00
-                    }
-                } else if self.running && remaining <= 5.0 && cfg.alert_last_5_seconds {
-                    // Ceil matches the countdown label (which ceils), so the first
-                    // short lands exactly as the display flips to 5.
-                    let sec_display = remaining.ceil() as i64;
-                    state = State::Warn;
-                    if sec_display != self.last_short_beep_sec && (1..=5).contains(&sec_display) {
-                        self.last_short_beep_sec = sec_display;
-                        beeps.push(Beep {
-                            short: true,
-                            double: false,
-                        });
-                    }
-                } else {
-                    state = if self.running {
-                        State::Run
-                    } else {
-                        State::Pause
-                    };
-                }
-                // Fast double beep halfway through each work phase
-                if self.running
-                    && cfg.halfway_beep
-                    && self.phase == Phase::Work
-                    && 0.0 < remaining
-                    && remaining <= cfg.interval_work as f64 / 2.0
-                    && !self.phase_halfway_done
-                {
-                    self.phase_halfway_done = true;
-                    beeps.push(Beep {
-                        short: false,
-                        double: true,
-                    });
-                }
-                display = disp;
-            }
-            Mode::Countdown => {
-                let remaining = self.remaining();
-                display = remaining.max(0.0);
-                let sec_display = display.ceil() as i64; // matches the ceiled label
-                if remaining <= 0.0 {
-                    state = State::End;
-                    if self.running {
-                        finished = true;
-                        beeps.push(Beep::default()); // long beep exactly when time runs out
-                        if cfg.auto_restart_countdown {
-                            self.cd_remaining = cfg.countdown_duration as f64;
-                            self.start_mono = self.now();
-                            self.sound_beats = 0;
-                            self.last_short_beep_sec = -1;
-                            restarted = true;
-                        } else {
-                            self.running = false;
-                        }
-                    }
-                } else if self.running && remaining <= 5.0 && cfg.alert_last_5_seconds {
-                    state = if sec_display == 1 {
-                        State::End
-                    } else {
-                        State::Warn
-                    };
-                    if sec_display != self.last_short_beep_sec && (1..=5).contains(&sec_display) {
-                        self.last_short_beep_sec = sec_display;
-                        beeps.push(Beep {
-                            short: true,
-                            double: false,
-                        });
-                    }
-                } else if self.running {
-                    state = if warn && remaining > 5.0 {
-                        State::Warn
-                    } else {
-                        State::Run
-                    };
-                } else {
-                    state = State::Pause;
-                }
-            }
-        }
-
-        // Periodic interval beeps (not while a cycle structure provides beeps)
-        if self.running
-            && cfg.timer_mode != Mode::Interval
-            && !Self::cycling(cfg)
-            && cfg.sound_enabled
-            && cfg.sound_interval > 0
-        {
-            let reference = self.elapsed();
-            let si = cfg.sound_interval as f64;
-            if cfg.sound_alert_before > 0 {
-                let target =
-                    (self.sound_alert_before_beats + 1) as f64 * si - cfg.sound_alert_before as f64;
-                if target > 0.0 && reference >= target {
-                    self.sound_alert_before_beats += 1;
-                    beeps.push(Beep {
-                        short: false,
-                        double: true,
-                    });
-                }
-            }
-            let beats = (reference / si) as i64;
-            if beats > self.sound_beats {
-                self.sound_beats = beats;
-                beeps.push(Beep::default());
-            }
-        }
-
-        let progress =
-            cyc_progress.unwrap_or_else(|| Self::timed_progress(cfg, self.phase, display));
-
-        let in_interval = cfg.timer_mode == Mode::Interval;
+    /// A result without phase, rounds or progress.
+    fn result(display: f64, state: State, beeps: Vec<Beep>) -> TickResult {
         TickResult {
             display,
             state,
             beeps,
+            finished: false,
+            restarted: false,
+            phase: Phase::None,
+            round: 0,
+            rounds: 0,
+            progress: -1.0,
+        }
+    }
+
+    fn tick_stopwatch(&mut self, cfg: &Config, warn: bool) -> TickResult {
+        let display = self.elapsed();
+        let mut state = match self.run_state() {
+            State::Run if warn => State::Warn,
+            st => st,
+        };
+        let mut beeps = Vec::new();
+        if !Self::cycling(cfg) {
+            return Self::result(display, state, beeps);
+        }
+        let c = Self::cycle_pos(cfg, display);
+        if self.running {
+            // Boundary beeps: every phase end is the long beep
+            let marks = Self::cycle_boundaries(cfg, display);
+            if marks > self.cycle_beats {
+                self.cycle_beats = marks;
+                if cfg.phase_beeps {
+                    beeps.push(LONG);
+                }
+                self.last_short_beep_sec = -1;
+            }
+            // Fast double beep halfway through each work phase
+            if cfg.halfway_beep
+                && c.in_work
+                && c.pos >= c.work / 2.0
+                && self.halfway_mark != self.cycle_beats + 1
+            {
+                self.halfway_mark = self.cycle_beats + 1;
+                beeps.push(DOUBLE);
+            }
+            // Last-5 shorts before each boundary, on the label grid
+            if cfg.alert_last_5_seconds && c.phase_remaining <= 5.0 {
+                state = State::Warn;
+                self.last_five_beep(c.phase_remaining.ceil() as i64, &mut beeps);
+            }
+        }
+        TickResult {
+            phase: if c.in_work { Phase::Work } else { Phase::Rest },
+            round: c.round,
+            progress: c.progress(),
+            ..Self::result(display, state, beeps)
+        }
+    }
+
+    fn tick_interval(&mut self, cfg: &Config) -> TickResult {
+        let mut beeps = Vec::new();
+        let mut finished = false;
+        let mut remaining = self.remaining();
+        let state;
+        if remaining <= 0.0 {
+            if self.running {
+                if cfg.phase_beeps {
+                    beeps.push(LONG); // every phase end, and the session end
+                }
+                if self.advance_phase(cfg) {
+                    finished = true;
+                    state = State::End;
+                } else {
+                    remaining = self.remaining();
+                    state = State::Run;
+                }
+            } else {
+                state = State::End; // finished session parked at 00:00
+            }
+        } else if self.running && remaining <= 5.0 && cfg.alert_last_5_seconds {
+            // Ceil matches the countdown label (which ceils), so the first
+            // short lands exactly as the display flips to 5.
+            state = State::Warn;
+            self.last_five_beep(remaining.ceil() as i64, &mut beeps);
+        } else {
+            state = self.run_state();
+        }
+        // Fast double beep halfway through each work phase
+        if self.running
+            && cfg.halfway_beep
+            && self.phase == Phase::Work
+            && 0.0 < remaining
+            && remaining <= cfg.interval_work as f64 / 2.0
+            && !self.phase_halfway_done
+        {
+            self.phase_halfway_done = true;
+            beeps.push(DOUBLE);
+        }
+        let display = remaining.max(0.0);
+        TickResult {
+            finished,
+            phase: self.phase,
+            round: self.round,
+            rounds: cfg.interval_rounds,
+            progress: Self::timed_progress(cfg, self.phase, display),
+            ..Self::result(display, state, beeps)
+        }
+    }
+
+    fn tick_countdown(&mut self, cfg: &Config, warn: bool) -> TickResult {
+        let mut beeps = Vec::new();
+        let mut finished = false;
+        let mut restarted = false;
+        let remaining = self.remaining();
+        let display = remaining.max(0.0);
+        let sec_display = display.ceil() as i64; // matches the ceiled label
+        let state;
+        if remaining <= 0.0 {
+            state = State::End;
+            if self.running {
+                finished = true;
+                beeps.push(LONG); // long beep exactly when time runs out
+                if cfg.auto_restart_countdown {
+                    self.cd_remaining = cfg.countdown_duration as f64;
+                    self.start_mono = self.now();
+                    self.sound_beats = 0;
+                    self.last_short_beep_sec = -1;
+                    restarted = true;
+                } else {
+                    self.running = false;
+                }
+            }
+        } else if self.running && remaining <= 5.0 && cfg.alert_last_5_seconds {
+            state = if sec_display == 1 {
+                State::End
+            } else {
+                State::Warn
+            };
+            self.last_five_beep(sec_display, &mut beeps);
+        } else if self.running {
+            state = if warn && remaining > 5.0 {
+                State::Warn
+            } else {
+                State::Run
+            };
+        } else {
+            state = State::Pause;
+        }
+        TickResult {
             finished,
             restarted,
-            phase: if in_interval { self.phase } else { cyc_phase },
-            round: if in_interval { self.round } else { cyc_round },
-            rounds: if in_interval { cfg.interval_rounds } else { 0 },
-            progress,
+            progress: Self::timed_progress(cfg, self.phase, display),
+            ..Self::result(display, state, beeps)
         }
     }
 }
