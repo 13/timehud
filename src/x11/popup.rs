@@ -17,7 +17,6 @@ use super::overlay::raise_window;
 use crate::layout::{Rect, clamp_into};
 use crate::menu::{MenuAction, MenuItem, MenuLayout, layout_menu, render_menu};
 use crate::text::FontSet;
-use crate::themes::Theme;
 use anyhow::bail;
 use std::time::{Duration, Instant};
 use x11rb::connection::Connection;
@@ -55,7 +54,6 @@ impl Level {
 
 pub struct MenuPopup {
     items: Vec<MenuItem>,
-    theme: &'static Theme,
     scale: f32,
     area: Rect,
     levels: Vec<Level>,
@@ -113,12 +111,10 @@ impl MenuPopup {
         root_x: i32,
         root_y: i32,
         area: Rect,
-        theme: &'static Theme,
         fonts: &mut FontSet,
     ) -> anyhow::Result<Self> {
         let mut p = MenuPopup {
             items,
-            theme,
             scale: x.scale(),
             area,
             levels: Vec::new(),
@@ -402,7 +398,7 @@ impl MenuPopup {
     fn redraw(&self, x: &X, li: usize, fonts: &mut FontSet) {
         let l = &self.levels[li];
         let items = items_at(&self.items, &l.path);
-        let pm = render_menu(items, &l.layout, l.hover, self.theme, fonts, self.scale);
+        let pm = render_menu(items, &l.layout, l.hover, fonts, self.scale);
         if let Err(e) = x.present(l.win, l.gc, &pm) {
             eprintln!("timehud: menu redraw failed: {e:#}");
         }
@@ -486,7 +482,6 @@ mod tests {
         // Drop would report leaked grabs (and fail this debug build).
         let p = MenuPopup {
             items: Vec::new(),
-            theme: crate::themes::get_theme("classic"),
             scale: 1.0,
             area: Rect {
                 x: 0,
@@ -531,7 +526,6 @@ mod tests {
     #[test]
     #[ignore = "needs an X display (DISPLAY=:0)"]
     fn smoke_popup_opens_and_releases_grabs() {
-        use crate::themes::get_theme;
         use x11rb::protocol::xproto::ConnectionExt as _;
         use x11rb::wrapper::ConnectionExt as _;
 
@@ -551,7 +545,6 @@ mod tests {
             100,
             100,
             x.screens().work_area_at(100, 100),
-            get_theme("classic"),
             &mut fonts,
         )
         .unwrap();
@@ -599,7 +592,6 @@ mod tests {
             50,
             50,
             x.screens().work_area_at(50, 50),
-            get_theme("classic"),
             &mut fonts,
         )
         .unwrap();

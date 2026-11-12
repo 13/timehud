@@ -21,7 +21,7 @@ use crate::config::{Config, Mode, Preset, valid_presets};
 use crate::format::preset_menu_label;
 use crate::layout::{POSITIONS, Rect};
 use crate::text::FontSet;
-use crate::themes::{THEMES, Theme};
+use crate::themes::THEMES;
 
 /// One menu entry; submenus own their children.
 #[derive(Clone, Debug, PartialEq)]
@@ -354,7 +354,6 @@ pub fn render_menu(
     items: &[MenuItem],
     layout: &MenuLayout,
     hover: Option<usize>,
-    _theme: &Theme,
     fonts: &mut FontSet,
     scale: f32,
 ) -> tiny_skia::Pixmap {

@@ -16,7 +16,6 @@ use crate::layout::Rect;
 use crate::menu::{MenuAction, build_menu};
 use crate::sound::Sound;
 use crate::text::FontSet;
-use crate::themes::get_theme;
 use crate::x11::grabs::{Grabs, HotkeyAction};
 use crate::x11::overlay::{
     CM_RECHECK_DELAY, CompositorWatch, OverlayWin, Recheck, StackWatch, covered_now, restack_needed,
@@ -727,9 +726,8 @@ impl Hud {
         }
         let fonts = self.menu_fonts.get_or_insert_with(FontSet::bundled);
         let items = build_menu(&self.app.cfg, include_window_actions);
-        let theme = get_theme(&self.app.cfg.theme);
         let area = self.screens.work_area_at(root_x, root_y);
-        match MenuPopup::open(&self.x, items, root_x, root_y, area, theme, fonts) {
+        match MenuPopup::open(&self.x, items, root_x, root_y, area, fonts) {
             Ok(p) => self.popup = Some(p),
             Err(e) => eprintln!("timehud: {e:#}"),
         }

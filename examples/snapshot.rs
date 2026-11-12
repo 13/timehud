@@ -88,7 +88,7 @@ fn snap_menu() {
     let mut fonts = FontSet::bundled();
     for scale in [1.0, 2.0] {
         let l = layout_menu(&items, &mut fonts, scale);
-        let pm = render_menu(&items, &l, Some(5), &THEMES[0], &mut fonts, scale);
+        let pm = render_menu(&items, &l, Some(5), &mut fonts, scale);
         let mut bg = tiny_skia::Pixmap::new(pm.width() + 20, pm.height() + 20).unwrap();
         bg.fill(tiny_skia::Color::from_rgba8(90, 100, 120, 255));
         bg.draw_pixmap(
