@@ -8,7 +8,7 @@
 mod deadlines;
 mod ipc_server;
 
-use crate::app::{App, Button, Effect, Input, resolved_family};
+use crate::app::{App, Button, Effect, Input, custom_pos, resolved_family};
 use crate::config::Config;
 use crate::hotkey::{Combo, format_combo, parse_combo};
 use crate::ipc::Event as IpcEvent;
@@ -202,11 +202,7 @@ impl Hud {
         let scale = x.scale();
         let screens = x.screens();
         // A HUD saved on another monitor starts there, not under the pointer.
-        let custom = (cfg.custom_x >= 0 && cfg.custom_y >= 0).then(|| {
-            let c = |v: i64| v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
-            (c(cfg.custom_x), c(cfg.custom_y))
-        });
-        let area = screens.start_area(custom, || x.pointer());
+        let area = screens.start_area(custom_pos(&cfg), || x.pointer());
         let fonts = FontSet::load(&resolved_family(&cfg));
         let clock = Box::new(move || t0.elapsed().as_secs_f64());
         let now = t0.elapsed().as_secs_f64();
@@ -352,18 +348,23 @@ impl Hud {
         Ok(())
     }
 
+    /// The HUD's own top-levels: overlay, tray tooltip, open menu windows.
+    fn own_windows(&self) -> Vec<u32> {
+        let mut own = vec![self.overlay.id];
+        own.extend(self.tooltip.as_ref().map(Tooltip::window));
+        if let Some(p) = &self.popup {
+            own.extend(p.windows());
+        }
+        own
+    }
+
     /// After a restack that might have covered the overlay indirectly:
     /// raise if a managed window is above it now.
     fn check_stacking(&mut self) {
         if !std::mem::take(&mut self.stack_check) || !self.mapped || self.raise_pending {
             return;
         }
-        let mut own = vec![self.overlay.id];
-        own.extend(self.tooltip.as_ref().map(Tooltip::window));
-        if let Some(p) = &self.popup {
-            own.extend(p.windows());
-        }
-        if covered_now(&self.x, self.overlay.id, &own) {
+        if covered_now(&self.x, self.overlay.id, &self.own_windows()) {
             self.raise_pending = true;
             self.raise_if_allowed(self.now());
         }
@@ -402,16 +403,22 @@ impl Hud {
             _ => {}
         }
 
-        // Keep on top of windows that map or restack above us.
-        let mut own = vec![self.overlay.id];
-        if let Some(p) = &self.popup {
-            own.extend(p.windows());
-        }
-        if self.mapped && restack_needed(ev, self.x.root, &own) {
-            self.raise_pending = true;
-            self.raise_if_allowed(now);
-        } else if self.stack_watch.restacked(ev, self.x.root, &own) {
-            self.stack_check |= self.mapped;
+        // Keep on top of windows that map or restack above us (root
+        // structure events only; the checks ignore everything else).
+        if matches!(
+            ev,
+            Event::MapNotify(_)
+                | Event::ConfigureNotify(_)
+                | Event::DestroyNotify(_)
+                | Event::ReparentNotify(_)
+        ) {
+            let own = self.own_windows();
+            if self.mapped && restack_needed(ev, self.x.root, &own) {
+                self.raise_pending = true;
+                self.raise_if_allowed(now);
+            } else if self.stack_watch.restacked(ev, self.x.root, &own) {
+                self.stack_check |= self.mapped;
+            }
         }
 
         // An open menu sees every event first and swallows pointer/keyboard input.
@@ -526,11 +533,15 @@ impl Hud {
         let config_changed = fx
             .iter()
             .any(|e| matches!(e, Effect::SaveSoon | Effect::SaveNow));
+        // A move that comes with a resize waits for the render, which
+        // applies the new position and size in one go.
+        let resized = fx.contains(&Effect::Resize);
         for effect in fx {
             match effect {
                 Effect::Beep(b) => self.sound.play(b, &self.app.cfg),
                 Effect::SaveSoon => self.deadlines.save_soon(self.now()),
                 Effect::SaveNow => self.save(),
+                Effect::Move { .. } if resized && self.mapped => self.dirty = true,
                 Effect::Move { .. } => self.sync_geometry(),
                 Effect::Resize | Effect::Redraw => self.dirty = true,
                 Effect::SetClickThrough(on) => self.overlay.set_click_through(&self.x, on),

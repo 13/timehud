@@ -113,6 +113,11 @@ pub fn resolved_family(cfg: &Config) -> String {
         .to_string()
 }
 
+/// The saved (dragged) panel position, if any; `-1` means a preset position.
+pub fn custom_pos(cfg: &Config) -> Option<(i32, i32)> {
+    (cfg.custom_x >= 0 && cfg.custom_y >= 0).then(|| (to_i32(cfg.custom_x), to_i32(cfg.custom_y)))
+}
+
 /// Qt `QRect::center()` on one axis.
 fn qt_center(pos: i32, len: i32) -> f64 {
     f64::from((2 * pos + len - 1) / 2)
@@ -198,17 +203,10 @@ impl App {
         app.update_timer(now);
         app.layout = app.measure(now);
         let p = app.layout.panel;
-        app.panel_pos = if app.has_custom_pos() {
+        app.panel_pos = match custom_pos(&app.cfg) {
             // A saved position from another monitor setup must stay reachable.
-            clamp_into(
-                to_i32(app.cfg.custom_x),
-                to_i32(app.cfg.custom_y),
-                p.w,
-                p.h,
-                area,
-            )
-        } else {
-            app.preset_pos()
+            Some((x, y)) => clamp_into(x, y, p.w, p.h, area),
+            None => app.preset_pos(),
         };
         app
     }
@@ -332,7 +330,7 @@ impl App {
     }
 
     fn has_custom_pos(&self) -> bool {
-        self.cfg.custom_x >= 0 && self.cfg.custom_y >= 0
+        custom_pos(&self.cfg).is_some()
     }
 
     fn preset_pos(&self) -> (i32, i32) {
