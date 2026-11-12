@@ -1,6 +1,6 @@
 [package]
 name = "timehud"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 # let-chains need 1.88, but eframe/egui 0.37 require 1.95.
 rust-version = "1.95"

@@ -20,7 +20,7 @@ PREFIX=/tmp/x ./install.sh          # install elsewhere (use this when testing t
 TIMEHUD_TRACE=1 timehud             # prints "first frame presented N ms after start" to stderr
 ```
 
-Run manual checks with `XDG_CONFIG_HOME` pointed at a scratch dir so the real `~/.config/timehud` is untouched. Version lives only in `Cargo.toml` (`--version` reads `CARGO_PKG_VERSION`). Releases: pushing a `v*` tag runs `.github/workflows/release.yml` (tarball + GitHub or Gitea release, branching on `github.server_url`). CI (`ci.yml`) installs Rust via rustup on both hosts.
+Run manual checks with `XDG_CONFIG_HOME` pointed at a scratch dir so the real `~/.config/timehud` is untouched. Version lives in `Cargo.toml` (`--version` reads `CARGO_PKG_VERSION`) and `pkgver` in `packaging/aur/PKGBUILD`; bump both (the release job fails if they differ). Releases: pushing a `v*` tag runs `.github/workflows/release.yml` (tarball + GitHub or Gitea release, branching on `github.server_url`; on GitHub an `archlinux` container job then attaches the pacman package built by `packaging/aur/ci-build.sh`, runnable locally via docker as its header shows). CI (`ci.yml`) installs Rust via rustup on both hosts.
 
 ## Architecture
 

@@ -35,8 +35,11 @@ absolute `Exec=`) in `$PREFIX/share/applications/`.
 
 From a checkout without installing: `cargo run --release`.
 
-Arch Linux: `cd packaging/aur && makepkg -si` (builds from source; the `url` /
-`source` fields are placeholders until the repo has a remote).
+Arch Linux: download `timehud-<version>-1-x86_64.pkg.tar.zst` from the
+[latest release](https://github.com/13/timehud/releases/latest) and run
+`sudo pacman -U timehud-*.pkg.tar.zst` (no Rust toolchain needed; remove with
+`sudo pacman -R timehud`). To build it yourself instead:
+`cd packaging/aur && makepkg -si`.
 
 ---
 
@@ -304,12 +307,16 @@ otherwise ignored.
 
 ## Packaging and CI
 
-- `packaging/aur/PKGBUILD` – source build for Arch (`makepkg -si`).
+- `packaging/aur/PKGBUILD` – source build for Arch (`makepkg -si`);
+  `packaging/aur/ci-build.sh` builds it from the checkout inside an
+  `archlinux` container and lints it with `namcap`.
 - `.github/workflows/ci.yml` – `cargo fmt --check`, `cargo clippy -D warnings`,
   `cargo test` on GitHub and a self-hosted Gitea runner.
 - `.github/workflows/release.yml` – pushing a `v*` tag builds
   `timehud-<tag>-x86_64.tar.gz` (binary, icon, desktop file, README, LICENSE)
-  and publishes a release on whichever host ran the workflow.
+  and publishes a release on whichever host ran the workflow; on GitHub a
+  second job attaches the Arch package `timehud-<ver>-1-x86_64.pkg.tar.zst`.
+  Bump `pkgver` in the PKGBUILD together with `Cargo.toml` (CI checks it).
 
 The bundled fonts are under the SIL OFL: JetBrains Mono Bold (`assets/OFL.txt`)
 and a Latin subset of Roboto Bold (`assets/OFL-Roboto.txt`).

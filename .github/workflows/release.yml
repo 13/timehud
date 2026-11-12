@@ -72,6 +72,7 @@ jobs:
           tag_name: ${{ env.VERSION }}
           files: ${{ env.TARBALL }}
       - name: Create Gitea Release
+        # The Arch package job below is GitHub-only (needs container jobs).
         if: github.server_url != 'https://github.com' && startsWith(github.ref, 'refs/tags/')
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -86,3 +87,31 @@ jobs:
           curl -fsS -X POST "$API/releases/$RELEASE_ID/assets?name=$TARBALL" \
             -H "Authorization: token $TOKEN" \
             -F "attachment=@$TARBALL"
+
+  # Ready-to-install Arch package (pacman -U), built on Arch from this
+  # checkout via packaging/aur/PKGBUILD. Runs after `release` so it attaches
+  # to the release that job created instead of racing it.
+  arch:
+    needs: release
+    if: github.server_url == 'https://github.com'
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    steps:
+      # checkout only clones with git present; otherwise it falls back to a
+      # tarball without .git, and ci-build.sh needs `git archive`.
+      - name: Install git
+        run: pacman -Syu --noconfirm --needed git
+      - uses: actions/checkout@v4
+      - name: Build package
+        run: packaging/aur/ci-build.sh
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: timehud-archlinux
+          path: ${{ env.ARCHPKG }}
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: ${{ env.ARCHPKG }}
