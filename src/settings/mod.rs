@@ -172,6 +172,45 @@ pub(crate) fn spin(
     )
 }
 
+/// [`spin`] whose lowest value is a special setting shown as `special`
+/// (`-1` = "same as padding", `0` = "off"); other values show with `unit`.
+fn sentinel_spin(
+    ui: &mut Ui,
+    value: &mut i64,
+    range: (i64, i64),
+    unit: &'static str,
+    special: &'static str,
+) -> egui::Response {
+    let lo = range.0 as f64;
+    ui.add(
+        egui::DragValue::new(value)
+            .range(range.0..=range.1)
+            .speed(0.25)
+            .clamp_existing_to_range(false)
+            .min_size(Vec2::new(90.0, 0.0))
+            .custom_formatter(move |v, _| {
+                if v <= lo {
+                    special.into()
+                } else {
+                    format!("{v} {unit}")
+                }
+            })
+            .custom_parser(move |s| parse_sentinel(s, lo, unit, special)),
+    )
+}
+
+/// Typed text of a [`sentinel_spin`]: a number (unit optional), or any
+/// prefix of `special` (e.g. "same", "off") for the sentinel `lo`.
+fn parse_sentinel(s: &str, lo: f64, unit: &str, special: &str) -> Option<f64> {
+    let t = s.trim();
+    let t = t.strip_suffix(unit).unwrap_or(t).trim();
+    if let Ok(v) = t.parse() {
+        return Some(v);
+    }
+    let special = special.to_lowercase();
+    (!t.is_empty() && special.starts_with(&t.to_lowercase())).then_some(lo)
+}
+
 /// `→ 1h 05m 00s` note under the countdown spin (`_update_cd_note`).
 pub fn countdown_note(secs: i64) -> String {
     let (m, s) = (secs.div_euclid(60), secs.rem_euclid(60));
@@ -525,19 +564,29 @@ fn combo_from_key(key: Key, physical: Option<Key>, m: egui::Modifiers) -> Option
         .map(|c| format_combo(&c))
 }
 
-const HOTKEYS: [(&str, &str); 3] = [
-    ("Start / pause", "Ctrl+Shift+Space"),
-    ("Reset", "Ctrl+Shift+R"),
-    ("Show / hide", "Ctrl+Shift+H"),
+/// A config string field, for tables of editable fields.
+type Field = fn(&mut Config) -> &mut String;
+
+/// The hotkeys tab: label, example combo, config field.
+const HOTKEYS: [(&str, &str, Field); 3] = [
+    ("Start / pause", "Ctrl+Shift+Space", |c| {
+        &mut c.hotkey_toggle
+    }),
+    ("Reset", "Ctrl+Shift+R", |c| &mut c.hotkey_reset),
+    ("Show / hide", "Ctrl+Shift+H", |c| &mut c.hotkey_visibility),
 ];
 
 fn hotkey_field(cfg: &mut Config, i: usize) -> &mut String {
-    match i {
-        0 => &mut cfg.hotkey_toggle,
-        1 => &mut cfg.hotkey_reset,
-        _ => &mut cfg.hotkey_visibility,
-    }
+    (HOTKEYS[i].2)(cfg)
 }
+
+/// The colors grid, two per row: label, config field.
+const COLORS: [(&str, Field); 4] = [
+    ("Background", |c| &mut c.color_bg),
+    ("Clock", |c| &mut c.color_clock),
+    ("Timer running", |c| &mut c.color_timer_run),
+    ("Timer paused", |c| &mut c.color_timer_pause),
+];
 
 // ── The settings app ────────────────────────────────────────────────────────
 
@@ -820,17 +869,9 @@ impl SettingsApp {
                 .spacing([18.0, 10.0])
                 .min_col_width(150.0)
                 .show(ui, |ui| {
-                    for row in [
-                        [("Background", 0), ("Clock", 1)],
-                        [("Timer running", 2), ("Timer paused", 3)],
-                    ] {
-                        for (label, which) in row {
-                            let field = match which {
-                                0 => &mut cfg.color_bg,
-                                1 => &mut cfg.color_clock,
-                                2 => &mut cfg.color_timer_run,
-                                _ => &mut cfg.color_timer_pause,
-                            };
+                    for row in COLORS.chunks(2) {
+                        for &(label, field) in row {
+                            let field = field(cfg);
                             ui.horizontal(|ui| {
                                 let mut rgb = hex_to_rgb(field);
                                 if egui::color_picker::color_edit_button_srgb(ui, &mut rgb)
@@ -869,27 +910,12 @@ impl SettingsApp {
                 ui.end_row();
 
                 ui.label("Top padding");
-                ui.add(
-                    egui::DragValue::new(&mut cfg.padding_top)
-                        .range(PADDING_TOP_RANGE.0..=PADDING_TOP_RANGE.1)
-                        .speed(0.25)
-                        .clamp_existing_to_range(false)
-                        .min_size(Vec2::new(90.0, 0.0))
-                        .custom_formatter(|v, _| {
-                            if v < 0.0 {
-                                "same as padding".into()
-                            } else {
-                                format!("{v} px")
-                            }
-                        })
-                        .custom_parser(|s| {
-                            let t = s.trim().trim_end_matches("px").trim();
-                            if t.starts_with("same") {
-                                Some(-1.0)
-                            } else {
-                                t.parse().ok()
-                            }
-                        }),
+                sentinel_spin(
+                    ui,
+                    &mut cfg.padding_top,
+                    PADDING_TOP_RANGE,
+                    "px",
+                    "same as padding",
                 )
                 .on_hover_text("Top padding override; 'same as padding' follows the value above");
                 ui.end_row();
@@ -949,10 +975,10 @@ impl SettingsApp {
             form(ui, "timer-mode", |ui| {
                 ui.label("Default mode");
                 egui::ComboBox::from_id_salt("mode")
-                    .selected_text(mode_name(cfg.timer_mode))
+                    .selected_text(cfg.timer_mode.name())
                     .show_ui(ui, |ui| {
-                        for m in [Mode::Stopwatch, Mode::Countdown, Mode::Interval] {
-                            ui.selectable_value(&mut cfg.timer_mode, m, mode_name(m));
+                        for m in Mode::ALL {
+                            ui.selectable_value(&mut cfg.timer_mode, m, m.name());
                         }
                     });
                 ui.end_row();
@@ -1033,29 +1059,8 @@ impl SettingsApp {
             ui.add_space(4.0);
             form(ui, "sound-form", |ui| {
                 ui.label("Alert every");
-                ui.add(
-                    egui::DragValue::new(&mut cfg.sound_interval)
-                        .range(SOUND_SECS_RANGE.0..=SOUND_SECS_RANGE.1)
-                        .speed(0.25)
-                        .clamp_existing_to_range(false)
-                        .min_size(Vec2::new(90.0, 0.0))
-                        .custom_formatter(|v, _| {
-                            if v <= 0.0 {
-                                "off".into()
-                            } else {
-                                format!("{v} s")
-                            }
-                        })
-                        .custom_parser(|s| {
-                            let t = s.trim().trim_end_matches('s').trim();
-                            if t == "off" {
-                                Some(0.0)
-                            } else {
-                                t.parse().ok()
-                            }
-                        }),
-                )
-                .on_hover_text("Play a beep every N seconds of active timer (off = never)");
+                sentinel_spin(ui, &mut cfg.sound_interval, SOUND_SECS_RANGE, "s", "off")
+                    .on_hover_text("Play a beep every N seconds of active timer (off = never)");
                 ui.end_row();
 
                 ui.label("Double beep before");
@@ -1097,20 +1102,19 @@ impl SettingsApp {
         });
     }
 
+    /// The hotkeys' current combos, in [`HOTKEYS`] order.
+    fn hotkey_values(&mut self) -> Vec<String> {
+        (0..HOTKEYS.len())
+            .map(|i| hotkey_field(&mut self.cfg, i).clone())
+            .collect()
+    }
+
     fn hotkeys(&mut self, ui: &mut Ui) {
-        let before = (
-            self.cfg.hotkey_toggle.clone(),
-            self.cfg.hotkey_reset.clone(),
-            self.cfg.hotkey_visibility.clone(),
-        );
-        let dup = duplicate_combos(&[
-            &self.cfg.hotkey_toggle,
-            &self.cfg.hotkey_reset,
-            &self.cfg.hotkey_visibility,
-        ]);
+        let before = self.hotkey_values();
+        let dup = duplicate_combos(&before.iter().map(String::as_str).collect::<Vec<_>>());
         card(ui, "Shortcuts", |ui| {
             form(ui, "hotkeys", |ui| {
-                for (i, (label, hint)) in HOTKEYS.iter().enumerate() {
+                for (i, (label, hint, _)) in HOTKEYS.iter().enumerate() {
                     ui.label(*label);
                     ui.horizontal(|ui| {
                         let capturing = self.capturing == Some(i);
@@ -1211,12 +1215,7 @@ impl SettingsApp {
                     ui.label(RichText::new(tail).color(TEXT));
                 });
             });
-        let after = (
-            self.cfg.hotkey_toggle.clone(),
-            self.cfg.hotkey_reset.clone(),
-            self.cfg.hotkey_visibility.clone(),
-        );
-        if after != before {
+        if self.hotkey_values() != before {
             self.hotkey_errors.clear();
         }
     }
@@ -1341,14 +1340,6 @@ fn clock_format_label(value: &str) -> &'static str {
         .iter()
         .find(|(v, _)| *v == value)
         .map_or(CLOCK_FORMATS[0].1, |(_, l)| l)
-}
-
-fn mode_name(m: Mode) -> &'static str {
-    match m {
-        Mode::Stopwatch => "stopwatch",
-        Mode::Countdown => "countdown",
-        Mode::Interval => "interval",
-    }
 }
 
 impl eframe::App for SettingsApp {
@@ -1636,6 +1627,42 @@ mod tests {
         assert_eq!(Section::from_tab("presets"), Some(Section::Presets));
         assert_eq!(Section::from_tab("Hotkeys"), Some(Section::Hotkeys));
         assert_eq!(Section::from_tab("nope"), None);
+    }
+
+    #[test]
+    fn sentinel_text_parses() {
+        let p = |s| parse_sentinel(s, -1.0, "px", "same as padding");
+        assert_eq!(p("12 px"), Some(12.0));
+        assert_eq!(p(" 7px "), Some(7.0));
+        assert_eq!(p("3"), Some(3.0));
+        assert_eq!(p("same as padding"), Some(-1.0));
+        assert_eq!(p("Same"), Some(-1.0));
+        assert_eq!(p("bogus"), None);
+        assert_eq!(p(""), None);
+        let p = |s| parse_sentinel(s, 0.0, "s", "off");
+        assert_eq!(p("off"), Some(0.0));
+        assert_eq!(p("90 s"), Some(90.0));
+    }
+
+    #[test]
+    fn field_tables_point_at_their_fields() {
+        let mut cfg = Config::default();
+        for (i, (_, _, field)) in HOTKEYS.iter().enumerate() {
+            *field(&mut cfg) = format!("F{i}");
+        }
+        assert_eq!(
+            (
+                cfg.hotkey_toggle.as_str(),
+                cfg.hotkey_reset.as_str(),
+                cfg.hotkey_visibility.as_str()
+            ),
+            ("F0", "F1", "F2")
+        );
+        for (label, field) in COLORS {
+            *field(&mut cfg) = label.into();
+        }
+        assert_eq!(cfg.color_bg, "Background");
+        assert_eq!(cfg.color_timer_pause, "Timer paused");
     }
 
     #[test]

@@ -4,7 +4,7 @@ use super::{
     ACCENT, ACCENT_DARK, CARD, ERROR, FIELD, TEXT, WEAK, card, countdown_note, form, note, spin,
 };
 use crate::config::{
-    COUNTDOWN_RANGE, Config, Preset, PresetRules, REST_RANGE, ROUNDS_RANGE, WORK_RANGE,
+    COUNTDOWN_RANGE, Config, Mode, Preset, PresetRules, REST_RANGE, ROUNDS_RANGE, WORK_RANGE,
     interval_preset_rounds, valid_presets,
 };
 use crate::format::fmt_seconds;
@@ -12,18 +12,12 @@ use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Frame, Margin, RichText, Sense, Stroke, Ui, Vec2,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PresetKind {
-    Countdown,
-    Interval,
-    Stopwatch,
-}
-
 /// The editor fields below the preset list (the `_presets_tab` widgets).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PresetEditor {
     pub name: String,
-    pub kind: PresetKind,
+    /// The preset's timer mode (its `type`).
+    pub kind: Mode,
     /// Countdown duration, seconds.
     pub duration: i64,
     pub iv_work: i64,
@@ -45,7 +39,7 @@ impl PresetEditor {
     pub fn for_config(cfg: &Config) -> PresetEditor {
         PresetEditor {
             name: String::new(),
-            kind: PresetKind::Countdown,
+            kind: Mode::Countdown,
             duration: 300,
             iv_work: 45,
             iv_rest: 15,
@@ -67,11 +61,11 @@ pub fn preset_from_editor(e: &PresetEditor) -> Result<(Preset, PresetRules), Str
         return Err("Enter a name first.".into());
     }
     let preset = match e.kind {
-        PresetKind::Countdown => Preset::Countdown {
+        Mode::Countdown => Preset::Countdown {
             name,
             duration: e.duration,
         },
-        PresetKind::Interval => {
+        Mode::Interval => {
             if e.iv_work < 1 || e.iv_rest < 0 || e.iv_rounds < 1 {
                 return Err("Work and rounds must be at least 1.".into());
             }
@@ -82,7 +76,7 @@ pub fn preset_from_editor(e: &PresetEditor) -> Result<(Preset, PresetRules), Str
                 total: interval_total(e),
             }
         }
-        PresetKind::Stopwatch => Preset::Stopwatch {
+        Mode::Stopwatch => Preset::Stopwatch {
             name,
             work: e.sw_work,
             rest: e.sw_rest,
@@ -108,20 +102,20 @@ pub fn editor_from_preset(p: &Preset, r: &PresetRules, last5_default: bool) -> P
     };
     match p {
         Preset::Countdown { duration, .. } => {
-            e.kind = PresetKind::Countdown;
+            e.kind = Mode::Countdown;
             e.duration = *duration;
         }
         Preset::Interval {
             work, rest, total, ..
         } => {
-            e.kind = PresetKind::Interval;
+            e.kind = Mode::Interval;
             e.iv_work = *work;
             e.iv_rest = *rest;
             e.iv_rounds = interval_preset_rounds(*work, *rest, *total);
             e.iv_total = Some(*total);
         }
         Preset::Stopwatch { work, rest, .. } => {
-            e.kind = PresetKind::Stopwatch;
+            e.kind = Mode::Stopwatch;
             e.sw_work = *work;
             e.sw_rest = *rest;
         }
@@ -304,14 +298,6 @@ fn detail(p: &Preset) -> String {
     }
 }
 
-fn kind_name(k: PresetKind) -> &'static str {
-    match k {
-        PresetKind::Countdown => "countdown",
-        PresetKind::Interval => "interval",
-        PresetKind::Stopwatch => "stopwatch",
-    }
-}
-
 pub fn section(ui: &mut Ui, st: &mut PresetsState, cfg: &mut Config) {
     let list = entries(cfg);
     let selected = st.resolve(&list);
@@ -433,20 +419,16 @@ pub fn section(ui: &mut Ui, st: &mut PresetsState, cfg: &mut Config) {
 
             ui.label("Type");
             egui::ComboBox::from_id_salt("preset-kind")
-                .selected_text(kind_name(e.kind))
+                .selected_text(e.kind.name())
                 .show_ui(ui, |ui| {
-                    for k in [
-                        PresetKind::Countdown,
-                        PresetKind::Interval,
-                        PresetKind::Stopwatch,
-                    ] {
-                        ui.selectable_value(&mut e.kind, k, kind_name(k));
+                    for k in Mode::ALL {
+                        ui.selectable_value(&mut e.kind, k, k.name());
                     }
                 });
             ui.end_row();
 
             match e.kind {
-                PresetKind::Countdown => {
+                Mode::Countdown => {
                     ui.label("Duration");
                     ui.horizontal(|ui| {
                         spin(ui, &mut e.duration, COUNTDOWN_RANGE, " s");
@@ -454,7 +436,7 @@ pub fn section(ui: &mut Ui, st: &mut PresetsState, cfg: &mut Config) {
                     });
                     ui.end_row();
                 }
-                PresetKind::Interval => {
+                Mode::Interval => {
                     ui.label("Work / rest");
                     ui.horizontal(|ui| {
                         spin(ui, &mut e.iv_work, WORK_RANGE, " s work");
@@ -469,7 +451,7 @@ pub fn section(ui: &mut Ui, st: &mut PresetsState, cfg: &mut Config) {
                     });
                     ui.end_row();
                 }
-                PresetKind::Stopwatch => {
+                Mode::Stopwatch => {
                     ui.label("Work / rest");
                     ui.horizontal(|ui| {
                         spin(ui, &mut e.sw_work, WORK_RANGE, " s work");
@@ -546,10 +528,9 @@ pub fn section(ui: &mut Ui, st: &mut PresetsState, cfg: &mut Config) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Mode;
     use serde_json::json;
 
-    fn editor(kind: PresetKind) -> PresetEditor {
+    fn editor(kind: Mode) -> PresetEditor {
         PresetEditor {
             name: "x".into(),
             kind,
@@ -570,7 +551,7 @@ mod tests {
     fn interval_editor_rounds_round_trip() {
         let e = PresetEditor {
             name: " hiit ".into(),
-            ..editor(PresetKind::Interval)
+            ..editor(Mode::Interval)
         };
         let (p, r) = preset_from_editor(&e).unwrap();
         assert_eq!(
@@ -583,7 +564,7 @@ mod tests {
             }
         );
         let back = editor_from_preset(&p, &r, false);
-        assert_eq!(back.kind, PresetKind::Interval);
+        assert_eq!(back.kind, Mode::Interval);
         assert_eq!((back.iv_work, back.iv_rest, back.iv_rounds), (45, 15, 10));
         assert_eq!(back.name, "hiit");
     }
@@ -624,7 +605,7 @@ mod tests {
             duration: 90,
             halfway: true,
             last5: true,
-            ..editor(PresetKind::Countdown)
+            ..editor(Mode::Countdown)
         };
         let (p, r) = preset_from_editor(&e).unwrap();
         assert_eq!(
@@ -651,7 +632,7 @@ mod tests {
         let e = PresetEditor {
             sw_work: 60,
             sw_rest: 0,
-            ..editor(PresetKind::Stopwatch)
+            ..editor(Mode::Stopwatch)
         };
         let (p, r) = preset_from_editor(&e).unwrap();
         assert_eq!(
@@ -669,7 +650,7 @@ mod tests {
     fn empty_name_rejected() {
         let e = PresetEditor {
             name: "  ".into(),
-            ..editor(PresetKind::Countdown)
+            ..editor(Mode::Countdown)
         };
         assert!(preset_from_editor(&e).is_err());
     }
@@ -702,7 +683,7 @@ mod tests {
         PresetEditor {
             name: name.into(),
             duration,
-            ..editor(PresetKind::Countdown)
+            ..editor(Mode::Countdown)
         }
     }
 
@@ -818,7 +799,7 @@ mod tests {
         let mut cfg = Config::default();
         let e = PresetEditor {
             name: "hiit".into(),
-            kind: PresetKind::Interval,
+            kind: Mode::Interval,
             ..PresetEditor::for_config(&cfg)
         };
         save_editor(&mut cfg, None, &e).unwrap();
