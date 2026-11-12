@@ -4,11 +4,11 @@ version = "0.9.0"
 edition = "2024"
 
 [dependencies]
+ab_glyph = "0.2.32"
 anyhow = "1.0.104"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 clap = { version = "4.6.7", features = ["derive"] }
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "x11", "default_fonts"] }
-fontdue = "0.9.5"
 nix = { version = "0.31.3", features = ["fs", "poll", "user"] }
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "wav", "mp3", "vorbis", "flac"] }
 serde = { version = "1.0.229", features = ["derive"] }
