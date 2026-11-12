@@ -37,7 +37,9 @@ existing beep. The classic beep stays the default and unchanged.
   old configs load with the default.
 - **Synthesis** (`sound.rs`): `builtin_samples(beep, theme)`. Chime voice =
   sine fundamental + a couple of quieter inharmonic/harmonic partials, ~5 ms
-  attack, exponential decay, peak amplitude well below classic's 20000.
+  attack, exponential decay, peak capped at 18000 (classic: 20000); loudest
+  100 ms within 6 dB of classic so it is never missed (softness comes from
+  envelope and timbre, not volume).
   - short: single soft "ting" (~C6/1047 Hz), decays out in ~0.3 s.
   - long: two-note chime (rising, e.g. E5 → A5 overlapping), ~1.2 s tail.
   - double: two quick tings ~0.15 s apart.

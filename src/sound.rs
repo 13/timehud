@@ -99,17 +99,17 @@ impl SoundTheme {
 
 /// One bell-like note at `start` s within a `total`-second buffer: a few
 /// partials decaying exponentially (upper ones faster), 5 ms attack and a
-/// 20 ms fade at the note's end so nothing clicks.
+/// 50 ms fade at the note's end so nothing clicks.
 fn add_chime_note(out: &mut [f64], start: f64, freq: f64, dur: f64, amp: f64) {
     const PARTIALS: [(f64, f64); 3] = [(1.0, 1.0), (2.0, 0.25), (3.0, 0.08)];
     let rate = SAMPLE_RATE as f64;
     let first = (start * rate) as usize;
     let n = ((dur * rate) as usize).min(out.len().saturating_sub(first));
-    let tau = dur / 5.0;
+    let tau = dur / 3.0;
     for i in 0..n {
         let t = i as f64 / rate;
         let attack = (t / 0.005).min(1.0);
-        let fade = ((dur - t) / 0.02).min(1.0);
+        let fade = ((dur - t) / 0.05).min(1.0);
         let v: f64 = PARTIALS
             .iter()
             .map(|(ratio, gain)| {
@@ -120,20 +120,24 @@ fn add_chime_note(out: &mut [f64], start: f64, freq: f64, dur: f64, amp: f64) {
     }
 }
 
+/// Chime peak cap: below classic's 20000; the chime is softer through its
+/// envelope and timbre, not by being much quieter.
+const CHIME_PEAK: f64 = 18000.0;
+
 /// The chime set: a soft C6 "ting" (short), a rising E5/A5 chime (long),
 /// two quick tings (double).
 pub fn chime_samples(beep: Beep) -> Vec<i16> {
     let (total, notes): (f64, &[(f64, f64, f64, f64)]) = if beep.double {
         (
             0.37,
-            &[(0.0, 1046.5, 0.22, 10000.0), (0.15, 1046.5, 0.22, 10000.0)],
+            &[(0.0, 1046.5, 0.22, 16000.0), (0.15, 1046.5, 0.22, 16000.0)],
         )
     } else if beep.short {
-        (0.30, &[(0.0, 1046.5, 0.30, 11000.0)])
+        (0.30, &[(0.0, 1046.5, 0.30, 16000.0)])
     } else {
         (
             1.2,
-            &[(0.0, 659.3, 1.2, 9000.0), (0.15, 880.0, 1.05, 9000.0)],
+            &[(0.0, 659.3, 1.2, 13000.0), (0.15, 880.0, 1.05, 13000.0)],
         )
     };
     let mut out = vec![0.0; (SAMPLE_RATE as f64 * total) as usize];
@@ -141,7 +145,11 @@ pub fn chime_samples(beep: Beep) -> Vec<i16> {
         add_chime_note(&mut out, start, freq, dur, amp);
     }
     let peak = out.iter().fold(0.0f64, |m, v| m.max(v.abs()));
-    let scale = if peak > 14000.0 { 14000.0 / peak } else { 1.0 };
+    let scale = if peak > CHIME_PEAK {
+        CHIME_PEAK / peak
+    } else {
+        1.0
+    };
     out.iter().map(|v| (v * scale) as i16).collect()
 }
 
@@ -689,11 +697,38 @@ mod tests {
     fn chime_is_softer_and_click_free() {
         for b in [SHORT, LONG, DOUBLE] {
             let s = chime_samples(b);
-            assert!(peak(&s) <= 14000, "softer than classic's 20000");
+            assert!(peak(&s) <= 18000, "below classic's 20000");
             assert!(peak(&s) >= 6000, "still audible");
             assert!(i32::from(s[0]).abs() < 100, "silent start");
             let tail = &s[s.len() - SAMPLE_RATE as usize / 100..]; // last 10 ms
             assert!(peak(tail) < 200, "decayed tail, no click");
+        }
+    }
+
+    /// RMS of the loudest 100 ms window (10 ms hop).
+    fn loudest_rms(s: &[i16]) -> f64 {
+        let win = SAMPLE_RATE as usize / 10;
+        let hop = SAMPLE_RATE as usize / 100;
+        (0..=s.len().saturating_sub(win))
+            .step_by(hop)
+            .map(|i| {
+                let e: f64 = s[i..(i + win).min(s.len())]
+                    .iter()
+                    .map(|v| f64::from(*v).powi(2))
+                    .sum();
+                (e / win as f64).sqrt()
+            })
+            .fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn chime_is_not_much_quieter_than_classic() {
+        for b in [SHORT, LONG, DOUBLE] {
+            let chime = loudest_rms(&chime_samples(b));
+            let classic = loudest_rms(&builtin_samples(b, SoundTheme::Classic));
+            let db = 20.0 * (chime / classic).log10();
+            println!("{b:?}: {db:.1} dB");
+            assert!(db >= -6.0, "{b:?}: chime {db:.1} dB vs classic");
         }
     }
 

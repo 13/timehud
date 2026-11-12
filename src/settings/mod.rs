@@ -1086,11 +1086,10 @@ impl SettingsApp {
                         .on_hover_text("Play the end-of-timer sound")
                         .clicked()
                     {
-                        // Default beep = the long one; honours sound_file
-                        // exactly like the HUD.
+                        // Default beep = the long one.
                         self.preview
                             .get_or_insert_with(Sound::new)
-                            .play(Default::default(), cfg);
+                            .play(Default::default(), &theme_preview_config(cfg));
                     }
                 });
                 if !cfg.sound_file.is_empty() {
@@ -1395,6 +1394,15 @@ const PROGRESS_STYLES: Choices = Choices {
     unknown_as: "off",
 };
 
+/// What the ▶ preview plays with: the selected theme's built-in sound,
+/// even when a `sound_file` would replace it on the HUD.
+fn theme_preview_config(cfg: &Config) -> Config {
+    Config {
+        sound_file: String::new(),
+        ..cfg.clone()
+    }
+}
+
 /// `sound_theme` (unknown plays classic, see `sound::SoundTheme`).
 const SOUND_THEMES: Choices = Choices {
     items: &[("classic", "Classic beep"), ("chime", "Soft chime")],
@@ -1691,6 +1699,19 @@ mod tests {
         assert!(capture_allowed(Key::Space, Modifiers::ALT | shift));
         assert!(capture_allowed(Key::F5, Modifiers::NONE));
         assert!(capture_allowed(Key::F12, shift));
+    }
+
+    #[test]
+    fn preview_plays_the_theme_not_the_file() {
+        let cfg = Config {
+            sound_theme: "chime".into(),
+            sound_file: "/x.wav".into(),
+            ..Config::default()
+        };
+        let p = theme_preview_config(&cfg);
+        assert!(p.sound_file.is_empty());
+        assert_eq!(p.sound_theme, "chime");
+        assert!(p.sound_enabled);
     }
 
     #[test]
