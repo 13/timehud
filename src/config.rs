@@ -191,7 +191,6 @@ config_fields! {
     notify_on_finish: bool = false;
 }
 
-/// `$XDG_CONFIG_HOME/timehud/config.json`, default `~/.config/timehud/config.json`.
 /// `path` with `suffix` appended to its file name (`config.json.bad`).
 fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut p = path.as_os_str().to_owned();
@@ -199,6 +198,7 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(p)
 }
 
+/// `$XDG_CONFIG_HOME/timehud/config.json`, default `~/.config/timehud/config.json`.
 pub fn config_path() -> PathBuf {
     let base = match std::env::var_os("XDG_CONFIG_HOME") {
         Some(v) if !v.is_empty() => PathBuf::from(v),

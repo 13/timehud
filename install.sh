@@ -28,7 +28,8 @@ echo "   $BIN"
 echo ""
 echo "   Optional flags: --position top-left|top-right|bottom-left|bottom-right|top-center|bottom-center"
 echo "                   --reset-config  --no-tray  --version"
-echo "   Control a running instance: timehud toggle | reset | show | hide | quit"
+echo "   Control a running instance: timehud toggle | start | pause | reset | show | hide | quit"
+echo "                               timehud set 25m | preset <name> | mode countdown | status [--json]"
 case ":$PATH:" in
     *":$PREFIX/bin:"*) ;;
     *) echo "   Note: $PREFIX/bin is not on your PATH." ;;

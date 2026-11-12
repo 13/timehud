@@ -10,18 +10,32 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// `$XDG_RUNTIME_DIR/timehud.sock`, else `/tmp/timehud-<uid>/timehud.sock`
-/// in a private directory (created on demand; see [`private_dir`]).
+/// `$XDG_RUNTIME_DIR/timehud.sock`; without it (e.g. a cron job or an
+/// `env -i` shell) the session's `/run/user/<uid>` if it exists, so such a
+/// client still finds the HUD; else `/tmp/timehud-<uid>/timehud.sock` in a
+/// private directory (created on demand; see [`private_dir`]).
 pub fn socket_path() -> io::Result<PathBuf> {
     match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(d) if !d.is_empty() => Ok(PathBuf::from(d).join("timehud.sock")),
         _ => {
             let uid = nix::unistd::getuid().as_raw();
+            let run = PathBuf::from(format!("/run/user/{uid}"));
+            if is_own_private_dir(&run, uid) {
+                return Ok(run.join("timehud.sock"));
+            }
             let dir = PathBuf::from(format!("/tmp/timehud-{uid}"));
             private_dir(&dir, uid)?;
             Ok(dir.join("timehud.sock"))
         }
     }
+}
+
+/// `dir` is a real directory owned by `uid` that nobody else can access
+/// (what logind makes `/run/user/<uid>`). Checked only, never created.
+fn is_own_private_dir(dir: &Path, uid: u32) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::symlink_metadata(dir)
+        .is_ok_and(|m| m.file_type().is_dir() && m.uid() == uid && m.mode() & 0o077 == 0)
 }
 
 /// Makes sure `dir` is a real directory (not a symlink) owned by `uid` and
@@ -523,6 +537,21 @@ mod tests {
         let file = d.path().join("file");
         std::fs::write(&file, b"").unwrap();
         assert!(private_dir(&file, uid).is_err());
+    }
+
+    #[test]
+    fn runtime_dir_fallback_needs_a_private_own_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let uid = nix::unistd::getuid().as_raw();
+        let dir = d.path().join("run");
+        assert!(!is_own_private_dir(&dir, uid)); // missing
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(is_own_private_dir(&dir, uid));
+        assert!(!is_own_private_dir(&dir, uid + 1));
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!is_own_private_dir(&dir, uid));
     }
 
     #[test]
