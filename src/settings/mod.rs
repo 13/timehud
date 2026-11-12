@@ -6,6 +6,7 @@ mod save_preset;
 
 pub use save_preset::run_save_preset;
 
+use crate::app::custom_pos;
 use crate::config::{
     COUNTDOWN_RANGE, Config, FONT_SIZE_RANGE, MARGIN_RANGE, Mode, OPACITY_RANGE, PADDING_RANGE,
     REST_RANGE, ROUNDS_RANGE, ROW_SPACING_RANGE, SOUND_SECS_RANGE, WORK_RANGE, config_path,
@@ -891,7 +892,7 @@ impl SettingsApp {
         card(ui, "Layout", |ui| {
             form(ui, "display-layout", |ui| {
                 ui.label("Position");
-                let current = if cfg.custom_x >= 0 && cfg.custom_y >= 0 {
+                let current = if custom_pos(cfg).is_some() {
                     "Custom (dragged)".to_string()
                 } else {
                     position_label(&cfg.position)
@@ -915,8 +916,12 @@ impl SettingsApp {
                 ui.end_row();
 
                 ui.label("Screen margin");
-                spin(ui, &mut cfg.margin, MARGIN_RANGE, " px")
-                    .on_hover_text("Distance from the screen edge");
+                let dragged = custom_pos(cfg).is_some();
+                ui.add_enabled_ui(!dragged, |ui| {
+                    spin(ui, &mut cfg.margin, MARGIN_RANGE, " px")
+                        .on_hover_text("Distance from the screen edge")
+                        .on_disabled_hover_text("Pick a position to use the margin again");
+                });
                 ui.end_row();
 
                 ui.label("Padding");
@@ -1049,7 +1054,9 @@ impl SettingsApp {
         card(ui, "", |ui| {
             ui.checkbox(
                 &mut cfg.sound_enabled,
-                RichText::new("Play sounds").strong(),
+                RichText::new("Play sounds")
+                    .size(15.0)
+                    .color(Color32::WHITE),
             )
             .on_hover_text("Master switch: off mutes every beep");
         });
@@ -1374,7 +1381,7 @@ fn choice(ui: &mut Ui, id: &str, value: &mut String, table: &Choices) -> egui::R
 
 /// Length of an interval session: `rounds` work phases with a rest between
 /// each pair (the engine ends after the last work phase, no trailing rest).
-fn interval_session_secs(work: i64, rest: i64, rounds: i64) -> i64 {
+pub(crate) fn interval_session_secs(work: i64, rest: i64, rounds: i64) -> i64 {
     let rounds = rounds.max(1);
     work.saturating_mul(rounds)
         .saturating_add(rest.saturating_mul(rounds - 1))

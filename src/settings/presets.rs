@@ -1,7 +1,8 @@
 //! Presets section: the editor's pure model plus its egui view.
 
 use super::{
-    ACCENT, ACCENT_DARK, CARD, ERROR, FIELD, TEXT, WEAK, card, countdown_note, form, note, spin,
+    ACCENT, ACCENT_DARK, CARD, ERROR, FIELD, TEXT, WEAK, card, countdown_note, form,
+    interval_session_secs, note, spin,
 };
 use crate::config::{
     COUNTDOWN_RANGE, Config, Mode, Preset, PresetRules, REST_RANGE, ROUNDS_RANGE, WORK_RANGE,
@@ -461,8 +462,8 @@ pub fn section(ui: &mut Ui, st: &mut PresetsState, cfg: &mut Config) {
                     ui.label("Rounds");
                     ui.horizontal(|ui| {
                         spin(ui, &mut e.iv_rounds, ROUNDS_RANGE, " rounds");
-                        let total = interval_total(e);
-                        note(ui, format!("\u{2192} {} total", fmt_seconds(total as f64)));
+                        let total = interval_session_secs(e.iv_work, e.iv_rest, e.iv_rounds);
+                        note(ui, format!("{} total", countdown_note(total)));
                     });
                     ui.end_row();
                 }

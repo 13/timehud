@@ -1436,3 +1436,27 @@ fn requests_for_the_window_and_the_process() {
         assert_eq!(h.app.request(req, now), Err("not a control request".into()));
     }
 }
+
+#[test]
+fn margin_preview_moves_a_preset_position_but_not_a_dragged_one() {
+    let mut h = mk(Config::default()); // top-right, margin 15
+    let (x0, y0) = h.app.panel_pos;
+    let mut edited = h.app.cfg.clone();
+    edited.margin = 100;
+    let fx = h.app.preview_config(edited, h.now());
+    assert!(
+        fx.iter().any(|e| matches!(e, Effect::Move { .. })),
+        "{fx:?}"
+    );
+    assert_eq!(h.app.panel_pos, (x0 - 85, y0 + 85));
+
+    let mut h = mk(Config {
+        custom_x: 40,
+        custom_y: 50,
+        ..Config::default()
+    });
+    let mut edited = h.app.cfg.clone();
+    edited.margin = 100;
+    h.app.preview_config(edited, h.now());
+    assert_eq!(h.app.panel_pos, (40, 50));
+}
