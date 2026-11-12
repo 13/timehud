@@ -38,6 +38,7 @@ const ERROR: Color32 = Color32::from_rgb(0xFF, 0x6B, 0x6B);
 const WARN: Color32 = Color32::from_rgb(0xFF, 0xB8, 0x4D);
 const ROUND: u8 = 8;
 
+const NOT_SENT: &str = "Cannot reach TimeHUD: the change was not applied.";
 const REPO_URL: &str = "https://github.com/ben/timehud";
 const HOTKEY_WARNING: &str = "Grabbed combos stop reaching other apps (e.g. Ctrl+Shift+R in browsers). Tip: bind `timehud toggle` in your window manager instead.";
 
@@ -717,8 +718,23 @@ impl SettingsApp {
         }
     }
 
+    /// Sends `req`; on failure shows why in the button bar and returns false.
+    fn send(&mut self, req: &Request) -> bool {
+        let ok = self.link.send(req);
+        if !ok {
+            self.status = Some(NOT_SENT.into());
+        } else if self.status.as_deref() == Some(NOT_SENT) {
+            self.status = None;
+        }
+        ok
+    }
+
+    /// OK / Cancel: send and close. A Commit that did not go out keeps the
+    /// window open (with the error shown) so the edits are not lost.
     fn finish(&mut self, ctx: &egui::Context, req: Request) {
-        self.link.send(&req);
+        if !self.send(&req) && matches!(req, Request::Commit { .. }) {
+            return;
+        }
         self.closing = true;
         ctx.send_viewport_cmd(ViewportCommand::Close);
     }
@@ -1336,6 +1352,7 @@ impl eframe::App for SettingsApp {
 
         if ctx.input(|i| i.viewport().close_requested()) && !self.closing {
             // Window × = Cancel.
+            // Closing anyway: a HUD we cannot reach has nothing to restore.
             self.link.send(&Request::Cancel);
             self.closing = true;
         }
@@ -1362,12 +1379,14 @@ impl eframe::App for SettingsApp {
                         .add(egui::Button::new("Apply").min_size(Vec2::new(84.0, 30.0)))
                         .clicked()
                     {
-                        self.link.send(&Request::Commit {
+                        let req = Request::Commit {
                             config: self.cfg.to_value(),
                             rev: self.rev,
-                        });
-                        self.sent = self.cfg.clone();
-                        self.base = self.cfg.clone();
+                        };
+                        if self.send(&req) {
+                            self.sent = self.cfg.clone();
+                            self.base = self.cfg.clone();
+                        }
                     }
                     if ui
                         .add(egui::Button::new("Cancel").min_size(Vec2::new(84.0, 30.0)))
@@ -1447,11 +1466,15 @@ impl eframe::App for SettingsApp {
             });
 
         if !self.closing && self.cfg != self.sent {
-            self.link.send(&Request::Preview {
+            let req = Request::Preview {
                 config: self.cfg.to_value(),
                 rev: self.rev,
-            });
-            self.sent = self.cfg.clone();
+            };
+            // Unsent edits stay pending (`sent` unchanged) and go out with
+            // the next successful message.
+            if self.send(&req) {
+                self.sent = self.cfg.clone();
+            }
         }
     }
 }
