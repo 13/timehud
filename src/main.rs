@@ -19,7 +19,8 @@ struct Cli {
     /// Start at this screen position (resets any custom placement)
     #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(POSITIONS))]
     position: Option<String>,
-    /// Overwrite the config file with defaults and exit
+    /// Overwrite the config file with defaults (old one kept as .bak) and exit;
+    /// refused while TimeHUD runs
     #[arg(long)]
     reset_config: bool,
     /// Accepted for compatibility; TimeHUD always runs as an X11 client
@@ -139,8 +140,18 @@ fn run() -> anyhow::Result<ExitCode> {
         eprintln!("warning: --wayland is ignored; TimeHUD runs as an X11 client");
     }
     if cli.reset_config {
-        Config::default().save()?;
-        println!("Config reset \u{2192} {}", config_path().display());
+        // A running HUD would write its config back over the reset.
+        let running =
+            ipc::socket_path().is_ok_and(|p| std::os::unix::net::UnixStream::connect(p).is_ok());
+        if running {
+            eprintln!("timehud: TimeHUD is running; quit it first (timehud quit), then reset");
+            return Ok(ExitCode::FAILURE);
+        }
+        let cfg_path = config_path();
+        if let Some(bak) = Config::reset_file(&cfg_path)? {
+            println!("Old config saved as {}", bak.display());
+        }
+        println!("Config reset \u{2192} {}", cfg_path.display());
         return Ok(ExitCode::SUCCESS);
     }
 

@@ -241,9 +241,10 @@ pub const PADDING_TOP_RANGE: (i64, i64) = (-1, 100);
 pub const ROW_SPACING_RANGE: (i64, i64) = (0, 100);
 
 impl Config {
-    /// Missing or unparseable file gives defaults. An unparseable file is
-    /// first copied to `<path>.bad` (overwriting) so a later save never
-    /// silently destroys the user's only copy.
+    /// Missing or unparseable file gives defaults. An unparseable file (or
+    /// valid JSON that is not an object) is first copied to `<path>.bad`
+    /// (overwriting) so a later save never silently destroys the user's
+    /// only copy.
     pub fn load_from(path: &Path) -> Config {
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
@@ -254,42 +255,51 @@ impl Config {
                 return Config::default();
             }
         };
-        match serde_json::from_slice::<Value>(&bytes) {
-            Ok(v) => Config::from_value(&v),
-            Err(e) => {
-                let bad = with_suffix(path, ".bad");
-                match std::fs::write(&bad, &bytes) {
-                    Ok(()) => eprintln!(
-                        "timehud: {} is not valid JSON ({e}); saved a copy as {} and using defaults",
-                        path.display(),
-                        bad.display()
-                    ),
-                    Err(we) => eprintln!(
-                        "timehud: {} is not valid JSON ({e}); could not back it up to {}: {we}",
-                        path.display(),
-                        bad.display()
-                    ),
-                }
-                Config::default()
-            }
+        let why = match serde_json::from_slice::<Value>(&bytes) {
+            Ok(v) if v.is_object() => return Config::from_value(&v),
+            Ok(_) => "is not a JSON object".to_string(),
+            Err(e) => format!("is not valid JSON ({e})"),
+        };
+        let bad = with_suffix(path, ".bad");
+        match std::fs::write(&bad, &bytes) {
+            Ok(()) => eprintln!(
+                "timehud: {} {why}; saved a copy as {} and using defaults",
+                path.display(),
+                bad.display()
+            ),
+            Err(we) => eprintln!(
+                "timehud: {} {why}; could not back it up to {}: {we}",
+                path.display(),
+                bad.display()
+            ),
         }
+        Config::default()
     }
 
-    /// Atomic: writes and syncs `<path>.tmp`, then renames over `path`,
-    /// keeping an existing file's permission bits.
+    /// Atomic: writes and syncs `<path>.tmp.<pid>.<n>` (unique, so two
+    /// processes saving at once cannot interleave in one temp file), renames
+    /// it over `path` and syncs the directory so the rename is durable;
+    /// keeps an existing file's permission bits.
     /// A symlinked `path` is resolved first, so the link's target is
     /// replaced and the link itself kept. Creates the directory.
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SAVES: AtomicU64 = AtomicU64::new(0);
         let path = resolve_save_target(path);
-        if let Some(dir) = path.parent() {
+        let dir = path.parent().filter(|d| !d.as_os_str().is_empty());
+        if let Some(dir) = dir {
             std::fs::create_dir_all(dir)?;
         }
-        let tmp = with_suffix(&path, ".tmp");
+        let n = SAVES.fetch_add(1, Ordering::Relaxed);
+        let tmp = with_suffix(&path, &format!(".tmp.{}.{n}", std::process::id()));
         let text = serde_json::to_string_pretty(&self.to_value()).map_err(std::io::Error::other)?;
         // Keep the mode of the file being replaced (e.g. a deliberate 0600).
         let mode = std::fs::metadata(&path).ok().map(|m| m.permissions());
         let written = (|| {
-            let mut f = std::fs::File::create(&tmp)?;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)?;
             if let Some(perms) = mode {
                 f.set_permissions(perms)?;
             }
@@ -299,7 +309,36 @@ impl Config {
         })();
         written.inspect_err(|_| {
             let _ = std::fs::remove_file(&tmp);
-        })
+        })?;
+        // The new file is in place; a failing directory sync only risks
+        // the rename on power loss, so it is not an error.
+        if let Ok(d) = std::fs::File::open(dir.unwrap_or(Path::new("."))) {
+            let _ = d.sync_all();
+        }
+        Ok(())
+    }
+
+    /// `--reset-config`: copies an existing file at `path` to `<path>.bak`
+    /// (overwriting), then saves the defaults there. Returns the backup's
+    /// path if one was made.
+    pub fn reset_file(path: &Path) -> std::io::Result<Option<PathBuf>> {
+        let bak = with_suffix(path, ".bak");
+        let backed_up = match std::fs::copy(path, &bak) {
+            Ok(_) => Some(bak),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                return Err(std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "cannot back up {} to {}: {e}",
+                        path.display(),
+                        bak.display()
+                    ),
+                ));
+            }
+        };
+        Config::default().save_to(path)?;
+        Ok(backed_up)
     }
 
     pub fn load() -> Config {
@@ -704,6 +743,43 @@ mod tests {
     }
 
     #[test]
+    fn non_object_json_is_backed_up_like_garbage() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        for text in ["[1, 2]", "\"top-right\"", "null", "42"] {
+            std::fs::write(&path, text).unwrap();
+            assert_eq!(Config::load_from(&path), Config::default());
+            let bad = std::fs::read_to_string(dir.path().join("config.json.bad")).unwrap();
+            assert_eq!(bad, text);
+        }
+    }
+
+    #[test]
+    fn reset_file_backs_up_then_writes_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = cfg_in(&dir);
+        assert_eq!(Config::reset_file(&path).unwrap(), None);
+        assert_eq!(Config::load_from(&path), Config::default());
+        std::fs::write(&path, r#"{"font_size": 44}"#).unwrap();
+        let bak = Config::reset_file(&path).unwrap().unwrap();
+        assert_eq!(bak, with_suffix(&path, ".bak"));
+        assert_eq!(
+            std::fs::read_to_string(&bak).unwrap(),
+            r#"{"font_size": 44}"#
+        );
+        assert_eq!(Config::load_from(&path), Config::default());
+    }
+
+    /// Names in `dir` that look like save temp files.
+    fn temp_files(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp"))
+            .collect()
+    }
+
+    #[test]
     fn valid_or_missing_file_makes_no_backup() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
@@ -731,8 +807,8 @@ mod tests {
         assert_eq!(std::fs::read_link(&link).unwrap(), target);
         assert_eq!(Config::load_from(&target).font_size, 44);
         // No temp file left next to the link or the target.
-        assert!(!link.with_extension("json.tmp").exists());
-        assert!(!target.with_extension("json.tmp").exists());
+        assert!(temp_files(link.parent().unwrap()).is_empty());
+        assert!(temp_files(target.parent().unwrap()).is_empty());
     }
 
     #[test]
@@ -1001,8 +1077,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = cfg_in(&dir);
         Config::default().save_to(&path).unwrap();
+        Config::default().save_to(&path).unwrap();
         assert!(path.exists());
-        assert!(!path.with_extension("json.tmp").exists());
+        assert!(temp_files(path.parent().unwrap()).is_empty());
     }
 
     #[test]

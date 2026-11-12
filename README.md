@@ -67,7 +67,8 @@ $ timehud status --json
 
 The subcommands exit non-zero with `TimeHUD is not running` when there is no
 instance, and print the HUD's error to stderr with a non-zero exit when it
-refuses a request (e.g. an unknown preset name). Flags: `--position <preset>`, `--reset-config`, `--no-tray`,
+refuses a request (e.g. an unknown preset name). Flags: `--position <preset>`, `--reset-config`
+(writes the defaults, keeping the old file as `config.json.bak`; refused while TimeHUD runs), `--no-tray`,
 `--wayland` (ignored, see below), `--version`.
 
 Binding keys in AwesomeWM (`rc.lua`) is the recommended alternative to the
