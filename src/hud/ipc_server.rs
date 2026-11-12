@@ -246,6 +246,7 @@ impl Hud {
             self.push_config_to_settings();
         }
         self.sync_hotkeys(false);
+        self.sound.config_changed(&self.app.cfg);
     }
 
     /// Hands HUD-side config changes to an open settings window, so its

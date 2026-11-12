@@ -524,7 +524,15 @@ impl Sound {
         if cfg.sound_enabled {
             let _ = self.tx.send(Msg::Play(beep, cfg.sound_file.clone()));
             self.file_cached.set(!cfg.sound_file.is_empty());
-        } else if self.file_cached.replace(false) {
+        } else {
+            self.config_changed(cfg);
+        }
+    }
+
+    /// Releases a cached `sound_file` clip right away once nothing can play
+    /// it (sound off or no file), instead of at the next beep.
+    pub fn config_changed(&self, cfg: &Config) {
+        if (!cfg.sound_enabled || cfg.sound_file.is_empty()) && self.file_cached.replace(false) {
             let _ = self.tx.send(Msg::Forget);
         }
     }
@@ -719,6 +727,41 @@ mod tests {
         assert_eq!(w.release_at(), None);
         w.idle_release();
         assert!(w.sink.is_none());
+    }
+
+    #[test]
+    fn config_change_releases_the_clip_once_unplayable() {
+        let (tx, rx) = channel::<Msg>();
+        let s = Sound {
+            tx,
+            file_cached: Cell::new(false),
+        };
+        let on = Config {
+            sound_enabled: true,
+            sound_file: "/x.wav".into(),
+            ..Config::default()
+        };
+        s.play(Beep::default(), &on);
+        assert!(matches!(rx.try_recv(), Ok(Msg::Play(..))));
+        s.config_changed(&on);
+        assert!(rx.try_recv().is_err(), "still playable: kept");
+        for off in [
+            Config {
+                sound_enabled: false,
+                ..on.clone()
+            },
+            Config {
+                sound_file: String::new(),
+                ..on.clone()
+            },
+        ] {
+            s.play(Beep::default(), &on);
+            assert!(matches!(rx.try_recv(), Ok(Msg::Play(..))));
+            s.config_changed(&off);
+            assert!(matches!(rx.try_recv(), Ok(Msg::Forget)));
+            s.config_changed(&off);
+            assert!(rx.try_recv().is_err(), "forgotten once");
+        }
     }
 
     #[test]
