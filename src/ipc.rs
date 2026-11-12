@@ -79,11 +79,17 @@ pub enum Request {
     ToggleVisibility,
     Quit,
     SettingsHello,
+    /// `rev`: the last [`Event::Config`] revision the window received
+    /// (missing = 0, i.e. none since the hello).
     Preview {
         config: Value,
+        #[serde(default)]
+        rev: u64,
     },
     Commit {
         config: Value,
+        #[serde(default)]
+        rev: u64,
     },
     Cancel,
     SavePreset {
@@ -103,9 +109,13 @@ pub enum Event {
     HotkeyStatus {
         errors: Vec<String>,
     },
+    /// The HUD's config: the hello reply (revision 0) or a push of
+    /// HUD-side changes (revisions count up; missing = 0).
     Config {
         config: Value,
         tab: Option<String>,
+        #[serde(default)]
+        rev: u64,
     },
     Focus {
         tab: Option<String>,
@@ -361,10 +371,24 @@ mod tests {
     fn request_json_shape() {
         let r = Request::Preview {
             config: serde_json::json!({"a": 1}),
+            rev: 3,
         };
         let v: Value = serde_json::to_value(&r).unwrap();
         assert_eq!(v["cmd"], "preview");
         assert_eq!(v["config"]["a"], 1);
+        assert_eq!(v["rev"], 3);
+        // Older peers send no revision.
+        let old: Request = serde_json::from_str(r#"{"cmd":"commit","config":{}}"#).unwrap();
+        assert_eq!(
+            old,
+            Request::Commit {
+                config: serde_json::json!({}),
+                rev: 0
+            }
+        );
+        let old: Event =
+            serde_json::from_str(r#"{"event":"config","config":{},"tab":null}"#).unwrap();
+        assert!(matches!(old, Event::Config { rev: 0, .. }));
         assert_eq!(
             serde_json::to_string(&Request::ToggleVisibility).unwrap(),
             r#"{"cmd":"toggle-visibility"}"#

@@ -359,7 +359,7 @@ fn handshake() -> Startup {
         return Startup::NotRunning;
     }
     match serde_json::from_str::<Event>(line.trim_end()) {
-        Ok(Event::Config { config, tab }) => {
+        Ok(Event::Config { config, tab, .. }) => {
             let _ = reader.get_ref().set_read_timeout(None);
             Startup::Ready {
                 stream,
@@ -543,6 +543,9 @@ struct SettingsApp {
     /// HUD values as of the start or the last Apply, kept current by HUD
     /// pushes for keys not edited here (`settings_session`).
     base: Config,
+    /// Revision of the last HUD push received, echoed in Preview/Commit so
+    /// the HUD can tell values sent before a push from edits.
+    rev: u64,
     section: Section,
     presets: presets::PresetsState,
     /// Hotkey problems: the HUD's grab report, or local ones (see `hotkeys`).
@@ -579,6 +582,7 @@ impl SettingsApp {
             presets: presets::PresetsState::new(&cfg),
             sent: cfg.clone(),
             base: cfg.clone(),
+            rev: 0,
             cfg,
             section,
             hotkey_errors: Vec::new(),
@@ -609,7 +613,10 @@ impl SettingsApp {
                 Incoming::Event(Event::Error { message }) => {
                     self.status = Some(message);
                 }
-                Incoming::Event(Event::Config { config, .. }) => self.adopt(&config),
+                Incoming::Event(Event::Config { config, rev, .. }) => {
+                    self.adopt(&config);
+                    self.rev = rev;
+                }
                 Incoming::Event(_) => {}
                 Incoming::Disconnected => {
                     // The HUD quit: nothing left to preview against.
@@ -1348,7 +1355,8 @@ impl eframe::App for SettingsApp {
                         .min_size(Vec2::new(84.0, 30.0));
                     if ui.add(ok).clicked() {
                         let config = self.cfg.to_value();
-                        self.finish(&ctx, Request::Commit { config });
+                        let rev = self.rev;
+                        self.finish(&ctx, Request::Commit { config, rev });
                     }
                     if ui
                         .add(egui::Button::new("Apply").min_size(Vec2::new(84.0, 30.0)))
@@ -1356,6 +1364,7 @@ impl eframe::App for SettingsApp {
                     {
                         self.link.send(&Request::Commit {
                             config: self.cfg.to_value(),
+                            rev: self.rev,
                         });
                         self.sent = self.cfg.clone();
                         self.base = self.cfg.clone();
@@ -1440,6 +1449,7 @@ impl eframe::App for SettingsApp {
         if !self.closing && self.cfg != self.sent {
             self.link.send(&Request::Preview {
                 config: self.cfg.to_value(),
+                rev: self.rev,
             });
             self.sent = self.cfg.clone();
         }

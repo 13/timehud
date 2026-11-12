@@ -156,17 +156,24 @@ impl Hud {
                     session: Session::new(&config),
                 });
                 let tab = self.settings_tab.take();
-                self.send_to(id, &IpcEvent::Config { config, tab });
+                self.send_to(
+                    id,
+                    &IpcEvent::Config {
+                        config,
+                        tab,
+                        rev: 0,
+                    },
+                );
                 return Some(IpcEvent::HotkeyStatus {
                     errors: self.hotkey_errors.clone(),
                 });
             }
-            Request::Preview { config } => {
-                self.settings_apply(config, false);
+            Request::Preview { config, rev } => {
+                self.settings_apply(config, rev, false);
                 return None;
             }
-            Request::Commit { config } => {
-                self.settings_apply(config, true);
+            Request::Commit { config, rev } => {
+                self.settings_apply(config, rev, true);
                 return None;
             }
             Request::Cancel => {
@@ -179,12 +186,12 @@ impl Hud {
     }
 
     /// Preview/Commit from the settings process: merge only what it changed.
-    fn settings_apply(&mut self, config: Value, commit: bool) {
+    fn settings_apply(&mut self, config: Value, seen_rev: u64, commit: bool) {
         let current = self.app.cfg.to_value();
         let Some(s) = self.settings.as_mut() else {
             return;
         };
-        let merged = s.session.apply(&current, config, commit);
+        let merged = s.session.apply(&current, config, seen_rev, commit);
         let mut fx = self
             .app
             .preview_config(Config::from_value(&merged), self.now());
@@ -224,8 +231,13 @@ impl Hud {
             return;
         };
         let id = s.conn_id;
-        if let Some(config) = s.session.hud_changed(&self.app.cfg.to_value()) {
-            self.send_to(id, &IpcEvent::Config { config, tab: None });
+        if let Some((config, rev)) = s.session.hud_changed(&self.app.cfg.to_value()) {
+            let push = IpcEvent::Config {
+                config,
+                tab: None,
+                rev,
+            };
+            self.send_to(id, &push);
         }
     }
 }
