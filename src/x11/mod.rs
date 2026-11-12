@@ -1,8 +1,11 @@
 //! X11 platform layer: connection, ARGB windows, presenting pixmaps, keymap.
 //!
-//! The connection also selects `SubstructureNotify` on the root window so the
-//! event loop sees other top-level windows map/restack (see
-//! [`overlay::restack_needed`]).
+//! The connection selects every root event the HUD needs, once:
+//! `SubstructureNotify` so the event loop sees other top-level windows
+//! map/restack (see [`overlay::restack_needed`]), `StructureNotify` for root
+//! size changes and the tray's `MANAGER` client messages, and
+//! `PropertyChange` for `_NET_WORKAREA`, the current desktop and
+//! `RESOURCE_MANAGER` (see [`X::changes_screens`], [`X::changes_scale`]).
 
 pub mod grabs;
 pub mod overlay;
@@ -80,7 +83,11 @@ impl X {
         let atoms = Atoms::new(&conn)?.reply()?;
         conn.change_window_attributes(
             root,
-            &ChangeWindowAttributesAux::new().event_mask(EventMask::SUBSTRUCTURE_NOTIFY),
+            &ChangeWindowAttributesAux::new().event_mask(
+                EventMask::SUBSTRUCTURE_NOTIFY
+                    | EventMask::STRUCTURE_NOTIFY
+                    | EventMask::PROPERTY_CHANGE,
+            ),
         )?;
         let x = X {
             conn,
@@ -138,22 +145,11 @@ impl X {
             .map_or((0, 0), |r| (r.root_x.into(), r.root_y.into()))
     }
 
-    /// Asks for the root events that change [`X::screens`] and [`X::scale`]:
-    /// size changes (StructureNotify), `_NET_WORKAREA`, the current desktop
-    /// and `RESOURCE_MANAGER` (PropertyChange), and RandR screen, CRTC and
-    /// output changes (monitors added, removed, moved or resized).
+    /// Asks for RandR screen, CRTC and output changes (monitors added,
+    /// removed, moved or resized), which change [`X::screens`]; the core
+    /// root events are selected by [`X::connect`].
     pub fn watch_screens(&self) -> anyhow::Result<()> {
         use x11rb::protocol::randr::NotifyMask;
-        let mask = self
-            .conn
-            .get_window_attributes(self.root)?
-            .reply()?
-            .your_event_mask;
-        self.conn.change_window_attributes(
-            self.root,
-            &ChangeWindowAttributesAux::new()
-                .event_mask(mask | EventMask::STRUCTURE_NOTIFY | EventMask::PROPERTY_CHANGE),
-        )?;
         // RandR delivers 1.2+ events only to clients that announced 1.2+.
         if self.conn.randr_query_version(1, 5)?.reply().is_ok() {
             self.conn.randr_select_input(

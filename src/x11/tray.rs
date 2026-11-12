@@ -144,19 +144,9 @@ pub struct Tray {
 impl Tray {
     pub fn new(x: &X) -> anyhow::Result<Tray> {
         let name = format!("_NET_SYSTEM_TRAY_S{}", x.screen_num);
-        let selection = x.conn.intern_atom(false, name.as_bytes())?.reply()?.atom;
         // MANAGER announcements arrive as StructureNotify client messages on
-        // the root; keep whatever mask the connection already selected.
-        let current = x
-            .conn
-            .get_window_attributes(x.root)?
-            .reply()?
-            .your_event_mask;
-        x.conn.change_window_attributes(
-            x.root,
-            &x11rb::protocol::xproto::ChangeWindowAttributesAux::new()
-                .event_mask(current | EventMask::STRUCTURE_NOTIFY),
-        )?;
+        // the root, selected by `X::connect`.
+        let selection = x.conn.intern_atom(false, name.as_bytes())?.reply()?.atom;
         let mut t = Tray {
             selection,
             owner: 0,
