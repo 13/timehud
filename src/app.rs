@@ -90,7 +90,8 @@ pub struct App {
     /// The cursor last set on the overlay window.
     cursor: Cursor,
     visible: bool,
-    /// Draw the theme's shadow ([`App::set_shadows`]).
+    /// A compositor runs, so the theme's shadow may be drawn at
+    /// `cfg.shadow` strength ([`App::set_shadows`]).
     shadows: bool,
     // Geometry
     panel_pos: (i32, i32),
@@ -368,7 +369,11 @@ impl App {
         View {
             cfg: &self.cfg,
             theme: get_theme(&self.cfg.theme),
-            shadow: self.shadows,
+            shadow: if self.shadows {
+                u8::try_from(self.cfg.shadow).unwrap_or(0)
+            } else {
+                0
+            },
             scale: self.scale,
             clock: self.clock.clone(),
             timer: self.timer.clone(),

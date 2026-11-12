@@ -9,7 +9,8 @@ pub use save_preset::run_save_preset;
 use crate::app::custom_pos;
 use crate::config::{
     COUNTDOWN_RANGE, Config, FONT_SIZE_RANGE, MARGIN_RANGE, Mode, OPACITY_RANGE, PADDING_RANGE,
-    REST_RANGE, ROUNDS_RANGE, ROW_SPACING_RANGE, SOUND_SECS_RANGE, WORK_RANGE, config_path,
+    REST_RANGE, ROUNDS_RANGE, ROW_SPACING_RANGE, SHADOW_RANGE, SOUND_SECS_RANGE, WORK_RANGE,
+    config_path,
 };
 use crate::hotkey::{duplicate_combos, egui_to_combo, format_combo, is_modifier_key};
 use crate::ipc::{Event, Request, socket_path};
@@ -860,6 +861,16 @@ impl SettingsApp {
                 {
                     cfg.opacity = pct as f64 / 100.0;
                 }
+                ui.end_row();
+
+                ui.label("Shadow");
+                ui.add(
+                    egui::Slider::new(&mut cfg.shadow, SHADOW_RANGE.0..=SHADOW_RANGE.1).suffix("%"),
+                )
+                .on_hover_text(
+                    "Drop shadow around the panel: 0 = off, 50 = the theme's shadow \
+                     (needs a compositor)",
+                );
                 ui.end_row();
             });
         });

@@ -825,7 +825,7 @@ mod tests {
         let view = View {
             cfg: &cfg,
             theme: get_theme("classic"),
-            shadow: true,
+            shadow: 50,
             scale: 1.0,
             clock: "12:34:56".into(),
             timer: "05:00".into(),

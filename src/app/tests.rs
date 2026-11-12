@@ -1259,7 +1259,10 @@ fn preview_cycle_edit_mid_run_does_not_beep() {
 
 #[test]
 fn shadows_off_keeps_the_panel_in_place() {
-    let mut h = mk(Config::default());
+    let mut h = mk(Config {
+        shadow: 50,
+        ..Config::default()
+    });
     let (_, with) = h.app.frame(h.now());
     let (wx, wy) = h.app.window_pos();
     assert!(with.panel.x > 0);
@@ -1270,6 +1273,26 @@ fn shadows_off_keeps_the_panel_in_place() {
     assert_eq!(
         h.app.window_pos(),
         (wx + with.panel.x, wy + with.panel.y),
+        "the panel stays put"
+    );
+}
+
+#[test]
+fn shadow_is_off_by_default_and_follows_the_config() {
+    let mut h = mk(Config::default());
+    let (_, plain) = h.app.frame(h.now());
+    assert_eq!((plain.panel.x, plain.panel.y), (0, 0), "no shadow margin");
+    let (px, py) = h.app.window_pos();
+    let cfg = Config {
+        shadow: 50,
+        ..Config::default()
+    };
+    h.app.preview_config(cfg, h.now());
+    let (_, shadowed) = h.app.frame(h.now());
+    assert!(shadowed.panel.x > 0);
+    assert_eq!(
+        h.app.window_pos(),
+        (px - shadowed.panel.x, py - shadowed.panel.y),
         "the panel stays put"
     );
 }

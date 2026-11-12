@@ -189,6 +189,9 @@ config_fields! {
     active_preset: String = String::new();
     theme: String = "classic".into();
     progress_style: String = "line".into();
+    /// Drop shadow strength, percent: 0 = off, 50 = the theme's shadow
+    /// (drawn only with a compositor).
+    shadow: i64 = 0, range SHADOW_RANGE;
     padding: i64 = 12, range PADDING_RANGE;
     /// -1 = same as padding.
     padding_top: i64 = -1, range PADDING_TOP_RANGE;
@@ -248,6 +251,8 @@ pub const PADDING_RANGE: (i64, i64) = (0, 100);
 pub const PADDING_TOP_RANGE: (i64, i64) = (-1, 100);
 /// Row spacing, px.
 pub const ROW_SPACING_RANGE: (i64, i64) = (0, 100);
+/// Drop shadow strength, percent (0 = off, 50 = the theme's shadow).
+pub const SHADOW_RANGE: (i64, i64) = (0, 100);
 
 impl Config {
     /// Missing or unparseable file gives defaults. An unparseable file (or
@@ -1060,6 +1065,14 @@ mod tests {
     fn int_fields_reject_floats_and_bools() {
         let cfg = Config::from_value(&json!({"font_size": 12.5, "margin": true, "padding": 7}));
         assert_eq!((cfg.font_size, cfg.margin, cfg.padding), (30, 15, 7));
+    }
+
+    #[test]
+    fn shadow_clamps_and_rejects_bools() {
+        let cfg = Config::from_value(&json!({"shadow": 250}));
+        assert_eq!(cfg.shadow, 100);
+        let cfg = Config::from_value(&json!({"shadow": true}));
+        assert_eq!(cfg.shadow, 0);
     }
 
     #[test]

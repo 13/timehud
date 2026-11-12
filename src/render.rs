@@ -12,10 +12,11 @@ use tiny_skia::{
 pub struct View<'a> {
     pub cfg: &'a Config,
     pub theme: &'static Theme,
-    /// Draw the theme's drop shadow (and the window margin it needs). Off
-    /// while no compositing manager runs: then window alpha is ignored and
-    /// the shadow would show as a black box.
-    pub shadow: bool,
+    /// Drop shadow strength, percent (0 = none and no window margin; 50 =
+    /// the theme's `shadow_alpha`, 100 = twice that). 0 while no compositing
+    /// manager runs: then window alpha is ignored and the shadow would show
+    /// as a black box.
+    pub shadow: u8,
     /// HiDPI factor.
     pub scale: f32,
     pub clock: String,
@@ -86,8 +87,8 @@ impl PartialEq for ThemeRef {
 #[derive(Clone, PartialEq)]
 struct StaticView {
     theme: ThemeRef,
-    /// Draw the theme's shadow ([`View::shadow`]).
-    shadow: bool,
+    /// Shadow strength, percent ([`View::shadow`]).
+    shadow: u8,
     scale: f32,
     /// Not drawn from, but a new family means a different `FontSet`.
     font_family: String,
@@ -149,11 +150,8 @@ impl StaticView {
 
     /// The shadow's alpha; 0 when there is none.
     fn shadow_alpha(&self) -> u8 {
-        if self.shadow {
-            self.theme.0.shadow_alpha
-        } else {
-            0
-        }
+        let a = u32::from(self.theme.0.shadow_alpha) * u32::from(self.shadow) / 50;
+        u8::try_from(a).unwrap_or(u8::MAX)
     }
 
     fn pos(&self) -> f32 {
@@ -818,7 +816,7 @@ mod tests {
         View {
             cfg,
             theme: get_theme(theme),
-            shadow: true,
+            shadow: 50,
             scale: 1.0,
             clock: "12:34:56".into(),
             timer: "05:00".into(),
@@ -973,9 +971,9 @@ mod tests {
         let v = mk(&cfg, "classic");
         let mut f = fonts();
         let with = StaticView::of(&v);
-        assert!(with.shadow);
+        assert!(with.shadow > 0);
         let without = StaticView {
-            shadow: false,
+            shadow: 0,
             ..with.clone()
         };
         let (a, b) = (plan(&with, &mut f).layout, plan(&without, &mut f).layout);
@@ -996,12 +994,40 @@ mod tests {
     fn corners_transparent_without_shadow_area() {
         let cfg = Config::default();
         let v = View {
-            shadow: false,
+            shadow: 0,
             ..mk(&cfg, "classic")
         };
         let (pm, l) = render(&v, &mut fonts()).unwrap();
         assert_eq!(l.panel.x, 0);
         assert_eq!(pm.pixel(0, 0).unwrap().alpha(), 0);
+    }
+
+    #[test]
+    fn shadow_strength_scales_the_shadow() {
+        let cfg = Config::default();
+        let mut f = fonts();
+        // Alpha just outside the panel's left edge, mid-height.
+        let edge = |strength: u8, f: &mut FontSet| {
+            let v = View {
+                shadow: strength,
+                ..mk(&cfg, "classic")
+            };
+            let (pm, l) = render(&v, f).unwrap();
+            let y = (l.panel.y + l.panel.h / 2) as u32;
+            pm.pixel((l.panel.x - 2) as u32, y).unwrap().alpha()
+        };
+        let (weak, normal, strong) = (edge(25, &mut f), edge(50, &mut f), edge(100, &mut f));
+        assert!(
+            0 < weak && weak < normal && normal < strong,
+            "{weak} {normal} {strong}"
+        );
+        let v = |shadow| StaticView {
+            shadow,
+            ..StaticView::of(&mk(&cfg, "classic"))
+        };
+        assert_eq!(v(50).shadow_alpha(), get_theme("classic").shadow_alpha);
+        assert_eq!(v(100).shadow_alpha(), 140);
+        assert_eq!(v(0).shadow_alpha(), 0);
     }
 
     #[test]

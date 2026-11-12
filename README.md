@@ -207,6 +207,7 @@ The Python app also always uses `~/.config/timehud/config.json` and ignores
   "active_preset": "",
   "theme": "classic",
   "progress_style": "line",
+  "shadow": 0,
   "padding": 12,
   "padding_top": -1,
   "row_spacing": 6,
@@ -220,7 +221,9 @@ The Python app also always uses `~/.config/timehud/config.json` and ignores
 
 `custom_x` / `custom_y` of `-1` mean "use `position`"; `padding_top` of `-1`
 means "same as `padding`" (file only; the Settings window leaves it alone);
-`progress_style` is `line`, `border` or `off`.
+`progress_style` is `line`, `border` or `off`; `shadow` is the drop
+shadow's strength around the panel, `0`–`100` (`0` = off, `50` = the theme's
+shadow; only drawn while a compositor runs).
 
 The Settings window previews every change live on the HUD: **OK** saves,
 **Cancel** (or closing the window) reverts. **Sound → Play sounds** is the
