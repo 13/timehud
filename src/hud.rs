@@ -42,6 +42,17 @@ use x11rb::protocol::Event;
 
 static START: OnceLock<Instant> = OnceLock::new();
 
+/// Seconds on a clock that keeps running through system suspend
+/// (`CLOCK_BOOTTIME`; `Instant` is `CLOCK_MONOTONIC`, which stops while
+/// suspended), so a timer running across a suspend counts the time slept.
+fn boot_secs() -> f64 {
+    use nix::time::{ClockId, clock_gettime};
+    let t = clock_gettime(ClockId::CLOCK_BOOTTIME)
+        .or_else(|_| clock_gettime(ClockId::CLOCK_MONOTONIC))
+        .expect("CLOCK_MONOTONIC is always available");
+    t.tv_sec() as f64 + t.tv_nsec() as f64 * 1e-9
+}
+
 /// Records the process start for the `TIMEHUD_TRACE=1` startup timing.
 /// Call first thing in `main`.
 pub fn mark_start() {
@@ -121,7 +132,8 @@ struct Hud {
     x: X,
     overlay: OverlayWin,
     app: App,
-    t0: Instant,
+    /// `boot_secs()` at startup; `now()` counts from here.
+    t0: f64,
     no_tray: bool,
     /// Second font set for menu popups (the overlay's belongs to `App`).
     menu_fonts: Option<FontSet>,
@@ -202,7 +214,7 @@ impl Hud {
     /// Window first (connect → fonts → `App` → window → first frame), then
     /// the tray, hotkeys and everything else, for a fast first paint.
     fn start(cfg: Config, listener: UnixListener, no_tray: bool) -> anyhow::Result<Hud> {
-        let t0 = Instant::now();
+        let t0 = boot_secs();
         let x = X::connect()?;
         let compositor = CompositorWatch::new(&x);
         let scale = x.scale();
@@ -210,8 +222,8 @@ impl Hud {
         // A HUD saved on another monitor starts there, not under the pointer.
         let area = screens.start_area(custom_pos(&cfg), || x.pointer());
         let fonts = FontSet::load(&resolved_family(&cfg));
-        let clock = Box::new(move || t0.elapsed().as_secs_f64());
-        let now = t0.elapsed().as_secs_f64();
+        let clock = Box::new(move || boot_secs() - t0);
+        let now = boot_secs() - t0;
         let mut app = App::new(cfg, clock, fonts, scale, area, now);
         app.set_shadows(compositor.active());
         let mut canvas = Canvas::default();
@@ -299,7 +311,7 @@ impl Hud {
     }
 
     fn now(&self) -> f64 {
-        self.t0.elapsed().as_secs_f64()
+        boot_secs() - self.t0
     }
 
     fn run(&mut self) -> anyhow::Result<()> {

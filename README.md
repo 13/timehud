@@ -284,6 +284,10 @@ the timer depletes through each phase. A long beep marks every phase end
 (`phase_beeps`), and an optional fast double beep (`halfway_beep`) fires at
 half of each work phase; the session ends after the last work phase.
 
+Timers keep counting through a system suspend. On resume, a countdown that
+ran out finishes (one long beep) and an interval session carries on in the
+phase it would have reached.
+
 ---
 
 ## Footprint

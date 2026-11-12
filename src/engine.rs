@@ -78,6 +78,12 @@ pub struct TickResult {
     pub progress: f64,
 }
 
+/// Overshoot past a phase end from which it is carried into the following
+/// phases rather than dropped. A 100 ms tick overshoots by ~50 ms, which is
+/// dropped as in the Python engine (ported tests drop up to 1 s); only a
+/// suspend or a badly stalled loop gets here.
+const CARRY_OVERSHOOT: f64 = 5.0;
+
 pub struct TimerEngine {
     clock: ClockFn,
     running: bool,
@@ -274,6 +280,30 @@ impl TimerEngine {
                 Some((Phase::Rest, self.round, cfg.interval_rest as f64))
             }
             _ => Some((Phase::Work, self.round + 1, cfg.interval_work as f64)),
+        }
+    }
+
+    /// Move past the phase end overshot by `overshoot` seconds, carrying a
+    /// large overshoot (a suspend, a stalled loop) through as many phases as
+    /// it covers. Returns whether the session is done.
+    fn advance_phases(&mut self, cfg: &Config, mut overshoot: f64) -> bool {
+        loop {
+            if self.advance_phase(cfg) {
+                return true;
+            }
+            if overshoot < CARRY_OVERSHOOT {
+                return false;
+            }
+            self.start_mono -= overshoot;
+            let remaining = self.remaining();
+            if remaining > 0.0 {
+                // Landed past halfway: that cue is stale, not due.
+                if self.phase == Phase::Work && remaining <= cfg.interval_work as f64 / 2.0 {
+                    self.phase_halfway_done = true;
+                }
+                return false;
+            }
+            overshoot = -remaining;
         }
     }
 
@@ -525,7 +555,7 @@ impl TimerEngine {
                 if cfg.phase_beeps {
                     beeps.push(LONG); // every phase end, and the session end
                 }
-                if self.advance_phase(cfg) {
+                if self.advance_phases(cfg, -remaining) {
                     finished = true;
                     state = State::End;
                 } else {
@@ -579,8 +609,13 @@ impl TimerEngine {
                 finished = true;
                 beeps.push(LONG); // long beep exactly when time runs out
                 if cfg.auto_restart_countdown {
-                    self.cd_remaining = cfg.countdown_duration as f64;
+                    let duration = cfg.countdown_duration as f64;
+                    self.cd_remaining = duration;
                     self.start_mono = self.now();
+                    if -remaining >= CARRY_OVERSHOOT {
+                        // Restarts missed during a suspend: keep the cycle's phase.
+                        self.start_mono -= -remaining % duration;
+                    }
                     self.sound_beats = 0;
                     self.last_short_beep_sec = -1;
                     restarted = true;
@@ -1589,6 +1624,105 @@ mod tests {
                 make(&Config::default()).0.phase_length(&Config::default()),
                 None
             );
+        }
+    }
+
+    /// A suspend (or stalled loop) jumps the clock far past a phase end.
+    mod test_clock_jump {
+        use super::*;
+
+        fn interval() -> Config {
+            Config {
+                timer_mode: Mode::Interval,
+                interval_work: 40,
+                interval_rest: 20,
+                interval_rounds: 8,
+                halfway_beep: true,
+                ..Config::default()
+            }
+        }
+
+        #[test]
+        fn interval_carries_the_gap_through_phases() {
+            let cfg = interval();
+            let (mut e, c) = make(&cfg);
+            e.toggle(&cfg);
+            c.advance(130.0); // 2 full rounds + 10 s into round 3's work
+            let r = e.tick(&cfg);
+            assert_eq!((r.phase, r.round, r.state), (Phase::Work, 3, State::Run));
+            approx(r.display, 30.0);
+            assert_eq!(longs(&r.beeps), 1, "one phase-end beep, not one per phase");
+        }
+
+        #[test]
+        fn interval_landing_past_halfway_skips_that_cue() {
+            let cfg = interval();
+            let (mut e, c) = make(&cfg);
+            e.toggle(&cfg);
+            c.advance(85.0); // 25 s into round 2's work: past its halfway
+            let r = e.tick(&cfg);
+            approx(r.display, 15.0);
+            assert_eq!(doubles(&r.beeps), 0);
+            c.advance(0.1);
+            assert_eq!(doubles(&e.tick(&cfg).beeps), 0);
+        }
+
+        #[test]
+        fn interval_session_ends_during_the_gap() {
+            let cfg = interval();
+            let (mut e, c) = make(&cfg);
+            e.toggle(&cfg);
+            c.advance(10_000.0);
+            let r = e.tick(&cfg);
+            assert!(r.finished);
+            assert_eq!((r.state, r.round), (State::End, 8));
+            assert!(!e.running());
+        }
+
+        #[test]
+        fn countdown_finishes_once_after_the_gap() {
+            let cfg = Config {
+                timer_mode: Mode::Countdown,
+                countdown_duration: 60,
+                ..Config::default()
+            };
+            let (mut e, c) = make(&cfg);
+            e.toggle(&cfg);
+            c.advance(600.0);
+            let r = e.tick(&cfg);
+            assert!(r.finished);
+            assert_eq!(longs(&r.beeps), 1);
+            assert!(!e.running());
+        }
+
+        #[test]
+        fn auto_restart_keeps_the_cycle_phase() {
+            let cfg = Config {
+                timer_mode: Mode::Countdown,
+                countdown_duration: 60,
+                auto_restart_countdown: true,
+                ..Config::default()
+            };
+            let (mut e, c) = make(&cfg);
+            e.toggle(&cfg);
+            c.advance(150.0); // 2.5 cycles
+            let r = e.tick(&cfg);
+            assert!(r.restarted);
+            approx(e.remaining(), 30.0);
+        }
+
+        #[test]
+        fn stopwatch_counts_the_gap_with_one_periodic_beep() {
+            let cfg = Config {
+                sound_interval: 60,
+                ..Config::default()
+            };
+            let (mut e, c) = make(&cfg);
+            e.toggle(&cfg);
+            c.advance(600.0);
+            let r = e.tick(&cfg);
+            approx(r.display, 600.0);
+            assert_eq!(longs(&r.beeps), 1);
         }
     }
 }
