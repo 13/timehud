@@ -1204,3 +1204,29 @@ fn set_mode_ends_the_preset_unless_unchanged() {
     assert_eq!(h.app.cfg.timer_mode, Mode::Interval);
     assert_eq!(h.app.cfg.active_preset, "");
 }
+
+#[test]
+fn preview_cycle_edit_mid_run_does_not_beep() {
+    let mut h = mk(Config {
+        sound_enabled: true,
+        ..Config::default()
+    });
+    h.app.toggle_timer(h.now());
+    for _ in 0..1000 {
+        h.advance(0.1);
+        h.tick(); // plain stopwatch at 100 s
+    }
+    let mut edited = h.app.cfg.clone();
+    edited.stopwatch_work = 45;
+    edited.stopwatch_rest = 15;
+    let mut fx = h.app.preview_config(edited, h.now());
+    for _ in 0..30 {
+        h.advance(0.1);
+        fx.extend(h.tick());
+    }
+    assert!(
+        !fx.iter().any(|e| matches!(e, Effect::Beep(_))),
+        "no boundary is crossed between 100 s and 103 s: {fx:?}"
+    );
+    assert!(h.app.engine.running());
+}

@@ -149,19 +149,52 @@ impl TimerEngine {
             }
             self.start_mono = self.now();
             self.running = true;
-            let si = cfg.sound_interval;
-            if si > 0 {
-                self.sound_beats = (self.elapsed() / si as f64) as i64;
-                self.sound_alert_before_beats =
-                    ((self.elapsed() + cfg.sound_alert_before as f64) / si as f64) as i64;
-            } else {
-                // 0 = periodic beeps off
-                self.sound_beats = 0;
-                self.sound_alert_before_beats = 0;
-            }
+            self.sync_beat_counters(cfg);
             if Self::cycling(cfg) {
                 self.cycle_beats = Self::cycle_boundaries(cfg, self.elapsed());
             }
+        }
+    }
+
+    /// Count the periodic beats already behind the current elapsed time, so
+    /// none of them replays.
+    fn sync_beat_counters(&mut self, cfg: &Config) {
+        let si = cfg.sound_interval;
+        if si > 0 {
+            self.sound_beats = (self.elapsed() / si as f64) as i64;
+            self.sound_alert_before_beats =
+                ((self.elapsed() + cfg.sound_alert_before as f64) / si as f64) as i64;
+        } else {
+            // 0 = periodic beeps off
+            self.sound_beats = 0;
+            self.sound_alert_before_beats = 0;
+        }
+    }
+
+    /// The stopwatch cycle setup (`stopwatch_work`/`stopwatch_rest`, or the
+    /// mode) changed under a running stopwatch: count the boundaries,
+    /// halfway cue and periodic beats already behind the current elapsed
+    /// time under the new setup, so none of them fires spuriously.
+    pub fn resync_cycle(&mut self, cfg: &Config) {
+        if !self.running || cfg.timer_mode != Mode::Stopwatch {
+            return; // `toggle` resyncs on start
+        }
+        self.sync_beat_counters(cfg);
+        self.last_short_beep_sec = -1;
+        if Self::cycling(cfg) {
+            let elapsed = self.elapsed();
+            self.cycle_beats = Self::cycle_boundaries(cfg, elapsed);
+            let work = cfg.stopwatch_work as f64;
+            let pos = elapsed % (work + cfg.stopwatch_rest as f64);
+            // Halfway of the current work phase already passed: consumed.
+            self.halfway_mark = if pos < work && pos >= work / 2.0 {
+                self.cycle_beats + 1
+            } else {
+                0
+            };
+        } else {
+            self.cycle_beats = 0;
+            self.halfway_mark = 0;
         }
     }
 
@@ -1330,6 +1363,38 @@ mod tests {
             e.toggle(&cfg);
             let beeps = collect_beeps(&mut e, &cfg, &c, 121.0); // two full cycles
             assert_eq!(doubles(&beeps) + longs(&beeps), 0);
+        }
+
+        #[test]
+        fn turning_cycling_on_mid_run_does_not_beep() {
+            let mut cfg = Config {
+                sound_enabled: true,
+                sound_interval: 0,
+                ..Config::default()
+            };
+            let (mut e, c) = make(&cfg);
+            e.toggle(&cfg);
+            collect_beeps(&mut e, &cfg, &c, 100.0); // plain stopwatch at 100 s
+            cfg.stopwatch_work = 45;
+            cfg.stopwatch_rest = 15;
+            e.resync_cycle(&cfg);
+            let beeps = collect_beeps(&mut e, &cfg, &c, 3.0); // 103 s: inside work
+            assert_eq!(beeps, vec![]);
+            let beeps = collect_beeps(&mut e, &cfg, &c, 3.0); // 105 s boundary
+            assert_eq!(longs(&beeps), 1);
+        }
+
+        #[test]
+        fn editing_work_mid_cycle_does_not_beep() {
+            let (mut cfg, mut e, c) = setup();
+            cfg.halfway_beep = true;
+            e.reset(&cfg);
+            e.toggle(&cfg);
+            collect_beeps(&mut e, &cfg, &c, 50.0); // rest of round 1, one boundary
+            cfg.stopwatch_work = 20; // cycle 35: elapsed 50 is round 2 work, 2 boundaries
+            e.resync_cycle(&cfg);
+            let beeps = collect_beeps(&mut e, &cfg, &c, 1.0);
+            assert_eq!(beeps, vec![]);
         }
 
         #[test]

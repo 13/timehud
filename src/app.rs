@@ -987,6 +987,11 @@ impl App {
                 self.engine.reset(&self.cfg);
             }
         }
+        // Stopwatch cycle edits under a running stopwatch: no replayed beeps.
+        let cycle = |c: &Config| (c.timer_mode, c.stopwatch_work, c.stopwatch_rest);
+        if cycle(&self.cfg) != cycle(&old) {
+            self.engine.resync_cycle(&self.cfg);
+        }
         self.restyle();
         if !self.cfg.show_timer {
             self.line_fraction = -1.0;
