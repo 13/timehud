@@ -352,8 +352,9 @@ impl X {
         self.keymap.borrow().keysym(keycode)
     }
 
-    /// A keycode producing `keysym` in any column (letters match either case).
-    pub fn keycode(&self, keysym: u32) -> Option<u8> {
+    /// The keycode producing `keysym` and its column (1 = needs Shift);
+    /// see [`Keymap::keycode`].
+    pub fn keycode(&self, keysym: u32) -> Option<(u8, u8)> {
         self.keymap.borrow().keycode(keysym)
     }
 
@@ -625,20 +626,31 @@ impl Keymap {
             .unwrap_or(0)
     }
 
-    /// A keycode producing `keysym` in any column (letters match either case).
-    fn keycode(&self, keysym: u32) -> Option<u8> {
-        let alt = match keysym {
-            0x61..=0x7a => keysym - 0x20,
-            0x41..=0x5a => keysym + 0x20,
-            _ => keysym,
-        };
+    /// The keycode producing `keysym` and its column: 0 = unshifted,
+    /// 1 = with Shift. Unshifted keys are preferred; columns 2 and up (other
+    /// groups, AltGr levels) are not used. Letters match either case and
+    /// always report column 0, so "Ctrl+A" means the plain A key.
+    fn keycode(&self, keysym: u32) -> Option<(u8, u8)> {
         let per = usize::from(self.per).max(1);
-        let i = self
-            .syms
-            .iter()
-            .position(|s| *s == keysym)
-            .or_else(|| self.syms.iter().position(|s| *s == alt))?;
-        u8::try_from(i / per + usize::from(self.min_keycode)).ok()
+        let cols = per.min(2);
+        let letter = match keysym {
+            0x61..=0x7a => Some((keysym, keysym - 0x20)),
+            0x41..=0x5a => Some((keysym + 0x20, keysym)),
+            _ => None,
+        };
+        let find = |col: usize, want: &dyn Fn(u32) -> bool| {
+            self.syms
+                .chunks(per)
+                .position(|row| row.get(col).is_some_and(|s| want(*s)))
+                .and_then(|i| u8::try_from(i + usize::from(self.min_keycode)).ok())
+        };
+        if let Some((lower, upper)) = letter {
+            let is_letter = |s: u32| s == lower || s == upper;
+            return (0..cols)
+                .find_map(|col| find(col, &is_letter))
+                .map(|k| (k, 0));
+        }
+        (0..cols).find_map(|col| find(col, &|s| s == keysym).map(|k| (k, col as u8)))
     }
 }
 
@@ -810,8 +822,48 @@ mod tests {
         assert_eq!(k.keysym(9), 0x20);
         assert_eq!(k.keysym(7), 0);
         assert_eq!(k.keysym(50), 0);
-        assert_eq!(k.keycode(0x20), Some(9));
-        assert_eq!(k.keycode(0x51), Some(8));
+        assert_eq!(k.keycode(0x20), Some((9, 0)));
+        assert_eq!(k.keycode(0x51), Some((8, 0)));
+        assert_eq!(k.keycode(0x71), Some((8, 0)));
         assert_eq!(k.keycode(0xffc9), None);
+    }
+
+    /// US-like rows: 10 = (equal, plus), 11 = (bracketleft, braceleft),
+    /// 12 = (semicolon, colon), 13 = (KP_Add), 14 = (a, A, ä, Ä, at, ...).
+    fn us_keymap() -> Keymap {
+        let rows: [[u32; 6]; 5] = [
+            [0x3d, 0x2b, 0x3d, 0x2b, 0, 0],
+            [0x5b, 0x7b, 0x5b, 0x7b, 0, 0],
+            [0x3b, 0x3a, 0x3b, 0x3a, 0, 0],
+            [0xffab, 0xffab, 0xffab, 0xffab, 0, 0],
+            [0x61, 0x41, 0xe4, 0xc4, 0x40, 0],
+        ];
+        Keymap {
+            min_keycode: 10,
+            per: 6,
+            syms: rows.concat(),
+        }
+    }
+
+    #[test]
+    fn keycode_reports_the_shift_column() {
+        let k = us_keymap();
+        assert_eq!(k.keycode(0x2b), Some((10, 1)), "plus needs Shift");
+        assert_eq!(k.keycode(0x3d), Some((10, 0)));
+        assert_eq!(k.keycode(0x7b), Some((11, 1)), "braceleft needs Shift");
+        assert_eq!(k.keycode(0x3a), Some((12, 1)), "colon needs Shift");
+        assert_eq!(k.keycode(0xffab), Some((13, 0)));
+        assert_eq!(k.keycode(0x41), Some((14, 0)), "letters never imply Shift");
+    }
+
+    #[test]
+    fn keycode_prefers_unshifted_and_ignores_other_groups_and_levels() {
+        let mut k = us_keymap();
+        // A second key with plus unshifted (like a German layout) wins.
+        k.syms.extend([0x2b, 0x2a, 0, 0, 0, 0]);
+        assert_eq!(k.keycode(0x2b), Some((15, 0)));
+        // ä (group 2) and @ (AltGr level) are only in columns >= 2.
+        assert_eq!(k.keycode(0xe4), None);
+        assert_eq!(k.keycode(0x40), None);
     }
 }
