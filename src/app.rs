@@ -95,10 +95,6 @@ pub struct App {
     // Geometry
     panel_pos: (i32, i32),
     layout: Layout,
-    // Settings sync (port of `_sync_*`)
-    last_cd_duration: i64,
-    last_interval_cfg: (i64, i64, i64),
-    last_show_tray_icon: bool,
 }
 
 fn hex(s: &str, fallback: Rgb) -> Rgb {
@@ -117,10 +113,6 @@ pub fn resolved_family(cfg: &Config) -> String {
         .find(|f| !f.is_empty())
         .unwrap_or("Monospace")
         .to_string()
-}
-
-fn interval_cfg(cfg: &Config) -> (i64, i64, i64) {
-    (cfg.interval_work, cfg.interval_rest, cfg.interval_rounds)
 }
 
 /// Qt `QRect::center()` on one axis.
@@ -205,9 +197,6 @@ impl App {
                 },
                 regions: Vec::new(),
             },
-            last_cd_duration: cfg.countdown_duration,
-            last_interval_cfg: interval_cfg(&cfg),
-            last_show_tray_icon: cfg.show_tray_icon,
             cfg,
         };
         app.update_timer(now);
@@ -516,6 +505,14 @@ impl App {
         fx
     }
 
+    /// After a timer-setup change: fresh mode label, save, then `sync`.
+    fn changed(&mut self, now: f64) -> Vec<Effect> {
+        self.refresh_mode_label();
+        let mut fx = vec![Effect::SaveSoon];
+        fx.extend(self.sync(now));
+        fx
+    }
+
     // ══ Tick (port of `_update`) ════════════════════════════════════════════
 
     /// Start pending timed transitions (auto-fold) whose deadline has passed.
@@ -748,10 +745,7 @@ impl App {
         }
         self.cfg.active_preset.clear(); // manual mode change ends the preset
         self.engine.set_mode(&mut self.cfg, mode);
-        self.refresh_mode_label();
-        let mut fx = vec![Effect::SaveSoon];
-        fx.extend(self.sync(now));
-        fx
+        self.changed(now)
     }
 
     /// `timehud set`: a countdown of `secs`, stopped at its start. Not a
@@ -766,13 +760,9 @@ impl App {
             ));
         }
         self.cfg.countdown_duration = secs;
-        self.last_cd_duration = secs;
         self.cfg.active_preset.clear();
         self.engine.set_mode(&mut self.cfg, Mode::Countdown);
-        self.refresh_mode_label();
-        let mut fx = vec![Effect::SaveSoon];
-        fx.extend(self.sync(now));
-        Ok(fx)
+        Ok(self.changed(now))
     }
 
     /// `timehud preset NAME`: applies the preset of that name (exact match
@@ -839,18 +829,13 @@ impl App {
                 self.cfg.stopwatch_work = 0;
                 self.cfg.stopwatch_rest = 0;
                 self.engine.set_mode(&mut self.cfg, Mode::Stopwatch);
-                self.refresh_mode_label();
-                let mut fx = vec![Effect::SaveSoon];
-                fx.extend(self.sync(now));
-                fx
+                self.changed(now)
             }
             MenuAction::ApplyPreset(index) => self.apply_preset(*index, now),
             MenuAction::SetTheme(name) => {
                 apply_theme(&mut self.cfg, name);
                 self.restyle();
-                let mut fx = vec![Effect::SaveSoon];
-                fx.extend(self.sync(now));
-                fx
+                self.changed(now)
             }
             MenuAction::ToggleClickThrough => {
                 self.cfg.click_through = !self.cfg.click_through;
@@ -884,16 +869,8 @@ impl App {
             return Vec::new();
         };
         preset.apply_to(&rules, &mut self.cfg);
-        match preset {
-            Preset::Interval { .. } => self.last_interval_cfg = interval_cfg(&self.cfg),
-            Preset::Countdown { duration, .. } => self.last_cd_duration = duration,
-            Preset::Stopwatch { .. } => {}
-        }
         self.engine.reset(&self.cfg);
-        self.refresh_mode_label();
-        let mut fx = vec![Effect::SaveSoon];
-        fx.extend(self.sync(now));
-        fx
+        self.changed(now)
     }
 
     /// Save the current timer setup as a preset (same name overwrites).
@@ -966,43 +943,33 @@ impl App {
         {
             self.cfg.active_preset.clear();
         }
-        if self.cfg.timer_mode != old.timer_mode {
+        let interval = |c: &Config| (c.interval_work, c.interval_rest, c.interval_rounds);
+        let stopped = !self.engine.running();
+        // Back to the start on a mode change or a hidden timer; a stopped
+        // countdown reloads its new duration (stays idle), a stopped interval
+        // timer its new phases.
+        let needs_reset = self.cfg.timer_mode != old.timer_mode
+            || !self.cfg.show_timer
+            || (stopped
+                && self.cfg.timer_mode == Mode::Countdown
+                && self.cfg.countdown_duration != old.countdown_duration)
+            || (stopped
+                && self.cfg.timer_mode == Mode::Interval
+                && interval(&self.cfg) != interval(&old));
+        if needs_reset {
             self.engine.reset(&self.cfg);
-        }
-        if !self.cfg.show_timer {
-            fx.extend(self.reset_timer(now));
-        }
-        // Countdown duration: stopped engines reload it (stays idle).
-        if self.cfg.countdown_duration != self.last_cd_duration {
-            self.last_cd_duration = self.cfg.countdown_duration;
-            if !self.engine.running() {
-                self.engine.adjust_countdown(&self.cfg, 0.0);
+        } else {
+            // Stopwatch cycle edits under a running stopwatch: no replayed beeps.
+            let cycle = |c: &Config| (c.stopwatch_work, c.stopwatch_rest);
+            if cycle(&self.cfg) != cycle(&old) {
+                self.engine.resync_cycle(&self.cfg);
             }
-        }
-        // Interval settings: reset a stopped interval engine.
-        let iv = interval_cfg(&self.cfg);
-        if iv != self.last_interval_cfg {
-            self.last_interval_cfg = iv;
-            if self.cfg.timer_mode == Mode::Interval && !self.engine.running() {
-                self.engine.reset(&self.cfg);
-            }
-        }
-        // Stopwatch cycle edits under a running stopwatch: no replayed beeps.
-        let cycle = |c: &Config| (c.timer_mode, c.stopwatch_work, c.stopwatch_rest);
-        if cycle(&self.cfg) != cycle(&old) {
-            self.engine.resync_cycle(&self.cfg);
         }
         self.restyle();
-        if !self.cfg.show_timer {
-            self.line_fraction = -1.0;
-            self.border_fraction = -1.0;
-            self.set_progress(-1.0, now);
-        }
         if self.cfg.show_timer && self.cfg.show_controls {
             self.reset_controls_fold(now);
         }
-        if self.cfg.show_tray_icon != self.last_show_tray_icon {
-            self.last_show_tray_icon = self.cfg.show_tray_icon;
+        if self.cfg.show_tray_icon != old.show_tray_icon {
             fx.push(Effect::SetTrayVisible(self.cfg.show_tray_icon));
         }
         if self.cfg.click_through != old.click_through {
@@ -1188,15 +1155,12 @@ impl App {
         } else {
             -step.min(self.cfg.countdown_duration - 1)
         };
-        if delta != 0 {
-            self.cfg.countdown_duration += delta;
-            self.last_cd_duration = self.cfg.countdown_duration;
-            self.cfg.active_preset.clear();
-            self.engine.adjust_countdown(&self.cfg, delta as f64);
+        if delta == 0 {
+            return Vec::new(); // at a range limit
         }
-        self.refresh_mode_label();
-        let mut fx = vec![Effect::SaveSoon];
-        fx.extend(self.sync(now));
-        fx
+        self.cfg.countdown_duration += delta;
+        self.cfg.active_preset.clear();
+        self.engine.adjust_countdown(&self.cfg, delta as f64);
+        self.changed(now)
     }
 }
