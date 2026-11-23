@@ -1,6 +1,6 @@
 # Maintainer: Ben Egger <eggerben@gmail.com>
 pkgname=timehud
-pkgver=1.1.0
+pkgver=1.2.0
 pkgrel=1
 pkgdesc="Transparent HUD overlay with clock, countdown, interval and cycling stopwatch timers"
 arch=('x86_64')
