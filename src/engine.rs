@@ -188,6 +188,8 @@ impl TimerEngine {
                 self.phase = Phase::Work;
                 self.round = 1;
                 self.cd_remaining = cfg.interval_work as f64;
+            } else if Self::cycle_session_over(cfg, self.elapsed) {
+                self.reset(cfg); // a finished cycling-stopwatch session starts over
             }
             self.start_mono = self.now();
             self.running = true;
@@ -330,6 +332,22 @@ impl TimerEngine {
         cfg.timer_mode == Mode::Stopwatch && cfg.stopwatch_work > 0
     }
 
+    /// Length of a cycling stopwatch's session: `stopwatch_rounds` work
+    /// phases with a rest between them (no trailing rest); `None` when
+    /// endless or not cycling.
+    fn cycle_session_len(cfg: &Config) -> Option<f64> {
+        let rounds = cfg.stopwatch_rounds;
+        (Self::cycling(cfg) && rounds > 0).then(|| {
+            let rest = cfg.stopwatch_rest.max(0);
+            (cfg.stopwatch_work * rounds + rest * (rounds - 1)) as f64
+        })
+    }
+
+    /// Whether `elapsed` reaches the end of a finite cycling session.
+    fn cycle_session_over(cfg: &Config, elapsed: f64) -> bool {
+        Self::cycle_session_len(cfg).is_some_and(|len| elapsed >= len)
+    }
+
     /// Phase boundaries passed by `elapsed` (work-ends and rest-ends).
     fn cycle_boundaries(cfg: &Config, elapsed: f64) -> i64 {
         let work = cfg.stopwatch_work as f64;
@@ -344,9 +362,20 @@ impl TimerEngine {
         }
     }
 
-    /// Where `elapsed` sits in a cycling stopwatch's work/rest cycle.
+    /// Where `elapsed` sits in a cycling stopwatch's work/rest cycle; a
+    /// finished session stays at the end of its last work phase.
     fn cycle_pos(cfg: &Config, elapsed: f64) -> CyclePos {
         let work = cfg.stopwatch_work as f64;
+        if Self::cycle_session_over(cfg, elapsed) {
+            return CyclePos {
+                in_work: true,
+                pos: work,
+                work,
+                phase_len: work,
+                phase_remaining: 0.0,
+                round: cfg.stopwatch_rounds,
+            };
+        }
         let rest = cfg.stopwatch_rest.max(0) as f64;
         let cycle = work + rest;
         let pos = if cycle > 0.0 { elapsed % cycle } else { 0.0 };
@@ -502,7 +531,7 @@ impl TimerEngine {
     }
 
     fn tick_stopwatch(&mut self, cfg: &Config, warn: bool) -> TickResult {
-        let display = self.elapsed();
+        let mut display = self.elapsed();
         let mut state = match self.run_state() {
             State::Run if warn => State::Warn,
             st => st,
@@ -510,6 +539,22 @@ impl TimerEngine {
         let mut beeps = Vec::new();
         if !Self::cycling(cfg) {
             return Self::result(display, state, beeps);
+        }
+        let mut finished = false;
+        if let Some(len) = Self::cycle_session_len(cfg)
+            && display >= len
+        {
+            // Session over: park at its end (a suspend may overshoot it).
+            state = State::End;
+            if self.running {
+                self.running = false;
+                self.elapsed = len;
+                finished = true;
+                if cfg.phase_beeps {
+                    beeps.push(LONG); // the last phase end is the session end
+                }
+            }
+            display = len;
         }
         let c = Self::cycle_pos(cfg, display);
         if self.running {
@@ -538,8 +583,10 @@ impl TimerEngine {
             }
         }
         TickResult {
+            finished,
             phase: if c.in_work { Phase::Work } else { Phase::Rest },
             round: c.round,
+            rounds: cfg.stopwatch_rounds,
             progress: c.progress(),
             ..Self::result(display, state, beeps)
         }
@@ -1356,6 +1403,68 @@ mod tests {
             c.advance(10.0); // 10s left in 15s rest
             let r = e.tick(&cfg);
             approx_abs(r.progress, 10.0 / 15.0, 0.01);
+        }
+
+        #[test]
+        fn rounds_end_the_session_after_the_last_work_phase() {
+            let (mut cfg, mut e, c) = setup();
+            cfg.stopwatch_rounds = 2; // W45 R15 W45: ends at 105 s, no trailing rest
+            e.toggle(&cfg);
+            let mut beeps = Vec::new();
+            let mut finished = 0;
+            for _ in 0..1100 {
+                c.advance(0.1);
+                let r = e.tick(&cfg);
+                beeps.extend(r.beeps);
+                finished += usize::from(r.finished);
+            }
+            assert_eq!(finished, 1);
+            assert_eq!(longs(&beeps), 3); // 45, 60, and the session end at 105
+            assert!(!e.running());
+            let r = e.tick(&cfg);
+            approx(r.display, 105.0); // parked at the session end
+            assert_eq!(r.state, State::End);
+            assert!(r.phase == Phase::Work && r.round == 2 && r.rounds == 2);
+            approx(r.progress, 0.0);
+            assert!(!r.finished);
+        }
+
+        #[test]
+        fn suspend_past_the_session_end_finishes_once() {
+            let (mut cfg, mut e, c) = setup();
+            cfg.stopwatch_rounds = 2;
+            e.toggle(&cfg);
+            c.advance(500.0);
+            let r = e.tick(&cfg);
+            assert!(r.finished && r.state == State::End);
+            approx(r.display, 105.0);
+            assert_eq!(longs(&r.beeps), 1);
+        }
+
+        #[test]
+        fn start_after_the_session_end_starts_over() {
+            let (mut cfg, mut e, c) = setup();
+            cfg.stopwatch_rounds = 1;
+            e.toggle(&cfg);
+            c.advance(46.0);
+            assert!(e.tick(&cfg).finished);
+            e.toggle(&cfg);
+            c.advance(1.0);
+            let r = e.tick(&cfg);
+            approx(r.display, 1.0);
+            assert!(r.state == State::Run && r.round == 1);
+            // No replayed boundary beeps from the earlier session.
+            assert_eq!(collect_beeps(&mut e, &cfg, &c, 30.0), vec![]);
+        }
+
+        #[test]
+        fn zero_rounds_is_endless() {
+            let (cfg, mut e, c) = setup();
+            assert_eq!(cfg.stopwatch_rounds, 0);
+            e.toggle(&cfg);
+            c.advance(10_000.0);
+            let r = e.tick(&cfg);
+            assert!(!r.finished && e.running());
         }
 
         #[test]

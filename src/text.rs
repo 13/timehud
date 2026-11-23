@@ -21,6 +21,16 @@ const GENERIC_ALIASES: [&str; 4] = ["monospace", "sans", "sans-serif", "serif"];
 const CACHE_CAP: usize = 4 << 20;
 /// Bookkeeping bytes charged per cached glyph on top of its bitmap.
 const GLYPH_OVERHEAD: usize = 64;
+/// The count-up marker of cycling-stopwatch labels. Drawn as a solid
+/// vector arrow in the style of the control icons instead of the font's
+/// glyph (thin in most fonts, missing in some).
+pub const COUNT_UP: char = '↑';
+/// [`COUNT_UP`] geometry as fractions of the digit height: arrow width,
+/// side bearing, head height and stem width.
+const ARROW_W: f32 = 0.66;
+const ARROW_BEARING: f32 = 0.12;
+const ARROW_HEAD: f32 = 0.52;
+const ARROW_STEM: f32 = 0.24;
 
 /// A rasterized glyph: coverage bitmap and its offset from the pen
 /// position on the baseline (y down).
@@ -132,10 +142,60 @@ impl FontSet {
     }
 
     fn advance(&self, c: char, px: f32) -> f32 {
+        if c == COUNT_UP {
+            return self.eight_height * self.factor(px) * (ARROW_W + 2.0 * ARROW_BEARING);
+        }
         self.font.h_advance_unscaled(self.font.glyph_id(c)) * self.factor(px)
     }
 
+    /// [`COUNT_UP`]: a filled arrow as tall as a digit, on the baseline.
+    fn rasterize_arrow(&self, px: f32) -> Glyph {
+        let h = self.eight_height * self.factor(px);
+        let (w, head, stem) = (h * ARROW_W, h * ARROW_HEAD, h * ARROW_STEM);
+        let (width, height) = (w.ceil() as usize + 1, h.ceil() as usize + 1);
+        let mut coverage = vec![0u8; width * height];
+        let mut pb = tiny_skia::PathBuilder::new();
+        let (mid, sl, sr) = (w / 2.0, (w - stem) / 2.0, (w + stem) / 2.0);
+        pb.move_to(0.0, head);
+        pb.line_to(mid, 0.0);
+        pb.line_to(w, head);
+        pb.line_to(sr, head);
+        pb.line_to(sr, h);
+        pb.line_to(sl, h);
+        pb.line_to(sl, head);
+        pb.close();
+        if let (Some(path), Some(mut pm)) = (
+            pb.finish(),
+            tiny_skia::Pixmap::new(width as u32, height as u32),
+        ) {
+            let mut paint = tiny_skia::Paint::default();
+            paint.set_color(tiny_skia::Color::BLACK);
+            paint.anti_alias = true;
+            pm.fill_path(
+                &path,
+                &paint,
+                tiny_skia::FillRule::Winding,
+                tiny_skia::Transform::identity(),
+                None,
+            );
+            for (cov, px) in coverage.iter_mut().zip(pm.pixels()) {
+                *cov = px.alpha();
+            }
+        }
+        Glyph {
+            left: (h * ARROW_BEARING).round() as i32,
+            top: -(h.round() as i32),
+            width,
+            height,
+            coverage,
+            used: 0,
+        }
+    }
+
     fn rasterize(&self, c: char, px: f32) -> Glyph {
+        if c == COUNT_UP {
+            return self.rasterize_arrow(px);
+        }
         // ab_glyph's PxScale is the ascent-to-descent height; `px` is the em size.
         let scale = PxScale::from(px * self.font.height_unscaled() / self.units_per_em);
         let glyph = self.font.glyph_id(c).with_scale(scale);
@@ -338,6 +398,18 @@ mod tests {
             f.measure("11:11", 40., false),
             f.measure("88:88", 40., false)
         );
+    }
+
+    #[test]
+    fn count_up_arrow_is_drawn_digit_tall_in_every_font() {
+        for mut f in [FontSet::bundled(), FontSet::fallback("Roboto")] {
+            let h = f.ink_height(30.0);
+            let adv = f.measure(&COUNT_UP.to_string(), 30.0, false);
+            assert!((adv - h * (ARROW_W + 2.0 * ARROW_BEARING)).abs() < 1e-3);
+            let g = f.glyph(COUNT_UP, 30.0);
+            assert_eq!(g.top, -(h.round() as i32)); // sits on the baseline
+            assert!(g.coverage.iter().filter(|&&c| c > 128).count() > 20);
+        }
     }
 
     #[test]

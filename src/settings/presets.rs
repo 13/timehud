@@ -5,10 +5,10 @@ use super::{
     interval_session_secs, note, spin,
 };
 use crate::config::{
-    COUNTDOWN_RANGE, Config, Mode, Preset, PresetRules, REST_RANGE, ROUNDS_RANGE, WORK_RANGE,
-    interval_preset_rounds, valid_presets,
+    COUNTDOWN_RANGE, Config, Mode, Preset, PresetRules, REST_RANGE, ROUNDS_RANGE,
+    STOPWATCH_ROUNDS_RANGE, WORK_RANGE, interval_preset_rounds, valid_presets,
 };
-use crate::format::fmt_seconds;
+use crate::format::{fmt_seconds, rounds_suffix};
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Frame, Margin, RichText, Sense, Stroke, Ui, Vec2,
 };
@@ -30,6 +30,8 @@ pub struct PresetEditor {
     pub iv_total: Option<i64>,
     pub sw_work: i64,
     pub sw_rest: i64,
+    /// Stopwatch rounds; 0 = endless.
+    pub sw_rounds: i64,
     pub boundary: bool,
     pub halfway: bool,
     pub last5: bool,
@@ -50,6 +52,7 @@ impl PresetEditor {
             iv_total: None,
             sw_work: 45,
             sw_rest: 15,
+            sw_rounds: 0,
             boundary: cfg.phase_beeps,
             halfway: cfg.halfway_beep,
             last5: cfg.alert_last_5_seconds,
@@ -84,6 +87,7 @@ pub fn preset_from_editor(e: &PresetEditor) -> Result<(Preset, PresetRules), Str
             name,
             work: e.sw_work,
             rest: e.sw_rest,
+            rounds: e.sw_rounds,
         },
     };
     let rules = PresetRules {
@@ -120,10 +124,13 @@ pub fn editor_from_preset(p: &Preset, r: &PresetRules, last5_default: bool) -> P
             e.iv_rounds = interval_preset_rounds(*work, *rest, *total);
             e.iv_total = Some(*total);
         }
-        Preset::Stopwatch { work, rest, .. } => {
+        Preset::Stopwatch {
+            work, rest, rounds, ..
+        } => {
             e.kind = Mode::Stopwatch;
             e.sw_work = *work;
             e.sw_rest = *rest;
+            e.sw_rounds = *rounds;
         }
     }
     e
@@ -300,7 +307,9 @@ fn detail(p: &Preset) -> String {
             "{work}/{rest} \u{d7}{}",
             interval_preset_rounds(*work, *rest, *total)
         ),
-        Preset::Stopwatch { work, rest, .. } => format!("{work}/{rest} \u{2191}"),
+        Preset::Stopwatch {
+            work, rest, rounds, ..
+        } => format!("{work}/{rest}{} \u{2191}", rounds_suffix(*rounds)),
     }
 }
 
@@ -474,6 +483,17 @@ pub fn section(ui: &mut Ui, st: &mut PresetsState, cfg: &mut Config) {
                         spin(ui, &mut e.sw_rest, REST_RANGE, " s rest");
                     });
                     ui.end_row();
+                    ui.label("Rounds");
+                    ui.horizontal(|ui| {
+                        spin(ui, &mut e.sw_rounds, STOPWATCH_ROUNDS_RANGE, " rounds");
+                        if e.sw_rounds > 0 {
+                            let total = interval_session_secs(e.sw_work, e.sw_rest, e.sw_rounds);
+                            note(ui, format!("{} total", countdown_note(total)));
+                        } else {
+                            note(ui, "0 = endless");
+                        }
+                    });
+                    ui.end_row();
                 }
             }
 
@@ -562,6 +582,7 @@ mod tests {
             iv_total: None,
             sw_work: 45,
             sw_rest: 15,
+            sw_rounds: 0,
             boundary: true,
             halfway: false,
             last5: false,
@@ -655,6 +676,7 @@ mod tests {
         let e = PresetEditor {
             sw_work: 60,
             sw_rest: 0,
+            sw_rounds: 6,
             ..editor(Mode::Stopwatch)
         };
         let (p, r) = preset_from_editor(&e).unwrap();
@@ -663,7 +685,8 @@ mod tests {
             Preset::Stopwatch {
                 name: "x".into(),
                 work: 60,
-                rest: 0
+                rest: 0,
+                rounds: 6,
             }
         );
         assert_eq!(editor_from_preset(&p, &r, false), e);

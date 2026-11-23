@@ -107,7 +107,12 @@ pub fn mode_label(cfg: &Config) -> String {
     match cfg.timer_mode {
         Mode::Stopwatch => {
             if cfg.stopwatch_work > 0 {
-                let base = format!("{}s/{}s ↑", cfg.stopwatch_work, cfg.stopwatch_rest);
+                let base = format!(
+                    "{}s/{}s{} ↑",
+                    cfg.stopwatch_work,
+                    cfg.stopwatch_rest,
+                    rounds_suffix(cfg.stopwatch_rounds)
+                );
                 if preset.is_empty() {
                     format!("STOPWATCH {base}")
                 } else {
@@ -138,6 +143,15 @@ pub fn mode_label(cfg: &Config) -> String {
                 format!("{preset}  ·  {dur}")
             }
         }
+    }
+}
+
+/// " ×N" for a cycling stopwatch with N rounds; empty when endless.
+pub fn rounds_suffix(rounds: i64) -> String {
+    if rounds > 0 {
+        format!(" ×{rounds}")
+    } else {
+        String::new()
     }
 }
 
@@ -176,7 +190,12 @@ pub fn preset_menu_label(p: &Preset) -> String {
             "{name} {work}/{rest} ×{}",
             interval_preset_rounds(*work, *rest, *total)
         ),
-        Preset::Stopwatch { name, work, rest } => format!("{name} {work}/{rest} ↑"),
+        Preset::Stopwatch {
+            name,
+            work,
+            rest,
+            rounds,
+        } => format!("{name} {work}/{rest}{} ↑", rounds_suffix(*rounds)),
         Preset::Countdown { name, duration } => {
             format!("{name} {}", fmt_seconds(*duration as f64))
         }
@@ -333,6 +352,8 @@ mod tests {
             assert_eq!(mode_label(&c), "STOPWATCH 60s/30s ↑");
             c.active_preset = "Run".into();
             assert_eq!(mode_label(&c), "RUN · 60s/30s ↑");
+            c.stopwatch_rounds = 4;
+            assert_eq!(mode_label(&c), "RUN · 60s/30s ×4 ↑");
         }
 
         #[test]
@@ -367,8 +388,16 @@ mod tests {
                 name: "Run".into(),
                 work: 60,
                 rest: 30,
+                rounds: 0,
             };
             assert_eq!(preset_menu_label(&p), "Run 60/30 ↑");
+            let p = Preset::Stopwatch {
+                name: "Run".into(),
+                work: 60,
+                rest: 30,
+                rounds: 5,
+            };
+            assert_eq!(preset_menu_label(&p), "Run 60/30 ×5 ↑");
         }
 
         #[test]

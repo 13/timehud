@@ -119,7 +119,8 @@ The same menu opens from the tray icon.
   stays light and interactive)
 - **Presets** – **Stopwatch** (plain stopwatch), then one-click countdown,
   interval (work/rest for a total time, e.g. 45/15 for 10 min) and stopwatch
-  (work/rest cycles counting upward forever) presets; **Save current as
+  (work/rest cycles counting upward, for a number of rounds or forever with
+  0 rounds) presets; **Save current as
   preset…** saves the current countdown, interval or cycling-stopwatch setup
   (disabled for a plain stopwatch); **Manage presets…** opens Settings
 - **Opacity** – 30 / 50 / 70 / 85 / 95 / 100 %
@@ -193,6 +194,7 @@ The Python app also always uses `~/.config/timehud/config.json` and ignores
   "interval_rounds": 8,
   "stopwatch_work": 0,
   "stopwatch_rest": 0,
+  "stopwatch_rounds": 0,
   "phase_beeps": true,
   "halfway_beep": false,
   "sound_enabled": true,

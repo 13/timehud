@@ -169,6 +169,8 @@ config_fields! {
     /// 0 = plain stopwatch.
     stopwatch_work: i64 = 0, range STOPWATCH_WORK_RANGE;
     stopwatch_rest: i64 = 0, range REST_RANGE;
+    /// Work phases of a cycling stopwatch; 0 = endless.
+    stopwatch_rounds: i64 = 0, range STOPWATCH_ROUNDS_RANGE;
     phase_beeps: bool = true;
     halfway_beep: bool = false;
     sound_enabled: bool = true;
@@ -243,6 +245,8 @@ pub const STOPWATCH_WORK_RANGE: (i64, i64) = (0, MAX_SECS);
 pub const REST_RANGE: (i64, i64) = (0, MAX_SECS);
 /// Interval rounds.
 pub const ROUNDS_RANGE: (i64, i64) = (1, 100_000);
+/// Cycling-stopwatch rounds (0 = endless).
+pub const STOPWATCH_ROUNDS_RANGE: (i64, i64) = (0, ROUNDS_RANGE.1);
 /// `sound_interval` / `sound_alert_before`, seconds (0 = off).
 pub const SOUND_SECS_RANGE: (i64, i64) = (0, MAX_SECS);
 /// Screen margin, px.
@@ -396,6 +400,8 @@ pub enum Preset {
         name: String,
         work: i64,
         rest: i64,
+        /// Work phases until the session ends; 0 = endless.
+        rounds: i64,
     },
 }
 
@@ -430,8 +436,18 @@ impl Preset {
             } => {
                 json!({"name": name, "type": "interval", "work": work, "rest": rest, "total": total})
             }
-            Preset::Stopwatch { name, work, rest } => {
-                json!({"name": name, "type": "stopwatch", "work": work, "rest": rest})
+            Preset::Stopwatch {
+                name,
+                work,
+                rest,
+                rounds,
+            } => {
+                let mut v = json!({"name": name, "type": "stopwatch", "work": work, "rest": rest});
+                // Endless presets keep the original (Python) shape.
+                if *rounds > 0 {
+                    v["rounds"] = json!(rounds);
+                }
+                v
             }
         };
         let obj = v.as_object_mut().expect("preset is an object");
@@ -453,8 +469,9 @@ impl Preset {
 
 /// The keys a preset's shape and rules may use; anything else in a preset
 /// object is the user's and survives edits.
-pub const PRESET_KEYS: [&str; 10] = [
-    "name", "type", "duration", "work", "rest", "total", "last5", "boundary", "halfway", "enabled",
+pub const PRESET_KEYS: [&str; 11] = [
+    "name", "type", "duration", "work", "rest", "total", "rounds", "last5", "boundary", "halfway",
+    "enabled",
 ];
 
 impl Preset {
@@ -486,10 +503,13 @@ impl Preset {
     /// it the active preset (the config half of selecting it in the menu).
     pub fn apply_to(&self, rules: &PresetRules, cfg: &mut Config) {
         match self {
-            Preset::Stopwatch { work, rest, .. } => {
+            Preset::Stopwatch {
+                work, rest, rounds, ..
+            } => {
                 cfg.timer_mode = Mode::Stopwatch;
                 cfg.stopwatch_work = *work;
                 cfg.stopwatch_rest = *rest;
+                cfg.stopwatch_rounds = *rounds;
             }
             Preset::Interval {
                 work, rest, total, ..
@@ -533,7 +553,9 @@ pub fn active_preset_matches(cfg: &Config) -> bool {
             Mode::Interval => {
                 (t.2, t.3, t.4) = (c.interval_work, c.interval_rest, c.interval_rounds)
             }
-            Mode::Stopwatch => (t.2, t.3) = (c.stopwatch_work, c.stopwatch_rest),
+            Mode::Stopwatch => {
+                (t.2, t.3, t.4) = (c.stopwatch_work, c.stopwatch_rest, c.stopwatch_rounds)
+            }
         }
         t
     };
@@ -569,6 +591,11 @@ fn parse_preset(v: &Value) -> Option<(Preset, PresetRules)> {
             name,
             work: int_min(obj.get("work"), 1)?,
             rest: int_min(obj.get("rest"), 0)?,
+            // Optional (older presets are endless); 0 = endless.
+            rounds: match obj.get("rounds") {
+                None => 0,
+                v => int_min(v, 0)?.min(STOPWATCH_ROUNDS_RANGE.1),
+            },
         },
         Some("interval") => {
             let work = int_min(obj.get("work"), 1)?;
@@ -686,6 +713,43 @@ mod tests {
         );
         assert!(cfg.phase_beeps && !cfg.halfway_beep);
         assert_eq!(cfg.active_preset, "hiit");
+    }
+
+    #[test]
+    fn stopwatch_preset_rounds() {
+        let sw = |rounds| Preset::Stopwatch {
+            name: "run".into(),
+            work: 60,
+            rest: 30,
+            rounds,
+        };
+        let parse = |v: Value| valid_presets(&[v]).pop().map(|(p, _, _)| p);
+        // Older presets without `rounds` are endless, and endless ones keep
+        // that shape when written.
+        let old = json!({"name": "run", "type": "stopwatch", "work": 60, "rest": 30});
+        assert_eq!(parse(old.clone()), Some(sw(0)));
+        assert_eq!(sw(0).to_value(&PresetRules::default()), old);
+        let v = sw(4).to_value(&PresetRules::default());
+        assert_eq!(v["rounds"], json!(4));
+        assert_eq!(parse(v.clone()), Some(sw(4)));
+        // Back to endless drops the key; a bad value drops the preset.
+        let mut raw = v;
+        sw(0).merge_into(&PresetRules::default(), &mut raw);
+        assert_eq!(raw, old);
+        assert_eq!(
+            parse(json!({"name": "a", "type": "stopwatch", "work": 1, "rest": 0, "rounds": -1})),
+            None
+        );
+        // Applying sets the config; changing the rounds ends the preset.
+        let mut cfg = Config {
+            presets: vec![sw(4).to_value(&PresetRules::default())],
+            ..Config::default()
+        };
+        sw(4).apply_to(&PresetRules::default(), &mut cfg);
+        assert_eq!(cfg.stopwatch_rounds, 4);
+        assert!(active_preset_matches(&cfg));
+        cfg.stopwatch_rounds = 5;
+        assert!(!active_preset_matches(&cfg));
     }
 
     #[test]

@@ -631,10 +631,10 @@ impl App {
             self.pulse_start = Some(now);
         }
         if r.finished && !r.restarted && self.cfg.notify_on_finish {
-            let text = if self.cfg.timer_mode == Mode::Interval {
-                "Interval session finished"
-            } else {
-                "Countdown finished"
+            let text = match self.cfg.timer_mode {
+                Mode::Interval => "Interval session finished",
+                Mode::Stopwatch => "Stopwatch session finished",
+                Mode::Countdown => "Countdown finished",
             };
             fx.push(Effect::Notify(text.into()));
         }
@@ -871,6 +871,7 @@ impl App {
                 self.cfg.active_preset.clear(); // plain stopwatch, no preset
                 self.cfg.stopwatch_work = 0;
                 self.cfg.stopwatch_rest = 0;
+                self.cfg.stopwatch_rounds = 0;
                 self.engine.set_mode(&mut self.cfg, Mode::Stopwatch);
                 self.changed(now)
             }
@@ -926,6 +927,7 @@ impl App {
                 name: name.into(),
                 work: cfg.stopwatch_work,
                 rest: cfg.stopwatch_rest,
+                rounds: cfg.stopwatch_rounds,
             },
             Mode::Countdown => Preset::Countdown {
                 name: name.into(),
